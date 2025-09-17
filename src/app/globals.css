@@ -1,0 +1,45 @@
+@import "tailwindcss";
+/* If you DON'T have tailwindcss-animate installed, don't import it. */
+/* @import "tailwindcss-animate"; */
+
+/* Light theme defaults */
+:root {
+  --background-primary: rgba(249, 250, 251, 1);
+  --background-secondary: rgba(18, 18, 18, 1);
+  --text-primary: rgba(55, 65, 81, 1);
+  --text-secondary: rgba(243, 244, 246, 1);
+  --accent: rgba(99, 102, 241, 1);
+  --border-color: rgba(209, 213, 219, 1);
+}
+
+/* Dark theme overrides (applies when <html class="dark">) */
+.dark {
+  --background-primary: rgba(18, 18, 18, 1);
+  --background-secondary: rgba(249, 250, 251, 1);
+  --text-primary: rgba(243, 244, 246, 1);
+  --text-secondary: rgba(55, 65, 81, 1);
+  --accent: rgba(99, 102, 241, 1);
+  --border-color: rgba(209, 213, 219, 1);
+}
+
+/* Map your raw vars to Tailwind v4 tokens shadcn-style components expect */
+@theme inline {
+  --color-background: var(--background-primary);
+  --color-foreground: var(--text-primary);
+  --color-border: var(--border-color);
+  --color-accent: var(--accent);
+  --color-card: var(--background-primary);
+  --color-card-foreground: var(--text-primary);
+  --color-muted: var(--background-secondary);
+}
+
+/* Base styles */
+html, body { min-height: 100%; }
+body { @apply bg-background text-foreground antialiased; }
+
+/* Nice color transitions */
+.transition-colors {
+  transition-property: background-color, color, border-color;
+  transition-duration: 150ms;
+  transition-timing-function: ease-in-out;
+}
