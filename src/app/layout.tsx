@@ -1,3 +1,4 @@
+// src/app/layout.tsx
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import '@/app/globals.css';
@@ -30,7 +31,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </Link>
                 <nav className="hidden items-center gap-4 text-sm font-medium md:flex">
                   {navLinks.map((link) => (
-                    <Link key={link.href} href={link.href} className="transition-colors hover:text-[var(--color-accent)]">
+                    <Link
+                      key={link.href}
+                      href={link.href}
+                      className="transition-colors hover:text-[var(--color-accent)]"
+                    >
                       {link.label}
                     </Link>
                   ))}
@@ -39,7 +44,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <div className="flex items-center gap-4">
                 <nav className="flex items-center gap-3 text-sm font-medium md:hidden">
                   {navLinks.map((link) => (
-                    <Link key={link.href} href={link.href} className="transition-colors hover:text-[var(--color-accent)]">
+                    <Link
+                      key={link.href}
+                      href={link.href}
+                      className="transition-colors hover:text-[var(--color-accent)]"
+                    >
                       {link.label}
                     </Link>
                   ))}
@@ -48,7 +57,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </div>
             </div>
           </header>
-          <main className="mx-auto flex max-w-6xl flex-1 flex-col gap-8 px-4 py-8 sm:px-6">{children}</main>
+          <main className="mx-auto flex max-w-6xl flex-1 flex-col gap-8 px-4 py-8 sm:px-6">
+            {children}
+          </main>
         </div>
       </body>
     </html>

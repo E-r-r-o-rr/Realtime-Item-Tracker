@@ -22,10 +22,16 @@ export default function HomePage() {
           validation buffer that refreshes every five minutes. All scans are archived automatically for traceability.
         </p>
         <div className="flex flex-wrap gap-3 text-sm">
-          <Link href="/scan" className="rounded-md bg-[var(--color-accent)] px-4 py-2 font-semibold text-white transition-colors hover:bg-[var(--color-accent)]/90">
+          <Link
+            href="/scan"
+            className="rounded-md bg-[var(--color-accent)] px-4 py-2 font-semibold text-white transition-colors hover:bg-[var(--color-accent)]/90"
+          >
             Start Scanning
           </Link>
-          <Link href="/bookings" className="rounded-md border border-[var(--color-border)] px-4 py-2 font-semibold transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]">
+          <Link
+            href="/bookings"
+            className="rounded-md border border-[var(--color-border)] px-4 py-2 font-semibold transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+          >
             Review Booking Table
           </Link>
         </div>

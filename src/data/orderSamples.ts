@@ -1,3 +1,4 @@
+// src/data/orderSamples.ts
 import type { OrderFields, StorageRecord } from '@/types/warehouse';
 
 export const bookingSamples: OrderFields[] = [
