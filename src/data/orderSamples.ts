@@ -1,0 +1,166 @@
+export interface OrderFields {
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string; // YYYY-MM-DD
+  expectedDeparture: string; // HH:mm in 24-hour format
+  origin: string;
+}
+
+export interface StorageRow extends OrderFields {
+  id: string;
+}
+
+export const bookingSamples: OrderFields[] = [
+  {
+    destination: 'D73',
+    itemName: 'Automotive Parts',
+    trackingId: 'TR6254',
+    truckNumber: 'TRK-6254',
+    shipDate: '2025-06-28',
+    expectedDeparture: '13:15',
+    origin: 'WH-08',
+  },
+  {
+    destination: 'D27',
+    itemName: 'Construction Supplies',
+    trackingId: '567891234509876543F',
+    truckNumber: 'TRK-3156',
+    shipDate: '2025-09-30',
+    expectedDeparture: '13:00',
+    origin: 'WH-02',
+  },
+  {
+    destination: 'C28',
+    itemName: 'Premium Laptops',
+    trackingId: '764589321598764321B',
+    truckNumber: 'TRK-4578',
+    shipDate: '2025-03-24',
+    expectedDeparture: '07:30',
+    origin: 'WH-03',
+  },
+  {
+    destination: 'A23',
+    itemName: 'Acme Widgets',
+    trackingId: '987654112349588725G',
+    truckNumber: 'TRK-1285',
+    shipDate: '2025-10-15',
+    expectedDeparture: '08:00',
+    origin: 'WH-01',
+  },
+  {
+    destination: 'B14',
+    itemName: 'Industrial Bolts',
+    trackingId: 'IND-441022',
+    truckNumber: 'TRK-2209',
+    shipDate: '2025-04-12',
+    expectedDeparture: '09:45',
+    origin: 'WH-05',
+  },
+  {
+    destination: 'E11',
+    itemName: 'Cooling Fans',
+    trackingId: 'CF-884210',
+    truckNumber: 'TRK-9031',
+    shipDate: '2025-04-18',
+    expectedDeparture: '11:30',
+    origin: 'WH-04',
+  },
+  {
+    destination: 'F07',
+    itemName: 'Optical Sensors',
+    trackingId: 'OS-550012',
+    truckNumber: 'TRK-7310',
+    shipDate: '2025-05-02',
+    expectedDeparture: '15:00',
+    origin: 'WH-06',
+  },
+  {
+    destination: 'B09',
+    itemName: 'Hydraulic Pumps',
+    trackingId: 'HP-903842',
+    truckNumber: 'TRK-6425',
+    shipDate: '2025-05-20',
+    expectedDeparture: '10:20',
+    origin: 'WH-02',
+  },
+  {
+    destination: 'G18',
+    itemName: 'Alloy Sheets',
+    trackingId: 'AS-772109',
+    truckNumber: 'TRK-8744',
+    shipDate: '2025-06-05',
+    expectedDeparture: '16:45',
+    origin: 'WH-07',
+  },
+  {
+    destination: 'C11',
+    itemName: 'Safety Helmets',
+    trackingId: 'SH-110234',
+    truckNumber: 'TRK-5120',
+    shipDate: '2025-06-17',
+    expectedDeparture: '12:00',
+    origin: 'WH-03',
+  },
+];
+
+const bookingStorageRows: StorageRow[] = bookingSamples.map((order, index) => ({
+  id: `ST-${String(index + 1).padStart(3, '0')}`,
+  ...order,
+}));
+
+const extraStorageRows: StorageRow[] = [
+  {
+    id: 'ST-011',
+    destination: 'H05',
+    itemName: 'Packaging Film',
+    trackingId: 'PF-659002',
+    truckNumber: 'TRK-9910',
+    shipDate: '2025-07-01',
+    expectedDeparture: '09:00',
+    origin: 'WH-04',
+  },
+  {
+    id: 'ST-012',
+    destination: 'E19',
+    itemName: 'Circuit Boards',
+    trackingId: 'CB-340022',
+    truckNumber: 'TRK-4570',
+    shipDate: '2025-07-10',
+    expectedDeparture: '13:45',
+    origin: 'WH-08',
+  },
+  {
+    id: 'ST-013',
+    destination: 'F15',
+    itemName: 'Lithium Batteries',
+    trackingId: 'LB-902340',
+    truckNumber: 'TRK-5885',
+    shipDate: '2025-07-14',
+    expectedDeparture: '14:30',
+    origin: 'WH-06',
+  },
+  {
+    id: 'ST-014',
+    destination: 'D05',
+    itemName: 'Fiber Optic Cable',
+    trackingId: 'FO-776543',
+    truckNumber: 'TRK-3411',
+    shipDate: '2025-07-22',
+    expectedDeparture: '08:20',
+    origin: 'WH-05',
+  },
+  {
+    id: 'ST-015',
+    destination: 'J02',
+    itemName: 'Industrial Lubricant',
+    trackingId: 'IL-982210',
+    truckNumber: 'TRK-7802',
+    shipDate: '2025-07-30',
+    expectedDeparture: '17:00',
+    origin: 'WH-09',
+  },
+];
+
+export const storageSamples: StorageRow[] = [...bookingStorageRows, ...extraStorageRows];
