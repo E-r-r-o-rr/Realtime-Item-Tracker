@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { extractKvPairs } from '@/lib/ocrService';
+import { buildBarcodeValidation, extractBarcodes } from '@/lib/barcodeService';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -23,8 +24,10 @@ export async function POST(req: Request) {
     const tmpPath = path.join(tmpDir, file.name);
     await fs.writeFile(tmpPath, buffer);
     const kv = await extractKvPairs(tmpPath);
+    const { barcodes, warnings: barcodeWarnings } = await extractBarcodes(tmpPath);
+    const validation = buildBarcodeValidation(kv, barcodes);
     await fs.unlink(tmpPath);
-    return NextResponse.json({ kv });
+    return NextResponse.json({ kv, barcodes, barcodeWarnings, validation });
   } catch (err: any) {
     console.error('OCR endpoint error', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
