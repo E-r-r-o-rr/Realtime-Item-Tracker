@@ -5,9 +5,9 @@ import { publishMapReady } from '@/lib/events';
 
 export async function GET(
   req: Request,
-  { params }: { params: { code: string } },
+  context: { params: Promise<{ code: string }> },
 ) {
-  const { code } = params;
+  const { code } = await context.params;
   const resolved = resolveItemCode(code);
   if (!resolved) {
     return NextResponse.json({ error: 'Item not found' }, { status: 404 });

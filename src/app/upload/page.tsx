@@ -18,6 +18,13 @@ interface Order {
   section: string;
 }
 
+interface BarcodeValidation {
+  matches: boolean | null;
+  status: 'match' | 'mismatch' | 'no_barcode' | 'missing_item_code';
+  message: string;
+  comparedValue?: string;
+}
+
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [kv, setKv] = useState<KvPairs | null>(null);
@@ -28,6 +35,9 @@ export default function UploadPage() {
   const [creating, setCreating] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [barcodes, setBarcodes] = useState<string[]>([]);
+  const [barcodeWarnings, setBarcodeWarnings] = useState<string[]>([]);
+  const [validation, setValidation] = useState<BarcodeValidation | null>(null);
 
   const API_KEY = process.env.NEXT_PUBLIC_API_KEY || 'my-secret-api-key';
 
@@ -40,6 +50,9 @@ export default function UploadPage() {
       setOrder(null);
       setMapUrl(null);
       setStatus(null);
+      setBarcodes([]);
+      setBarcodeWarnings([]);
+      setValidation(null);
     }
   };
 
@@ -60,10 +73,25 @@ export default function UploadPage() {
       }
       const data = await res.json();
       const extracted: KvPairs = data.kv || {};
+      const validationStatus: BarcodeValidation['status'] | undefined = data.validation?.status;
+      setBarcodes(Array.isArray(data.barcodes) ? data.barcodes : []);
+      setBarcodeWarnings(Array.isArray(data.barcodeWarnings) ? data.barcodeWarnings : []);
+      setValidation(data.validation ?? null);
       setKv(extracted);
       const code = extracted.item_code;
+      if (validationStatus === 'mismatch') {
+        setStatus(data.validation.message);
+      } else if (validationStatus === 'match') {
+        setStatus('Barcode and OCR values align. Checking database…');
+      } else if (validationStatus === 'no_barcode') {
+        setStatus('No barcode detected; continuing with OCR results.');
+      } else if (validationStatus === 'missing_item_code') {
+        setStatus('Barcode detected but OCR did not yield an item code.');
+      }
       if (code) {
-        setStatus(`Extracted item code ${code}. Checking database…`);
+        if (!validationStatus || validationStatus === 'match') {
+          setStatus(`Extracted item code ${code}. Checking database…`);
+        }
         const resOrder = await fetch(`/api/orders?code=${encodeURIComponent(code)}`, {
           headers: { 'x-api-key': API_KEY },
         });
@@ -73,15 +101,27 @@ export default function UploadPage() {
             setOrder(json.order as Order);
             setFloor(json.order.floor);
             setSection(json.order.section);
-            setStatus(`Order ${code} found.`);
+            if (validationStatus === 'mismatch') {
+              setStatus(data.validation.message);
+            } else {
+              setStatus(`Order ${code} found.`);
+            }
           } else {
-            setStatus(`Order ${code} not found. You can add it below.`);
+            if (validationStatus === 'mismatch') {
+              setStatus(data.validation.message);
+            } else {
+              setStatus(`Order ${code} not found. You can add it below.`);
+            }
             setOrder(null);
             setFloor('');
             setSection('');
           }
         } else if (resOrder.status === 404) {
-          setStatus(`Order ${code} not found. You can add it below.`);
+          if (validationStatus === 'mismatch') {
+            setStatus(data.validation.message);
+          } else {
+            setStatus(`Order ${code} not found. You can add it below.`);
+          }
           setOrder(null);
         } else {
           setStatus('Failed to check order.');
@@ -102,6 +142,10 @@ export default function UploadPage() {
     const code = kv.item_code;
     if (!code || !floor || !section) {
       setStatus('Please enter floor and section.');
+      return;
+    }
+    if (validation?.status === 'mismatch') {
+      setStatus('Resolve the barcode mismatch before creating a new order.');
       return;
     }
     setCreating(true);
@@ -215,6 +259,48 @@ export default function UploadPage() {
           </ul>
         </Card>
       )}
+      {(barcodes.length > 0 || barcodeWarnings.length > 0 || validation) && (
+        <Card
+          header={<span className="font-medium">Barcode cross-check</span>}
+          className="mt-4"
+        >
+          <div className="space-y-2 text-sm">
+            {barcodes.length > 0 && (
+              <div>
+                <span className="font-medium">Detected values:</span>
+                <ul className="list-disc list-inside">
+                  {barcodes.map((code) => (
+                    <li key={code}>{code}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {validation && (
+              <p
+                className={
+                  validation.status === 'mismatch'
+                    ? 'text-red-600'
+                    : validation.status === 'match'
+                      ? 'text-green-600'
+                      : 'text-[var(--color-textSecondary)]'
+                }
+              >
+                {validation.message}
+              </p>
+            )}
+            {barcodeWarnings.length > 0 && (
+              <div>
+                <span className="font-medium">Warnings</span>
+                <ul className="list-disc list-inside text-[var(--color-textSecondary)]">
+                  {barcodeWarnings.map((warning, idx) => (
+                    <li key={`${warning}-${idx}`}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
       {/* Order exists */}
       {order && (
         <Card
@@ -255,7 +341,11 @@ export default function UploadPage() {
                 placeholder="e.g. section-a"
               />
             </div>
-            <Button className='hover:cursor-pointer' onClick={createNewOrder} disabled={creating}>
+            <Button
+              className='hover:cursor-pointer'
+              onClick={createNewOrder}
+              disabled={creating || validation?.status === 'mismatch'}
+            >
               {creating ? 'Creating…' : 'Create Order'}
             </Button>
           </div>
