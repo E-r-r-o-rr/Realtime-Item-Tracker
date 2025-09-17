@@ -1,2 +1,35 @@
-node_modules
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Next.js
+.next/
+out/
+.vercel/
+
+# Env
+.env
+.env.*.local
 .env.local
+!.env.example
+
+# App data (SQLite, uploads, OCR outputs)
+data/*.db
+data/*.db-journal
+uploads/
+tmp/
+output/
+
+# Python (for the OCR script)
+__pycache__/
+*.pyc
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
