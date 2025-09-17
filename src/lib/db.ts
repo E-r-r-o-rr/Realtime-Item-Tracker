@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { bookingSamples, storageSamples } from '@/data/orderSamples';
 
 export interface OrderRecord {
   id: number;
@@ -15,22 +16,47 @@ export interface OrderRecord {
 
 let db: Database.Database | null = null;
 
-/**
- * Ensure the SQLite database and required tables exist. This function must be
- * called before any database operation. We use a file-based SQLite DB
- * located in the project's `data` directory for portability. SQLite is
- * well-suited for simple, file-based applications and avoids the overhead
- * of client‑server databases like PostgreSQL【575545403815759†L70-L114】.
- */
-function initDb() {
-  if (db) return;
+function ensureDataDirectory() {
   const dataDir = path.join(process.cwd(), 'data');
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-  const dbPath = path.join(dataDir, 'app.db');
+  return path.join(dataDir, 'app.db');
+}
+
+function seedWarehouseTables(connection: Database.Database) {
+  const bookingCount = connection.prepare(`SELECT COUNT(*) as count FROM bookings`).get() as { count: number };
+  if (bookingCount.count === 0) {
+    const insertBooking = connection.prepare(
+      `INSERT INTO bookings (tracking_id, destination, item_name, truck_number, ship_date, expected_departure, origin)
+       VALUES (@trackingId, @destination, @itemName, @truckNumber, @shipDate, @expectedDeparture, @origin)`,
+    );
+    const runBookingSeed = connection.transaction(() => {
+      for (const booking of bookingSamples) {
+        insertBooking.run(booking);
+      }
+    });
+    runBookingSeed();
+  }
+
+  const storageCount = connection.prepare(`SELECT COUNT(*) as count FROM storage`).get() as { count: number };
+  if (storageCount.count === 0) {
+    const insertStorage = connection.prepare(
+      `INSERT INTO storage (id, destination, item_name, tracking_id, truck_number, ship_date, expected_departure, origin)
+       VALUES (@id, @destination, @itemName, @trackingId, @truckNumber, @shipDate, @expectedDeparture, @origin)`,
+    );
+    const runStorageSeed = connection.transaction(() => {
+      for (const row of storageSamples) {
+        insertStorage.run(row);
+      }
+    });
+    runStorageSeed();
+  }
+}
+
+function initDb() {
+  if (db) return;
+  const dbPath = ensureDataDirectory();
   db = new Database(dbPath);
-  // Enable foreign keys
   db.pragma('foreign_keys = ON');
-  // Create tables if they do not exist
   db.exec(`
     CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,36 +73,77 @@ function initDb() {
       code TEXT NOT NULL,
       FOREIGN KEY (code) REFERENCES orders(code) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS bookings (
+      tracking_id TEXT PRIMARY KEY,
+      destination TEXT NOT NULL,
+      item_name TEXT NOT NULL,
+      truck_number TEXT NOT NULL,
+      ship_date TEXT NOT NULL,
+      expected_departure TEXT NOT NULL,
+      origin TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS storage (
+      id TEXT PRIMARY KEY,
+      destination TEXT NOT NULL,
+      item_name TEXT NOT NULL,
+      tracking_id TEXT NOT NULL,
+      truck_number TEXT NOT NULL,
+      ship_date TEXT NOT NULL,
+      expected_departure TEXT NOT NULL,
+      origin TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS scanned_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      destination TEXT NOT NULL,
+      item_name TEXT NOT NULL,
+      tracking_id TEXT NOT NULL,
+      truck_number TEXT NOT NULL,
+      ship_date TEXT NOT NULL,
+      expected_departure TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      scanned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS current_scan (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      raw_destination TEXT,
+      raw_item_name TEXT,
+      raw_tracking_id TEXT,
+      raw_truck_number TEXT,
+      raw_ship_date TEXT,
+      raw_expected_departure TEXT,
+      raw_origin TEXT,
+      resolved_destination TEXT,
+      resolved_item_name TEXT,
+      resolved_tracking_id TEXT,
+      resolved_truck_number TEXT,
+      resolved_ship_date TEXT,
+      resolved_expected_departure TEXT,
+      resolved_origin TEXT,
+      scanned_at TEXT,
+      booking_match INTEGER,
+      booking_message TEXT,
+      storage_match INTEGER,
+      storage_message TEXT,
+      storage_row_id TEXT,
+      last_refreshed TEXT
+    );
   `);
+
+  seedWarehouseTables(db);
 }
 
-/**
- * Get the singleton database connection. Initializes the database on first
- * call.
- */
 export function getDb(): Database.Database {
   initDb();
   if (!db) throw new Error('Failed to initialize database');
   return db;
 }
 
-/**
- * Retrieve an order by its item code. Returns undefined if no such order
- * exists.
- */
 export function getOrder(code: string): OrderRecord | undefined {
-  const stmt = getDb().prepare(
-    `SELECT * FROM orders WHERE code = ? LIMIT 1`,
-  );
+  const stmt = getDb().prepare(`SELECT * FROM orders WHERE code = ? LIMIT 1`);
   const row = stmt.get(code);
   return row as OrderRecord | undefined;
 }
 
-/**
- * Create a new order. Accepts an object containing the item code, arbitrary
- * JSON data (stored as a string) and optional floor/section assignments. If
- * an alias list is provided, the function inserts them into the aliases table.
- */
 export function createOrder(
   code: string,
   data: any,
@@ -84,65 +151,53 @@ export function createOrder(
   section: string,
   aliases?: string[],
 ): OrderRecord {
-  const db = getDb();
-  const tx = db.transaction(() => {
-    db.prepare(
-      `INSERT INTO orders (code, data, floor, section) VALUES (?, ?, ?, ?)`,
-    ).run(code, JSON.stringify(data), floor, section);
+  const database = getDb();
+  const tx = database.transaction(() => {
+    database.prepare(`INSERT INTO orders (code, data, floor, section) VALUES (?, ?, ?, ?)`).run(code, JSON.stringify(data), floor, section);
     if (aliases) {
-      const aliasStmt = db.prepare(
-        `INSERT OR IGNORE INTO aliases (alias, code) VALUES (?, ?)`,
-      );
+      const aliasStmt = database.prepare(`INSERT OR IGNORE INTO aliases (alias, code) VALUES (?, ?)`);
       for (const alias of aliases) aliasStmt.run(alias, code);
     }
-    const order = db.prepare(`SELECT * FROM orders WHERE code = ?`).get(code);
+    const order = database.prepare(`SELECT * FROM orders WHERE code = ?`).get(code);
     return order as OrderRecord;
   });
   return tx();
 }
 
-/**
- * Update an existing order. Accepts a partial record with optional fields.
- */
 export function updateOrder(
   code: string,
   updates: { collected?: boolean; data?: any; floor?: string; section?: string },
 ): OrderRecord | undefined {
-  const db = getDb();
+  const database = getDb();
   const existing = getOrder(code);
   if (!existing) return undefined;
   const newCollected = updates.collected !== undefined ? (updates.collected ? 1 : 0) : existing.collected;
   const newData = updates.data !== undefined ? JSON.stringify(updates.data) : existing.data;
   const newFloor = updates.floor ?? existing.floor;
   const newSection = updates.section ?? existing.section;
-  db.prepare(
-    `UPDATE orders SET collected = ?, data = ?, floor = ?, section = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?`,
-  ).run(newCollected, newData, newFloor, newSection, code);
+  database
+    .prepare(
+      `UPDATE orders SET collected = ?, data = ?, floor = ?, section = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?`,
+    )
+    .run(newCollected, newData, newFloor, newSection, code);
   return getOrder(code);
 }
 
-/**
- * Resolve an item code or alias to the canonical order code and its location.
- * If multiple orders share the same alias (ambiguous), return undefined.
- */
 export function resolveItemCode(codeOrAlias: string): { code: string; floor: string; section: string } | undefined {
-  const db = getDb();
-  // Try to match exact code first
-  const direct = db
+  const database = getDb();
+  const direct = database
     .prepare(`SELECT code, floor, section FROM orders WHERE code = ?`)
     .get(codeOrAlias) as { code: string; floor: string; section: string } | undefined;
   if (direct) return direct;
-  // Then look up alias mapping
-  const aliasRows = db
+  const aliasRows = database
     .prepare(`SELECT code FROM aliases WHERE alias = ?`)
     .all(codeOrAlias) as { code: string }[];
   if (aliasRows.length === 1) {
     const { code } = aliasRows[0];
-    const order = db
+    const order = database
       .prepare(`SELECT code, floor, section FROM orders WHERE code = ?`)
       .get(code) as { code: string; floor: string; section: string };
     return order;
   }
-  // Ambiguous or not found
   return undefined;
 }
