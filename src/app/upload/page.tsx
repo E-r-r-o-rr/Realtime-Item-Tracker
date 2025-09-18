@@ -353,7 +353,7 @@ export default function UploadPage() {
                 {Object.entries(kv).map(([key, value]) => {
                   const normalizedKey = normalizeKey(key);
                   const isItemCodeRow = normalizedKey === 'itemcode';
-                  const hasBarcode = isItemCodeRow && barcodes.length > 0;
+                  const shouldShowBarcodes = barcodes.length > 0;
                   const matchState = getMatchState(isItemCodeRow);
 
                   return (
@@ -364,9 +364,11 @@ export default function UploadPage() {
                       <td className="px-3 py-2 font-medium">{key}</td>
                       <td className="px-3 py-2">{value}</td>
                       <td
-                        className={`px-3 py-2 ${hasBarcode ? '' : 'text-[var(--color-textSecondary)]'}`}
+                        className={`px-3 py-2 ${
+                          shouldShowBarcodes ? '' : 'text-[var(--color-textSecondary)]'
+                        }`}
                       >
-                        {hasBarcode ? barcodes.join(', ') : '—'}
+                        {shouldShowBarcodes ? barcodes.join(', ') : '—'}
                       </td>
                       <td className="px-3 py-2">
                         <span
