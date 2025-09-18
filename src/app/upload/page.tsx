@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
@@ -25,6 +25,27 @@ interface BarcodeValidation {
   comparedValue?: string;
 }
 
+const normalizeKey = (key: string) => key.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const LIVE_BUFFER_FIELDS: Array<{ label: string; keys: string[] }> = [
+  { label: 'Destination', keys: ['destination'] },
+  { label: 'Item Name', keys: ['item_name', 'itemname', 'product_name', 'productname'] },
+  {
+    label: 'Tracking ID (Order ID)',
+    keys: ['tracking_id', 'trackingid', 'order_id', 'orderid'],
+  },
+  { label: 'Truck Number', keys: ['truck_number', 'trucknumber', 'truck_no', 'truck'] },
+  { label: 'Ship Date', keys: ['ship_date', 'shipdate', 'shipping_date'] },
+  {
+    label: 'Expected Departure Time',
+    keys: ['expected_departure_time', 'expecteddeparturetime', 'departure_time'],
+  },
+  {
+    label: 'Origin (Origin Warehouse)',
+    keys: ['origin', 'origin_warehouse', 'originwarehouse'],
+  },
+];
+
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [kv, setKv] = useState<KvPairs | null>(null);
@@ -40,6 +61,72 @@ export default function UploadPage() {
   const [validation, setValidation] = useState<BarcodeValidation | null>(null);
 
   const API_KEY = process.env.NEXT_PUBLIC_API_KEY || 'my-secret-api-key';
+
+  const normalizedKv = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!kv) {
+      return map;
+    }
+    Object.entries(kv).forEach(([key, value]) => {
+      map.set(normalizeKey(key), value ?? '');
+    });
+    return map;
+  }, [kv]);
+
+  const getBufferedValue = (keys: string[]) => {
+    for (const candidate of keys) {
+      const normalized = normalizeKey(candidate);
+      const value = normalizedKv.get(normalized);
+      if (value && value.trim()) {
+        return value;
+      }
+    }
+    return '';
+  };
+
+  const getMatchState = (isItemCodeRow: boolean) => {
+    if (!isItemCodeRow) {
+      return {
+        symbol: '–',
+        label: 'Not compared',
+        className: 'text-[var(--color-textSecondary)]',
+      };
+    }
+    if (!validation) {
+      if (!barcodes.length) {
+        return {
+          symbol: '–',
+          label: 'No barcode detected',
+          className: 'text-[var(--color-textSecondary)]',
+        };
+      }
+      return {
+        symbol: '–',
+        label: 'Pending',
+        className: 'text-[var(--color-textSecondary)]',
+      };
+    }
+    switch (validation.status) {
+      case 'match':
+        return { symbol: '✓', label: 'Match', className: 'text-green-600' };
+      case 'mismatch':
+        return { symbol: '✗', label: 'Mismatch', className: 'text-red-600' };
+      case 'no_barcode':
+        return {
+          symbol: '–',
+          label: 'No barcode detected',
+          className: 'text-[var(--color-textSecondary)]',
+        };
+      case 'missing_item_code':
+        return { symbol: '✗', label: 'Missing item code', className: 'text-red-600' };
+      default:
+        return {
+          symbol: '–',
+          label: 'Not compared',
+          className: 'text-[var(--color-textSecondary)]',
+        };
+    }
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -249,55 +336,110 @@ export default function UploadPage() {
       {status && <p className="text-sm text-[var(--color-textSecondary)]">{status}</p>}
       {kv && (
         <Card
-          header={<span className="font-medium">Extracted key/value pairs</span>}
-          className="mt-4"
+          header={<span className="font-medium">Extracted OCR &amp; Barcode Data</span>}
+          className="mt-4 space-y-3"
         >
-          <ul className="space-y-1 text-sm">
-            {Object.entries(kv).map(([k, v]) => (
-              <li key={k} className="flex justify-between"><span className="font-medium">{k}</span><span>{v}</span></li>
-            ))}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="border-b border-[var(--color-borderColor)] text-left">
+                  <th className="px-3 py-2 font-medium">Field</th>
+                  <th className="px-3 py-2 font-medium">OCR Value</th>
+                  <th className="px-3 py-2 font-medium">Barcode Value(s)</th>
+                  <th className="px-3 py-2 text-right font-medium">Match</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(kv).map(([key, value]) => {
+                  const normalizedKey = normalizeKey(key);
+                  const isItemCodeRow = normalizedKey === 'itemcode';
+                  const hasBarcode = isItemCodeRow && barcodes.length > 0;
+                  const matchState = getMatchState(isItemCodeRow);
+
+                  return (
+                    <tr
+                      key={key}
+                      className="border-b border-[var(--color-borderColor)] last:border-0"
+                    >
+                      <td className="px-3 py-2 font-medium">{key}</td>
+                      <td className="px-3 py-2">{value}</td>
+                      <td
+                        className={`px-3 py-2 ${hasBarcode ? '' : 'text-[var(--color-textSecondary)]'}`}
+                      >
+                        {hasBarcode ? barcodes.join(', ') : '—'}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`flex items-center justify-end gap-2 text-sm ${matchState.className}`}
+                        >
+                          <span aria-hidden>{matchState.symbol}</span>
+                          <span className="text-xs uppercase tracking-wide">{matchState.label}</span>
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {validation && (
+            <p
+              className={`text-xs ${
+                validation.status === 'mismatch'
+                  ? 'text-red-600'
+                  : validation.status === 'match'
+                    ? 'text-green-600'
+                    : 'text-[var(--color-textSecondary)]'
+              }`}
+            >
+              {validation.message}
+            </p>
+          )}
+          {barcodeWarnings.length > 0 && (
+            <div className="text-xs">
+              <p className="font-medium">Warnings</p>
+              <ul className="list-disc list-inside text-[var(--color-textSecondary)]">
+                {barcodeWarnings.map((warning, idx) => (
+                  <li key={`${warning}-${idx}`}>{warning}</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </Card>
       )}
-      {(barcodes.length > 0 || barcodeWarnings.length > 0 || validation) && (
+      {kv && (
         <Card
-          header={<span className="font-medium">Barcode cross-check</span>}
+          header={<span className="font-medium">Live Buffer</span>}
           className="mt-4"
         >
-          <div className="space-y-2 text-sm">
-            {barcodes.length > 0 && (
-              <div>
-                <span className="font-medium">Detected values:</span>
-                <ul className="list-disc list-inside">
-                  {barcodes.map((code) => (
-                    <li key={code}>{code}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {validation && (
-              <p
-                className={
-                  validation.status === 'mismatch'
-                    ? 'text-red-600'
-                    : validation.status === 'match'
-                      ? 'text-green-600'
-                      : 'text-[var(--color-textSecondary)]'
-                }
-              >
-                {validation.message}
-              </p>
-            )}
-            {barcodeWarnings.length > 0 && (
-              <div>
-                <span className="font-medium">Warnings</span>
-                <ul className="list-disc list-inside text-[var(--color-textSecondary)]">
-                  {barcodeWarnings.map((warning, idx) => (
-                    <li key={`${warning}-${idx}`}>{warning}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="border-b border-[var(--color-borderColor)] text-left">
+                  <th className="px-3 py-2 font-medium">Field</th>
+                  <th className="px-3 py-2 font-medium">Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {LIVE_BUFFER_FIELDS.map(({ label, keys }) => {
+                  const value = getBufferedValue(keys);
+                  const hasValue = Boolean(value && value.trim());
+                  return (
+                    <tr
+                      key={label}
+                      className="border-b border-[var(--color-borderColor)] last:border-0"
+                    >
+                      <td className="px-3 py-2 font-medium">{label}</td>
+                      <td
+                        className={`px-3 py-2 ${hasValue ? '' : 'text-[var(--color-textSecondary)]'}`}
+                      >
+                        {hasValue ? value : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </Card>
       )}
