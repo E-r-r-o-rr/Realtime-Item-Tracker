@@ -59,7 +59,6 @@ const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
 };
 
 const normalizeKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-const normVal = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
 
 const BARCODE_FIELD_TITLES = [
   "Product Name",
@@ -69,6 +68,7 @@ const BARCODE_FIELD_TITLES = [
   "Destination Warehouse ID",
   "Estimated Departure Time",
   "Estimated Arrival Time",
+  "Loading Dock ID",
   "Shipping Dock ID",
   "Loading Bay",
   "Priority Class",
@@ -95,6 +95,101 @@ const ID_LIKE_SET = new Set(
   ),
 );
 
+const COMPACT_BARCODE_KEYS = new Set(
+  [
+    "order_id",
+    "orderid",
+    "tracking_id",
+    "trackingid",
+    "truck_id",
+    "truckid",
+    "truck_number",
+    "trucknumber",
+    "destinationwarehouseid",
+    "currentwarehouseid",
+    "shippingdockid",
+    "loadingdockid",
+    "loadingbay",
+    "stowposition",
+    "orderreference",
+  ].map(normalizeKey),
+);
+
+type ParsedTime = { hour24: number; minute: number; second: number; hadSeconds: boolean };
+
+const parseTime = (value: string): ParsedTime | null => {
+  const match = value
+    .trim()
+    .toLowerCase()
+    .match(/^(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*([ap]m)?$/);
+  if (!match) return null;
+  let hour = parseInt(match[1] ?? "", 10);
+  const minute = parseInt(match[2] ?? "0", 10);
+  const second = parseInt(match[3] ?? "0", 10);
+  if (Number.isNaN(hour) || Number.isNaN(minute) || Number.isNaN(second)) return null;
+  const meridiem = match[4];
+  if (meridiem) {
+    const isPm = meridiem === "pm";
+    if (isPm && hour < 12) hour += 12;
+    if (!isPm && hour === 12) hour = 0;
+  }
+  hour = hour % 24;
+  return { hour24: hour, minute, second, hadSeconds: Boolean(match[3]) };
+};
+
+const formatTimeForDisplay = (parts: ParsedTime): string => {
+  let hour = parts.hour24 % 12;
+  if (hour === 0) hour = 12;
+  const meridiem = parts.hour24 >= 12 ? "PM" : "AM";
+  const minute = parts.minute.toString().padStart(2, "0");
+  const includeSeconds = parts.hadSeconds || parts.second !== 0;
+  const second = parts.second.toString().padStart(2, "0");
+  return `${hour}:${minute}${includeSeconds ? `:${second}` : ""} ${meridiem}`;
+};
+
+const normalizeTimeForComparison = (parts: ParsedTime): string => {
+  const hour = parts.hour24.toString().padStart(2, "0");
+  const minute = parts.minute.toString().padStart(2, "0");
+  const second = parts.second.toString().padStart(2, "0");
+  return `${hour}:${minute}:${second}`;
+};
+
+type ParsedDate = { year: number; month: number; day: number };
+
+const parseDate = (value: string): ParsedDate | null => {
+  const trimmed = value.trim();
+  const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (iso) {
+    const year = parseInt(iso[1], 10);
+    const month = parseInt(iso[2], 10);
+    const day = parseInt(iso[3], 10);
+    if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) return null;
+    return { year, month, day };
+  }
+  const slash = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (slash) {
+    let year = parseInt(slash[3], 10);
+    const month = parseInt(slash[1], 10);
+    const day = parseInt(slash[2], 10);
+    if (slash[3].length === 2) year += year >= 70 ? 1900 : 2000;
+    if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) return null;
+    return { year, month, day };
+  }
+  return null;
+};
+
+const formatDateForDisplay = (parts: ParsedDate): string => {
+  const month = parts.month.toString().padStart(2, "0");
+  const day = parts.day.toString().padStart(2, "0");
+  return `${month}/${day}/${parts.year}`;
+};
+
+const normalizeDateForComparison = (parts: ParsedDate): string => {
+  const month = parts.month.toString().padStart(2, "0");
+  const day = parts.day.toString().padStart(2, "0");
+  return `${parts.year.toString().padStart(4, "0")}-${month}-${day}`;
+};
+
 const OCR_TO_BARCODE_KEY: Record<string, string> = (() => {
   const m: Record<string, string> = {};
   const set = (aliases: string[], barcodeTitle: string) => {
@@ -113,7 +208,7 @@ const OCR_TO_BARCODE_KEY: Record<string, string> = (() => {
     "Estimated Departure Time",
   );
   set(["Estimated Arrival Time", "arrival_time"], "Estimated Arrival Time");
-  set(["Shipping Dock ID", "dock", "dock_id"], "Shipping Dock ID");
+  set(["Shipping Dock ID", "Loading Dock ID", "dock", "dock_id"], "Shipping Dock ID");
   set(["Loading Bay"], "Loading Bay");
   set(["Priority Class"], "Priority Class");
   set(["Loading Time"], "Loading Time");
@@ -218,6 +313,59 @@ function pickBestBarcodeId(barcodeKv: Map<string, string>): string | null {
   return null;
 }
 
+interface BarcodeFieldValue {
+  raw: string;
+  display: string;
+  comparable: string;
+}
+
+const formatBarcodeValue = (normalizedKey: string, value: string): BarcodeFieldValue => {
+  const raw = value;
+  const trimmed = value.trim();
+  const lowerKey = normalizedKey.toLowerCase();
+
+  if (!trimmed) {
+    return { raw, display: "", comparable: "" };
+  }
+
+  if (COMPACT_BARCODE_KEYS.has(lowerKey) || ID_LIKE_SET.has(lowerKey)) {
+    let displayValue = trimmed.toUpperCase();
+    displayValue = displayValue.replace(/\s*-\s*/g, "-");
+    displayValue = displayValue.replace(/\s+/g, "");
+    if (lowerKey.includes("truck")) {
+      const hasDigit = /\d/.test(displayValue);
+      if (hasDigit) displayValue = displayValue.replace(/^[A-Z]+/, "");
+    }
+    const comparable = displayValue.replace(/[^A-Z0-9]/g, "").toLowerCase();
+    return { raw, display: displayValue, comparable };
+  }
+
+  if (lowerKey.includes("time")) {
+    const parsed = parseTime(trimmed);
+    if (parsed) {
+      return {
+        raw,
+        display: formatTimeForDisplay(parsed),
+        comparable: normalizeTimeForComparison(parsed),
+      };
+    }
+  }
+
+  if (lowerKey.includes("date")) {
+    const parsed = parseDate(trimmed);
+    if (parsed) {
+      return {
+        raw,
+        display: formatDateForDisplay(parsed),
+        comparable: normalizeDateForComparison(parsed),
+      };
+    }
+  }
+
+  const normalized = trimmed.replace(/\s+/g, " ");
+  return { raw, display: normalized, comparable: normalized.toLowerCase() };
+};
+
 const LABEL_TO_RECORD_KEY: Record<string, keyof LiveRecord> = {
   Destination: "destination",
   "Item Name": "itemName",
@@ -286,22 +434,27 @@ export default function ScannerDashboard() {
 
   const barcodeKv = useMemo(() => parseBarcodeText(barcodes), [barcodes]);
 
-  const getBarcodeValueForOcrKey = (normalizedOcrKey: string): string | null => {
+  const getBarcodeValueForOcrKey = (normalizedOcrKey: string): BarcodeFieldValue | null => {
     const mapped = OCR_TO_BARCODE_KEY[normalizedOcrKey];
     if (mapped) {
       const v = barcodeKv.get(mapped);
-      if (v && v.trim()) return v.trim();
+      if (v && v.trim()) return formatBarcodeValue(normalizedOcrKey, v);
     }
     if (ID_LIKE_SET.has(normalizedOcrKey)) {
       const id = pickBestBarcodeId(barcodeKv);
-      if (id) return id;
+      if (id) return formatBarcodeValue(normalizedOcrKey, id);
     }
     return null;
   };
 
-  const getRowMatch = (ocrValue: string, barcodeValue: string | null) => {
+  const getRowMatch = (
+    normalizedKey: string,
+    ocrValue: string,
+    barcodeValue: BarcodeFieldValue | null,
+  ) => {
     if (!barcodeValue) return { symbol: "–", label: "Not compared", className: "text-slate-500" };
-    if (normVal(ocrValue) === normVal(barcodeValue)) {
+    const ocrComparable = formatBarcodeValue(normalizedKey, ocrValue).comparable;
+    if (ocrComparable && ocrComparable === barcodeValue.comparable) {
       return { symbol: "✓", label: "Match", className: "text-green-600" };
     }
     return { symbol: "✗", label: "Mismatch", className: "text-red-600" };
@@ -573,14 +726,14 @@ export default function ScannerDashboard() {
                   const ocrKey = normalizeKey(rawKey);
                   const ocrValue = String(rawVal ?? "");
                   const barcodeValue = getBarcodeValueForOcrKey(ocrKey);
-                  const match = getRowMatch(ocrValue, barcodeValue);
+                  const match = getRowMatch(ocrKey, ocrValue, barcodeValue);
 
                   return (
                     <tr key={rawKey} className="border-b border-white/10 last:border-0">
                       <td className="px-4 py-3 font-medium text-slate-100">{rawKey}</td>
                       <td className="px-4 py-3 text-slate-200">{ocrValue}</td>
                       <td className={`px-4 py-3 ${barcodeValue ? "text-slate-200" : "text-slate-500"}`}>
-                        {barcodeValue ?? "—"}
+                        {barcodeValue?.display ?? "—"}
                       </td>
                       <td className="px-4 py-3 text-right">
                         <span className={`inline-flex items-center justify-end gap-2 text-sm ${match.className}`}>
