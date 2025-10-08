@@ -278,39 +278,59 @@ const DEMO_RECORDS: KvPairs[] = [
   },
 ];
 
-function parseBarcodeText(barcodes: string[]): Map<string, string> {
-  const map = new Map<string, string>();
-  if (!barcodes?.length) return map;
+const normalizeForSearch = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  const text = barcodes.join(" ").replace(/\s+/g, " ").trim();
-  const lower = text.toLowerCase();
+const buildBarcodeSearchText = (barcodes: string[]): string | null => {
+  if (!Array.isArray(barcodes) || barcodes.length === 0) return null;
+  const combined = barcodes.join(" ");
+  const normalized = normalizeForSearch(combined);
+  return normalized.length > 0 ? normalized : null;
+};
 
-  type Hit = { name: string; start: number };
-  const hits: Hit[] = [];
-  for (const title of BARCODE_FIELD_TITLES) {
-    const idx = lower.indexOf(title.toLowerCase());
-    if (idx >= 0) hits.push({ name: title, start: idx });
+const hasKeyValueInBarcode = (barcodeText: string, key: string, value: string): boolean => {
+  const normalizedValue = normalizeForSearch(value);
+  if (!normalizedValue) return false;
+
+  const normalizedKeyWords = normalizeForSearch(key)
+    .split(" ")
+    .filter(Boolean);
+  const meaningfulWords = normalizedKeyWords.filter((word) => word.length > 2);
+  const windowRadius = 60;
+
+  let index = barcodeText.indexOf(normalizedValue);
+  while (index !== -1) {
+    const start = Math.max(0, index - windowRadius);
+    const end = Math.min(barcodeText.length, index + normalizedValue.length + windowRadius);
+    const context = barcodeText.slice(start, end);
+
+    if (meaningfulWords.length === 0 || meaningfulWords.some((word) => context.includes(word))) {
+      return true;
+    }
+
+    index = barcodeText.indexOf(normalizedValue, index + normalizedValue.length);
   }
-  hits.sort((a, b) => a.start - b.start);
 
-  for (let i = 0; i < hits.length; i++) {
-    const cur = hits[i];
-    const next = hits[i + 1];
-    const start = cur.start + cur.name.length;
-    const end = next ? next.start : text.length;
-    let value = text.slice(start, end).trim();
-    value = value.replace(/^[:\-–—\s]+/, "").trim();
-    if (value) map.set(normalizeKey(cur.name), value);
-  }
-  return map;
-}
+  return false;
+};
 
-function pickBestBarcodeId(barcodeKv: Map<string, string>): string | null {
-  for (const k of PREFERRED_ID_KEYS) {
-    const v = barcodeKv.get(k);
-    if (v && v.trim()) return v.trim();
-  }
-  return null;
+const MATCH_STATES = {
+  match: { symbol: "✓", label: "Match", className: "text-green-600" },
+  mismatch: { symbol: "✗", label: "Mismatch", className: "text-red-600" },
+  noBarcode: { symbol: "–", label: "No barcode", className: "text-slate-500" },
+  noValue: { symbol: "–", label: "No OCR value", className: "text-slate-500" },
+} as const;
+
+type MatchState = (typeof MATCH_STATES)[keyof typeof MATCH_STATES];
+
+interface RowComparison {
+  barcodeDisplay: string;
+  barcodeHasValue: boolean;
+  match: MatchState;
 }
 
 interface BarcodeFieldValue {
@@ -432,7 +452,7 @@ export default function ScannerDashboard() {
     return m;
   }, [kv]);
 
-  const barcodeKv = useMemo(() => parseBarcodeText(barcodes), [barcodes]);
+  const barcodeSearchText = useMemo(() => buildBarcodeSearchText(barcodes), [barcodes]);
 
   const getBarcodeValueForOcrKey = (normalizedOcrKey: string): BarcodeFieldValue | null => {
     const mapped = OCR_TO_BARCODE_KEY[normalizedOcrKey];
@@ -723,7 +743,6 @@ export default function ScannerDashboard() {
               </thead>
               <tbody>
                 {Object.entries(kv).map(([rawKey, rawVal]) => {
-                  const ocrKey = normalizeKey(rawKey);
                   const ocrValue = String(rawVal ?? "");
                   const barcodeValue = getBarcodeValueForOcrKey(ocrKey);
                   const match = getRowMatch(ocrKey, ocrValue, barcodeValue);
