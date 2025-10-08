@@ -5,7 +5,7 @@ import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 
 export const metadata: Metadata = {
-  title: "OrderScanner Pro",
+  title: "Realtime Item Tracker",
   description: "Scan orders, review history, and manage storage in a unified workspace.",
 };
 

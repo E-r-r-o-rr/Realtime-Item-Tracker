@@ -40,7 +40,7 @@ DEFAULT_INSTRUCTION = (
     "You are given a document image. Extract all visible header key/value pairs "
     "and return a single flat JSON object. Do not include table line items."
 )
-DEFAULT_MAX_PIXELS = 384 * 384
+DEFAULT_MAX_PIXELS = 500 * 500
 DEFAULT_MAX_NEW_TOKENS = 600
 
 _RESAMPLING = getattr(Image, "Resampling", Image)

@@ -7,7 +7,7 @@ export default function HomePage() {
         <div className="mx-auto max-w-3xl space-y-6">
           <span className="inline-flex items-center justify-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-indigo-200">
             <span className="h-2 w-2 rounded-full bg-gradient-to-r from-indigo-400 to-fuchsia-500" />
-            Futuristic OCR Control Center
+            OCR Control Center
           </span>
           <h1 className="text-4xl font-bold tracking-tight text-slate-100 sm:text-5xl md:text-6xl">
             Extract supply chain intelligence with <span className="text-gradient">Realtime precision</span>

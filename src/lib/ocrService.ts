@@ -4,9 +4,7 @@ import path from 'path';
 import os from 'os';
 import { randomUUID } from 'crypto';
 
-const DEFAULT_PROVIDER = process.env.OCR_PROVIDER || 'hyperbolic';
-const DEFAULT_MODEL = process.env.OCR_MODEL || 'Qwen/Qwen2.5-VL-7B-Instruct';
-const DEFAULT_LANG = process.env.OCR_LANG || 'en';
+const DEFAULT_MODEL = process.env.OCR_MODEL || 'Qwen/Qwen2-VL-2B-Instruct';
 
 // Prefer explicit venv python; fall back to system python
 const PY_BIN =
@@ -41,18 +39,18 @@ export async function extractKvPairs(filePath: string): Promise<Record<string, s
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-out-'));
 
   const args = [
-    OCR_SCRIPT,
-    '--image', filePath,
-    '--out_dir', outDir,
-    '--model', DEFAULT_MODEL,
-    '--lang', DEFAULT_LANG,
-    '--provider', DEFAULT_PROVIDER,
-  ];
+   OCR_SCRIPT,
+   '--image', filePath,
+   '--out_dir', outDir,
+   '--model', DEFAULT_MODEL,
+   // Optional tuning (uncomment if you want explicit control)
+   // '--device', process.env.OCR_DEVICE || (process.env.CUDA_VISIBLE_DEVICES ? 'cuda' : 'cpu'),
+   // '--dtype', process.env.OCR_DTYPE || 'auto',
+   // '--max_pixels', String(process.env.OCR_MAX_PIXELS || 384*384),
+   // '--max_new_tokens', String(process.env.OCR_MAX_NEW_TOKENS || 600),
+ ];
 
-  const env = {
-    ...process.env,
-    HF_TOKEN: process.env.HF_TOKEN || '', // REQUIRED for both hyperbolic and hf-inference paths
-  };
+  const env = { ...process.env };
 
   let timer: NodeJS.Timeout | null = null;
 
