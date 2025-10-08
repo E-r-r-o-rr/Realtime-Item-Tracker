@@ -59,71 +59,6 @@ const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
 };
 
 const normalizeKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-const normVal = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
-
-const BARCODE_FIELD_TITLES = [
-  "Product Name",
-  "Truck ID",
-  "Date",
-  "Current Warehouse ID",
-  "Destination Warehouse ID",
-  "Estimated Departure Time",
-  "Estimated Arrival Time",
-  "Shipping Dock ID",
-  "Loading Bay",
-  "Priority Class",
-  "Order ID",
-  "Loading Time",
-  "Loading Priority",
-  "Stow Position",
-  "Order Reference",
-  "Shipping Carrier",
-];
-
-const PREFERRED_ID_KEYS = [
-  "order_id",
-  "orderid",
-  "tracking_id",
-  "trackingid",
-  "order_reference",
-  "orderreference",
-];
-
-const ID_LIKE_SET = new Set(
-  ["order_id", "orderid", "tracking_id", "trackingid", "item_code", "itemcode", "order_reference", "orderreference"].map(
-    normalizeKey,
-  ),
-);
-
-const OCR_TO_BARCODE_KEY: Record<string, string> = (() => {
-  const m: Record<string, string> = {};
-  const set = (aliases: string[], barcodeTitle: string) => {
-    const nk = normalizeKey(barcodeTitle);
-    aliases.forEach((a) => (m[normalizeKey(a)] = nk));
-  };
-
-  set(["Product Name", "Item Name", "product_name", "product", "item"], "Product Name");
-  set(["Order ID", "Tracking ID", "tracking_id", "order_id"], "Order ID");
-  set(["Truck Number", "Truck ID", "truck_number", "truck_no", "truck"], "Truck ID");
-  set(["Ship Date", "Date", "shipping_date"], "Date");
-  set(["Origin", "Origin (Origin Warehouse)", "Current Warehouse ID", "origin_warehouse"], "Current Warehouse ID");
-  set(["Destination", "Destination Warehouse ID", "destinationwarehouseid"], "Destination Warehouse ID");
-  set(
-    ["Expected Departure Time", "Estimated Departure Time", "departure_time", "expected_departure_time"],
-    "Estimated Departure Time",
-  );
-  set(["Estimated Arrival Time", "arrival_time"], "Estimated Arrival Time");
-  set(["Shipping Dock ID", "dock", "dock_id"], "Shipping Dock ID");
-  set(["Loading Bay"], "Loading Bay");
-  set(["Priority Class"], "Priority Class");
-  set(["Loading Time"], "Loading Time");
-  set(["Loading Priority"], "Loading Priority");
-  set(["Stow Position"], "Stow Position");
-  set(["Order Reference", "order_ref", "ref"], "Order Reference");
-  set(["Shipping Carrier", "carrier"], "Shipping Carrier");
-
-  return m;
-})();
 
 const LIVE_BUFFER_FIELDS: Array<{ label: string; keys: string[] }> = [
   { label: "Destination", keys: ["destinationwarehouseid", "destination_warehouse_id"] },
@@ -183,39 +118,91 @@ const DEMO_RECORDS: KvPairs[] = [
   },
 ];
 
-function parseBarcodeText(barcodes: string[]): Map<string, string> {
-  const map = new Map<string, string>();
-  if (!barcodes?.length) return map;
+const normalizeForSearch = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  const text = barcodes.join(" ").replace(/\s+/g, " ").trim();
-  const lower = text.toLowerCase();
+const buildBarcodeSearchText = (barcodes: string[]): string | null => {
+  if (!Array.isArray(barcodes) || barcodes.length === 0) return null;
+  const combined = barcodes.join(" ");
+  const normalized = normalizeForSearch(combined);
+  return normalized.length > 0 ? normalized : null;
+};
 
-  type Hit = { name: string; start: number };
-  const hits: Hit[] = [];
-  for (const title of BARCODE_FIELD_TITLES) {
-    const idx = lower.indexOf(title.toLowerCase());
-    if (idx >= 0) hits.push({ name: title, start: idx });
+const hasKeyValueInBarcode = (barcodeText: string, key: string, value: string): boolean => {
+  const normalizedValue = normalizeForSearch(value);
+  if (!normalizedValue) return false;
+
+  const normalizedKeyWords = normalizeForSearch(key)
+    .split(" ")
+    .filter(Boolean);
+  const meaningfulWords = normalizedKeyWords.filter((word) => word.length > 2);
+  const windowRadius = 60;
+
+  let index = barcodeText.indexOf(normalizedValue);
+  while (index !== -1) {
+    const start = Math.max(0, index - windowRadius);
+    const end = Math.min(barcodeText.length, index + normalizedValue.length + windowRadius);
+    const context = barcodeText.slice(start, end);
+
+    if (meaningfulWords.length === 0 || meaningfulWords.some((word) => context.includes(word))) {
+      return true;
+    }
+
+    index = barcodeText.indexOf(normalizedValue, index + normalizedValue.length);
   }
-  hits.sort((a, b) => a.start - b.start);
 
-  for (let i = 0; i < hits.length; i++) {
-    const cur = hits[i];
-    const next = hits[i + 1];
-    const start = cur.start + cur.name.length;
-    const end = next ? next.start : text.length;
-    let value = text.slice(start, end).trim();
-    value = value.replace(/^[:\-–—\s]+/, "").trim();
-    if (value) map.set(normalizeKey(cur.name), value);
+  return false;
+};
+
+const createAliasMap = () => {
+  const map = new Map<string, string[]>();
+
+  const addToMap = (normalizedKey: string, aliases: string[]) => {
+    const existing = map.get(normalizedKey) ?? [];
+    const deduped = new Set([...existing, ...aliases.filter(Boolean)]);
+    map.set(normalizedKey, Array.from(deduped));
+  };
+
+  for (const field of LIVE_BUFFER_FIELDS) {
+    const aliases = new Set<string>();
+    aliases.add(field.label);
+
+    const labelSansParens = field.label.replace(/\s*\(.*?\)\s*/g, " ").trim();
+    if (labelSansParens) aliases.add(labelSansParens);
+
+    for (const key of field.keys) {
+      aliases.add(key);
+      const spaced = key.replace(/[_-]+/g, " ");
+      if (spaced && spaced !== key) aliases.add(spaced);
+    }
+
+    const aliasList = Array.from(aliases);
+    const normalizedKeys = aliasList.map((alias) => normalizeKey(alias));
+    for (const normalized of normalizedKeys) {
+      addToMap(normalized, aliasList);
+    }
   }
+
   return map;
-}
+};
 
-function pickBestBarcodeId(barcodeKv: Map<string, string>): string | null {
-  for (const k of PREFERRED_ID_KEYS) {
-    const v = barcodeKv.get(k);
-    if (v && v.trim()) return v.trim();
-  }
-  return null;
+const MATCH_STATES = {
+  match: { symbol: "✓", label: "Match", className: "text-green-600" },
+  mismatch: { symbol: "✗", label: "Mismatch", className: "text-red-600" },
+  noBarcode: { symbol: "–", label: "No barcode", className: "text-slate-500" },
+  noValue: { symbol: "–", label: "No OCR value", className: "text-slate-500" },
+} as const;
+
+type MatchState = (typeof MATCH_STATES)[keyof typeof MATCH_STATES];
+
+interface RowComparison {
+  barcodeDisplay: string;
+  barcodeHasValue: boolean;
+  match: MatchState;
 }
 
 const LABEL_TO_RECORD_KEY: Record<string, keyof LiveRecord> = {
@@ -284,28 +271,53 @@ export default function ScannerDashboard() {
     return m;
   }, [kv]);
 
-  const barcodeKv = useMemo(() => parseBarcodeText(barcodes), [barcodes]);
+  const barcodeSearchText = useMemo(() => buildBarcodeSearchText(barcodes), [barcodes]);
+  const barcodeKeyAliases = useMemo(() => createAliasMap(), []);
 
-  const getBarcodeValueForOcrKey = (normalizedOcrKey: string): string | null => {
-    const mapped = OCR_TO_BARCODE_KEY[normalizedOcrKey];
-    if (mapped) {
-      const v = barcodeKv.get(mapped);
-      if (v && v.trim()) return v.trim();
-    }
-    if (ID_LIKE_SET.has(normalizedOcrKey)) {
-      const id = pickBestBarcodeId(barcodeKv);
-      if (id) return id;
-    }
-    return null;
-  };
+  const getRowComparison = useCallback(
+    (rawKey: string, value: string): RowComparison => {
+      const normalizedKey = normalizeKey(rawKey);
+      const trimmedValue = value.trim();
 
-  const getRowMatch = (ocrValue: string, barcodeValue: string | null) => {
-    if (!barcodeValue) return { symbol: "–", label: "Not compared", className: "text-slate-500" };
-    if (normVal(ocrValue) === normVal(barcodeValue)) {
-      return { symbol: "✓", label: "Match", className: "text-green-600" };
-    }
-    return { symbol: "✗", label: "Mismatch", className: "text-red-600" };
-  };
+      if (!barcodeSearchText) {
+        return {
+          barcodeDisplay: "—",
+          barcodeHasValue: false,
+          match: MATCH_STATES.noBarcode,
+        };
+      }
+
+      if (!trimmedValue) {
+        return {
+          barcodeDisplay: "—",
+          barcodeHasValue: false,
+          match: MATCH_STATES.noValue,
+        };
+      }
+
+      const aliasCandidates = barcodeKeyAliases.get(normalizedKey) ?? [];
+      const potentialKeys = Array.from(
+        new Set([rawKey, normalizedKey, ...aliasCandidates].map((key) => key.trim()).filter(Boolean)),
+      );
+
+      const found = potentialKeys.some((key) => hasKeyValueInBarcode(barcodeSearchText, key, trimmedValue));
+
+      if (found) {
+        return {
+          barcodeDisplay: trimmedValue,
+          barcodeHasValue: true,
+          match: MATCH_STATES.match,
+        };
+      }
+
+      return {
+        barcodeDisplay: "Not found in barcode",
+        barcodeHasValue: false,
+        match: MATCH_STATES.mismatch,
+      };
+    },
+    [barcodeKeyAliases, barcodeSearchText],
+  );
 
   const getBufferValue = (keys: string[]) => {
     for (const k of keys) {
@@ -570,17 +582,18 @@ export default function ScannerDashboard() {
               </thead>
               <tbody>
                 {Object.entries(kv).map(([rawKey, rawVal]) => {
-                  const ocrKey = normalizeKey(rawKey);
                   const ocrValue = String(rawVal ?? "");
-                  const barcodeValue = getBarcodeValueForOcrKey(ocrKey);
-                  const match = getRowMatch(ocrValue, barcodeValue);
+                  const comparison = getRowComparison(rawKey, ocrValue);
+                  const { match } = comparison;
 
                   return (
                     <tr key={rawKey} className="border-b border-white/10 last:border-0">
                       <td className="px-4 py-3 font-medium text-slate-100">{rawKey}</td>
                       <td className="px-4 py-3 text-slate-200">{ocrValue}</td>
-                      <td className={`px-4 py-3 ${barcodeValue ? "text-slate-200" : "text-slate-500"}`}>
-                        {barcodeValue ?? "—"}
+                      <td
+                        className={`px-4 py-3 ${comparison.barcodeHasValue ? "text-slate-200" : "text-slate-500"}`}
+                      >
+                        {comparison.barcodeDisplay}
                       </td>
                       <td className="px-4 py-3 text-right">
                         <span className={`inline-flex items-center justify-end gap-2 text-sm ${match.className}`}>
