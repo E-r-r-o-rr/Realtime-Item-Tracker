@@ -1,28 +1,24 @@
-import Link from 'next/link';
-import { Button } from '@/components/ui/button';
-import { ThemeToggle } from '@/components/theme-toggle';
+import ScannerDashboard from "@/components/scanner/dashboard";
 
-/**
- * Home page of the application. It introduces the purpose of the app and
- * provides navigation to the upload/scan page. A theme toggle is available
- * in the header for convenience.
- */
 export default function HomePage() {
   return (
-    <main className="flex flex-col items-center justify-center py-20 px-4 space-y-8">
-      <div className="flex w-full justify-between items-center max-w-3xl">
-        <h1 className="text-3xl font-bold">Order & Map Retrieval</h1>
-        <ThemeToggle />
-      </div>
-      <p className="text-lg text-[var(--color-textSecondary)] max-w-3xl text-center">
-        Upload a shipping document or order summary, extract the key/value pairs with our
-        OCR-powered pipeline, and retrieve a floor map to help you locate the order in
-        the warehouse. This app is built with Next.js 15, Tailwind CSS v4 and a
-        SQLite-backed microservice architecture.
-      </p>
-      <Link href="/upload" className="mt-4">
-        <Button className='hover:cursor-pointer'>Scan a Document</Button>
-      </Link>
-    </main>
+    <div className="relative z-10 mx-auto w-full max-w-6xl px-4 py-14 sm:px-6 lg:px-8">
+      <section className="mb-12 text-center">
+        <div className="mx-auto max-w-3xl space-y-6">
+          <span className="inline-flex items-center justify-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-indigo-200">
+            <span className="h-2 w-2 rounded-full bg-gradient-to-r from-indigo-400 to-fuchsia-500" />
+            Futuristic OCR Control Center
+          </span>
+          <h1 className="text-4xl font-bold tracking-tight text-slate-100 sm:text-5xl md:text-6xl">
+            Extract supply chain intelligence with <span className="text-gradient">Realtime precision</span>
+          </h1>
+          <p className="text-lg text-slate-300/90">
+            Drag in manifests, capture live paperwork, and instantly transform messy documents into structured data. Our
+            adaptive OCR, barcode reconciliation, and spatial routing views keep every order flowing to the right dock.
+          </p>
+        </div>
+      </section>
+      <ScannerDashboard />
+    </div>
   );
 }
