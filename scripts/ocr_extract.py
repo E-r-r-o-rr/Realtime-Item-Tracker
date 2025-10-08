@@ -398,12 +398,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--out_dir", default="./output")
     ap.add_argument("--model", default=DEFAULT_MODEL, help="Hugging Face model id")
     ap.add_argument("--device", choices=["cpu", "cuda"], help="Override inference device")
-    # Legacy compatibility flags that previously routed to remote services. We
-    # still accept them so the Node wrapper can continue passing the same
-    # arguments without the parser aborting, but they have no effect now that
-    # inference is local only.
-    ap.add_argument("--lang", default="en", help="(legacy) language hint; ignored")
-    ap.add_argument("--provider", default="local", help="(legacy) provider name; ignored")
     ap.add_argument(
         "--dtype",
         choices=["auto", "float16", "float32", "bfloat16"],
