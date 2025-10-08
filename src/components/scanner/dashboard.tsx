@@ -300,7 +300,7 @@ export default function ScannerDashboard() {
   };
 
   const getRowMatch = (ocrValue: string, barcodeValue: string | null) => {
-    if (!barcodeValue) return { symbol: "–", label: "Not compared", className: "text-gray-400" };
+    if (!barcodeValue) return { symbol: "–", label: "Not compared", className: "text-slate-500" };
     if (normVal(ocrValue) === normVal(barcodeValue)) {
       return { symbol: "✓", label: "Match", className: "text-green-600" };
     }
@@ -480,75 +480,92 @@ export default function ScannerDashboard() {
   };
 
   return (
-    <div className="space-y-8">
-      <section className="rounded-lg bg-white shadow-md">
-        <div className="border-b border-gray-200 px-6 py-5">
-          <h2 className="text-xl font-semibold text-gray-900">Scan Order Sheet</h2>
-          <p className="mt-1 text-sm text-gray-500">
-            Upload or capture an image of your order sheet to extract data. The camera demo loads sample data to explore the
-            workflow quickly.
-          </p>
+    <div className="space-y-12">
+      <section className="glassy-panel rounded-3xl px-6 py-8 sm:px-10 sm:py-12">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-3 text-center lg:text-left">
+            <h2 className="text-3xl font-semibold text-slate-100 md:text-4xl">
+              Scan documents with confidence
+            </h2>
+            <p className="text-sm text-slate-300/80 md:text-base">
+              Upload or capture manifests and watch realtime OCR decode destinations, validate barcodes, and route your
+              inventory without friction.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-3 text-xs font-medium text-slate-300/70">
+            <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2">
+              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              99% OCR confidence streak
+            </span>
+            <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2">
+              <span className="h-2 w-2 rounded-full bg-indigo-400" />
+              Barcode parity monitoring
+            </span>
+          </div>
         </div>
-        <div className="px-6 py-6">
-          <div className="flex flex-col gap-6 md:flex-row">
-            <div className="flex-1">
-              <div className="rounded-lg border-2 border-dashed border-gray-300 p-8 text-center transition hover:border-blue-500">
-                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-blue-50 text-blue-500">
-                  <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M4 8V7a3 3 0 013-3h10a3 3 0 013 3v1M12 12v9m0-9l3 3m-3-3l-3 3" />
-                  </svg>
-                </div>
-                <h3 className="mt-3 text-base font-semibold text-gray-900">Upload Order Sheet</h3>
-                <p className="mt-1 text-sm text-gray-500">PNG, JPG, PDF up to 10MB</p>
-                <div className="mt-6 space-y-4">
-                  <Input type="file" accept="image/*,application/pdf" onChange={handleFileChange} />
-                  <Button className="w-full hover:cursor-pointer" onClick={scanDocument} disabled={!file || loading}>
-                    {loading ? "Scanning…" : "Scan Document"}
-                  </Button>
-                </div>
-              </div>
+        <div className="mt-10 grid gap-8 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-stretch">
+          <div className="rounded-3xl border-2 border-dashed border-white/15 bg-white/5 px-8 py-10 text-center transition hover:border-indigo-400/60 hover:bg-indigo-500/5">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-500/20 text-indigo-300">
+              <svg className="h-8 w-8" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16.5v1.25A2.25 2.25 0 006.25 20h11.5A2.25 2.25 0 0020 17.75V16.5M4 7.5V6.25A2.25 2.25 0 016.25 4h11.5A2.25 2.25 0 0120 6.25V7.5M12 12v8m0-8l3 3m-3-3l-3 3" />
+              </svg>
             </div>
-            <div className="flex items-center justify-center">
-              <span className="text-sm font-semibold text-gray-400">OR</span>
+            <h3 className="mt-6 text-lg font-semibold text-slate-100">Upload order sheet</h3>
+            <p className="mt-2 text-sm text-slate-400">PNG, JPG, PDF up to 10MB</p>
+            <div className="mt-6 space-y-4 text-left">
+              <Input type="file" accept="image/*,application/pdf" onChange={handleFileChange} className="cursor-pointer" />
+              <Button className="w-full justify-center" onClick={scanDocument} disabled={!file || loading}>
+                {loading ? "Scanning…" : "Scan document"}
+              </Button>
             </div>
-            <div className="flex-1">
-              <div className="rounded-lg border-2 border-dashed border-gray-300 p-8 text-center transition hover:border-blue-500">
-                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-blue-50 text-blue-500">
-                  <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h4l2-2h4l2 2h4v12H4z" />
-                  </svg>
-                </div>
-                <h3 className="mt-3 text-base font-semibold text-gray-900">Capture Image</h3>
-                <p className="mt-1 text-sm text-gray-500">
-                  Use your device camera to scan. The demo button seeds the latest scan with curated sample data.
-                </p>
-                <div className="mt-6">
-                  <Button className="hover:cursor-pointer" type="button" onClick={handleDemoScan}>
-                    Open Camera (Demo)
-                  </Button>
-                </div>
+          </div>
+          <div className="flex items-center justify-center">
+            <div className="flex flex-col items-center gap-3 text-slate-400">
+              <span className="h-12 w-px bg-white/10 lg:h-full" />
+              <div className="flex items-center gap-3 text-xs uppercase tracking-[0.5em]">
+                <span className="hidden h-px w-10 bg-white/10 sm:block" />
+                <span>or</span>
+                <span className="hidden h-px w-10 bg-white/10 sm:block" />
               </div>
+              <span className="h-12 w-px bg-white/10 lg:h-full" />
+            </div>
+          </div>
+          <div className="rounded-3xl border-2 border-dashed border-white/15 bg-white/5 px-8 py-10 text-center transition hover:border-indigo-400/60 hover:bg-indigo-500/5">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-500/20 text-indigo-300">
+              <svg className="h-8 w-8" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h3.75L10 4h4l2.25 3H20v12H4z" />
+              </svg>
+            </div>
+            <h3 className="mt-6 text-lg font-semibold text-slate-100">Use camera demo</h3>
+            <p className="mt-2 text-sm text-slate-400">
+              Instantly seed the live buffer with curated manifests to preview the workflow without capturing a file.
+            </p>
+            <div className="mt-6">
+              <Button type="button" onClick={handleDemoScan} className="justify-center">
+                Launch camera (demo)
+              </Button>
             </div>
           </div>
         </div>
       </section>
 
       {status && (
-        <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
-          <span className="font-semibold">Status:</span> {status}
+        <div className="glassy-panel rounded-2xl border border-indigo-400/30 bg-indigo-500/10 px-5 py-4 text-sm text-indigo-100">
+          <span className="font-semibold uppercase tracking-[0.3em] text-indigo-200/90">Status</span>
+          <p className="mt-2 text-base text-slate-100/90">{status}</p>
         </div>
       )}
 
       {kv && (
-        <Card header={<span className="font-medium text-gray-900">Extracted OCR &amp; Barcode Data</span>} className="bg-white">
+        <Card header={<span className="text-lg font-semibold text-slate-100">Extracted OCR &amp; barcode data</span>}>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead className="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+              <thead className="bg-white/5 text-left text-xs font-medium uppercase tracking-wide text-slate-300/80">
                 <tr>
-                  <th className="px-3 py-2">Field</th>
-                  <th className="px-3 py-2">OCR Value</th>
-                  <th className="px-3 py-2">Barcode Value</th>
-                  <th className="px-3 py-2 text-right">Match</th>
+                  <th className="px-4 py-3">Field</th>
+                  <th className="px-4 py-3">OCR value</th>
+                  <th className="px-4 py-3">Barcode value</th>
+                  <th className="px-4 py-3 text-right">Match</th>
                 </tr>
               </thead>
               <tbody>
@@ -559,13 +576,13 @@ export default function ScannerDashboard() {
                   const match = getRowMatch(ocrValue, barcodeValue);
 
                   return (
-                    <tr key={rawKey} className="border-b border-gray-200 last:border-0">
-                      <td className="px-3 py-2 font-medium text-gray-900">{rawKey}</td>
-                      <td className="px-3 py-2 text-gray-700">{ocrValue}</td>
-                      <td className={`px-3 py-2 ${barcodeValue ? "text-gray-700" : "text-gray-400"}`}>
+                    <tr key={rawKey} className="border-b border-white/10 last:border-0">
+                      <td className="px-4 py-3 font-medium text-slate-100">{rawKey}</td>
+                      <td className="px-4 py-3 text-slate-200">{ocrValue}</td>
+                      <td className={`px-4 py-3 ${barcodeValue ? "text-slate-200" : "text-slate-500"}`}>
                         {barcodeValue ?? "—"}
                       </td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="px-4 py-3 text-right">
                         <span className={`inline-flex items-center justify-end gap-2 text-sm ${match.className}`}>
                           <span aria-hidden>{match.symbol}</span>
                           <span className="text-xs uppercase tracking-wide">{match.label}</span>
@@ -580,12 +597,12 @@ export default function ScannerDashboard() {
 
           {validation && (
             <p
-              className={`mt-3 text-xs ${
+              className={`mt-4 text-xs font-medium ${
                 validation.status === "mismatch"
-                  ? "text-red-600"
+                  ? "text-rose-400"
                   : validation.status === "match"
-                  ? "text-green-600"
-                  : "text-gray-500"
+                  ? "text-emerald-400"
+                  : "text-slate-300"
               }`}
             >
               {validation.message}
@@ -593,9 +610,9 @@ export default function ScannerDashboard() {
           )}
 
           {barcodeWarnings.length > 0 && (
-            <div className="mt-3 text-xs">
-              <p className="font-medium text-gray-700">Warnings</p>
-              <ul className="list-inside list-disc text-gray-500">
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-xs text-slate-200/90">
+              <p className="mb-2 font-semibold text-slate-100">Warnings</p>
+              <ul className="list-inside list-disc space-y-1 text-slate-300/80">
                 {barcodeWarnings.map((w, i) => (
                   <li key={`${w}-${i}`}>{w}</li>
                 ))}
@@ -607,44 +624,41 @@ export default function ScannerDashboard() {
 
       {liveRecord && (
         <Card
-          header={<span className="font-medium text-gray-900">Live Buffer (latest scan)</span>}
-          className="bg-white"
+          header={<span className="text-lg font-semibold text-slate-100">Live buffer (latest scan)</span>}
           footer={
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button onClick={handleWriteStorage} className="hover:cursor-pointer">
-                Write to Storage
+            <div className="flex flex-wrap justify-end gap-3">
+              <Button onClick={handleWriteStorage}>Write to storage</Button>
+              <Button onClick={handleSaveHistory} variant="secondary">
+                Save to history
               </Button>
-              <Button onClick={handleSaveHistory} className="hover:cursor-pointer" variant="secondary">
-                Save to History
-              </Button>
-              <Button onClick={handleClearLive} className="hover:cursor-pointer" variant="outline">
-                Clear Live Buffer
+              <Button onClick={handleClearLive} variant="outline">
+                Clear live buffer
               </Button>
             </div>
           }
         >
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead className="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+              <thead className="bg-white/5 text-left text-xs font-medium uppercase tracking-wide text-slate-300/80">
                 <tr>
-                  <th className="px-3 py-2">Destination</th>
-                  <th className="px-3 py-2">Item Name</th>
-                  <th className="px-3 py-2">Tracking ID</th>
-                  <th className="px-3 py-2">Truck Number</th>
-                  <th className="px-3 py-2">Ship Date</th>
-                  <th className="px-3 py-2">Expected Departure Time</th>
-                  <th className="px-3 py-2">Origin</th>
+                  <th className="px-4 py-3">Destination</th>
+                  <th className="px-4 py-3">Item name</th>
+                  <th className="px-4 py-3">Tracking ID</th>
+                  <th className="px-4 py-3">Truck number</th>
+                  <th className="px-4 py-3">Ship date</th>
+                  <th className="px-4 py-3">Expected departure</th>
+                  <th className="px-4 py-3">Origin</th>
                 </tr>
               </thead>
               <tbody>
-                <tr className="border-b border-gray-200">
-                  <td className="px-3 py-2 text-gray-700">{liveRecord.destination || "—"}</td>
-                  <td className="px-3 py-2 text-gray-700">{liveRecord.itemName || "—"}</td>
-                  <td className="px-3 py-2 text-gray-700">{liveRecord.trackingId || "—"}</td>
-                  <td className="px-3 py-2 text-gray-700">{liveRecord.truckNumber || "—"}</td>
-                  <td className="px-3 py-2 text-gray-700">{liveRecord.shipDate || "—"}</td>
-                  <td className="px-3 py-2 text-gray-700">{liveRecord.expectedDepartureTime || "—"}</td>
-                  <td className="px-3 py-2 text-gray-700">{liveRecord.origin || "—"}</td>
+                <tr className="border-b border-white/10">
+                  <td className="px-4 py-3 text-slate-200">{liveRecord.destination || "—"}</td>
+                  <td className="px-4 py-3 text-slate-200">{liveRecord.itemName || "—"}</td>
+                  <td className="px-4 py-3 text-slate-200">{liveRecord.trackingId || "—"}</td>
+                  <td className="px-4 py-3 text-slate-200">{liveRecord.truckNumber || "—"}</td>
+                  <td className="px-4 py-3 text-slate-200">{liveRecord.shipDate || "—"}</td>
+                  <td className="px-4 py-3 text-slate-200">{liveRecord.expectedDepartureTime || "—"}</td>
+                  <td className="px-4 py-3 text-slate-200">{liveRecord.origin || "—"}</td>
                 </tr>
               </tbody>
             </table>
@@ -653,13 +667,13 @@ export default function ScannerDashboard() {
       )}
 
       {kv && (
-        <Card header={<span className="font-medium text-gray-900">Live Buffer Fields</span>} className="bg-white">
+        <Card header={<span className="text-lg font-semibold text-slate-100">Live buffer fields</span>}>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead className="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+              <thead className="bg-white/5 text-left text-xs font-medium uppercase tracking-wide text-slate-300/80">
                 <tr>
-                  <th className="px-3 py-2">Field</th>
-                  <th className="px-3 py-2">Value</th>
+                  <th className="px-4 py-3">Field</th>
+                  <th className="px-4 py-3">Value</th>
                 </tr>
               </thead>
               <tbody>
@@ -667,9 +681,9 @@ export default function ScannerDashboard() {
                   const v = getBufferValue(keys);
                   const has = Boolean(v && v.trim());
                   return (
-                    <tr key={label} className="border-b border-gray-200 last:border-0">
-                      <td className="px-3 py-2 font-medium text-gray-900">{label}</td>
-                      <td className={`px-3 py-2 ${has ? "text-gray-700" : "text-gray-400"}`}>{has ? v : "—"}</td>
+                    <tr key={label} className="border-b border-white/10 last:border-0">
+                      <td className="px-4 py-3 font-medium text-slate-100">{label}</td>
+                      <td className={`px-4 py-3 ${has ? "text-slate-200" : "text-slate-500"}`}>{has ? v : "—"}</td>
                     </tr>
                   );
                 })}
@@ -680,49 +694,43 @@ export default function ScannerDashboard() {
       )}
 
       {order && (
-        <Card header={<span className="font-medium text-gray-900">Order Information</span>} className="bg-white">
-          <div className="space-y-2 text-sm text-gray-700">
+        <Card header={<span className="text-lg font-semibold text-slate-100">Order information</span>}>
+          <div className="space-y-3 text-sm text-slate-200">
             <p>
-              <span className="font-semibold text-gray-900">Code:</span> {order.code}
+              <span className="font-semibold text-slate-100">Code:</span> {order.code}
             </p>
             <p>
-              <span className="font-semibold text-gray-900">Floor:</span> {order.floor}
+              <span className="font-semibold text-slate-100">Floor:</span> {order.floor}
             </p>
             <p>
-              <span className="font-semibold text-gray-900">Section:</span> {order.section}
+              <span className="font-semibold text-slate-100">Section:</span> {order.section}
             </p>
             <p>
-              <span className="font-semibold text-gray-900">Collected:</span> {order.collected ? "Yes" : "No"}
+              <span className="font-semibold text-slate-100">Collected:</span> {order.collected ? "Yes" : "No"}
             </p>
           </div>
-          <div className="mt-4 flex flex-wrap gap-3">
+          <div className="mt-6 flex flex-wrap gap-3">
             {!order.collected && (
-              <Button className="hover:cursor-pointer" onClick={markCollected}>
-                Mark as Collected
-              </Button>
+              <Button onClick={markCollected}>Mark as collected</Button>
             )}
           </div>
         </Card>
       )}
 
       {kv && !order && (
-        <Card header={<span className="font-medium text-gray-900">Create Order</span>} className="bg-white">
+        <Card header={<span className="text-lg font-semibold text-slate-100">Create order</span>}>
           <div className="grid gap-4 md:grid-cols-2">
-            <label className="text-sm text-gray-700">
-              <span className="mb-1 block font-medium text-gray-900">Floor</span>
+            <label className="text-sm text-slate-300/90">
+              <span className="mb-1 block font-medium text-slate-100">Floor</span>
               <Input type="text" value={floor} onChange={(e) => setFloor(e.target.value)} placeholder="e.g. floor1" />
             </label>
-            <label className="text-sm text-gray-700">
-              <span className="mb-1 block font-medium text-gray-900">Section</span>
+            <label className="text-sm text-slate-300/90">
+              <span className="mb-1 block font-medium text-slate-100">Section</span>
               <Input type="text" value={section} onChange={(e) => setSection(e.target.value)} placeholder="e.g. section-a" />
             </label>
           </div>
-          <Button
-            className="mt-4 hover:cursor-pointer"
-            onClick={createNewOrder}
-            disabled={creating || validation?.status === "mismatch"}
-          >
-            {creating ? "Creating…" : "Create Order"}
+          <Button className="mt-6" onClick={createNewOrder} disabled={creating || validation?.status === "mismatch"}>
+            {creating ? "Creating…" : "Create order"}
           </Button>
         </Card>
       )}

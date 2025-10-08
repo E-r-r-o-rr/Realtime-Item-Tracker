@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { ThemeToggle } from "./theme-toggle";
 
 const links = [
   { href: "/", label: "Scanner" },
@@ -12,10 +11,12 @@ const links = [
 ];
 
 const baseLinkStyles =
-  "inline-flex items-center px-1 pt-1 text-sm font-medium border-b-2 border-transparent transition-colors";
+  "relative inline-flex items-center px-1 pt-1 text-sm font-medium transition-colors after:absolute after:-bottom-1 after:left-0 after:h-0.5 after:w-full after:origin-left after:scale-x-0 after:bg-gradient-to-r after:from-indigo-400 after:to-fuchsia-500 after:transition-transform after:duration-300";
 
-const activeLinkStyles = "border-blue-500 text-blue-600";
-const inactiveLinkStyles = "text-gray-500 hover:text-gray-700 hover:border-gray-300";
+const activeLinkStyles =
+  "text-slate-100 after:scale-x-100";
+const inactiveLinkStyles =
+  "text-slate-300/70 hover:text-slate-100 hover:after:scale-x-100";
 
 export function SiteHeader() {
   const pathname = usePathname();
@@ -31,15 +32,17 @@ export function SiteHeader() {
   const toggleMenu = () => setMenuOpen((open) => !open);
 
   return (
-    <header className="bg-white shadow-sm">
-      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
-        <Link href="/" className="flex items-center gap-2 text-gray-800">
-          <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-blue-100 text-blue-600 font-semibold">
-            OS
+    <header className="relative z-20 border-b border-white/10 bg-slate-900/50 backdrop-blur-xl">
+      <div className="mx-auto flex h-20 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+        <Link href="/" className="group flex items-center gap-3">
+          <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-fuchsia-500 text-lg font-semibold text-white shadow-lg shadow-indigo-900/40 transition-transform group-hover:scale-105">
+            RT
           </span>
-          <span className="text-lg font-semibold">OrderScanner Pro</span>
+          <span className="text-lg font-semibold text-slate-100">
+            Realtime Item Tracker
+          </span>
         </Link>
-        <nav className="hidden items-center gap-8 md:flex">
+        <nav className="hidden items-center gap-10 md:flex">
           {links.map((link) => (
             <Link
               key={link.href}
@@ -50,23 +53,20 @@ export function SiteHeader() {
             </Link>
           ))}
         </nav>
-        <div className="flex items-center gap-3">
-          <ThemeToggle />
-          <button
-            type="button"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-gray-200 text-gray-600 transition-colors hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 md:hidden"
-            onClick={toggleMenu}
-            aria-label="Toggle navigation"
-          >
-            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16M4 12h16M4 17h16" />
-            </svg>
-          </button>
-        </div>
+        <button
+          type="button"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-slate-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 md:hidden"
+          onClick={toggleMenu}
+          aria-label="Toggle navigation"
+        >
+          <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16M4 12h16M4 17h16" />
+          </svg>
+        </button>
       </div>
       {menuOpen && (
-        <div className="border-t border-gray-200 bg-white md:hidden">
-          <nav className="flex flex-col space-y-1 px-4 py-3">
+        <div className="border-t border-white/10 bg-slate-900/70 backdrop-blur-xl md:hidden">
+          <nav className="flex flex-col space-y-1 px-4 py-4">
             {links.map((link) => (
               <Link
                 key={link.href}

@@ -2,44 +2,47 @@
 /* If you DON'T have tailwindcss-animate installed, don't import it. */
 /* @import "tailwindcss-animate"; */
 
-/* Light theme defaults */
 :root {
-  --background-primary: rgba(249, 250, 251, 1);
-  --background-secondary: rgba(18, 18, 18, 1);
-  --text-primary: rgba(55, 65, 81, 1);
-  --text-secondary: rgba(243, 244, 246, 1);
-  --accent: rgba(99, 102, 241, 1);
-  --border-color: rgba(209, 213, 219, 1);
+  --background-primary: rgba(15, 23, 42, 0.92);
+  --background-secondary: rgba(15, 23, 42, 0.7);
+  --text-primary: rgba(226, 232, 240, 1);
+  --text-secondary: rgba(148, 163, 184, 1);
+  --accent: rgba(129, 140, 248, 1);
+  --border-color: rgba(99, 102, 241, 0.25);
 }
 
-/* Dark theme overrides (applies when <html class="dark">) */
-.dark {
-  --background-primary: rgba(18, 18, 18, 1);
-  --background-secondary: rgba(249, 250, 251, 1);
-  --text-primary: rgba(243, 244, 246, 1);
-  --text-secondary: rgba(55, 65, 81, 1);
-  --accent: rgba(99, 102, 241, 1);
-  --border-color: rgba(209, 213, 219, 1);
-}
-
-/* Map your raw vars to Tailwind v4 tokens shadcn-style components expect */
 @theme inline {
-  --color-background: var(--background-primary);
+  --color-background: rgba(15, 23, 42, 1);
   --color-foreground: var(--text-primary);
   --color-border: var(--border-color);
   --color-accent: var(--accent);
-  --color-card: var(--background-primary);
+  --color-card: rgba(15, 23, 42, 0.75);
   --color-card-foreground: var(--text-primary);
-  --color-muted: var(--background-secondary);
+  --color-muted: rgba(30, 41, 59, 0.65);
 }
 
-/* Base styles */
-html, body { min-height: 100%; }
-body { @apply bg-background text-foreground antialiased; }
+html,
+body {
+  min-height: 100%;
+}
 
-/* Nice color transitions */
-.transition-colors {
-  transition-property: background-color, color, border-color;
-  transition-duration: 150ms;
-  transition-timing-function: ease-in-out;
+body {
+  @apply text-[var(--text-primary)];
+}
+
+@layer utilities {
+  .glassy-panel {
+    @apply border border-white/10 bg-slate-900/60 shadow-[0_20px_45px_rgba(15,23,42,0.6)] backdrop-blur-xl;
+  }
+
+  .text-gradient {
+    background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .glow-ring {
+    box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.3), 0 18px 40px rgba(99, 102, 241, 0.2);
+  }
 }

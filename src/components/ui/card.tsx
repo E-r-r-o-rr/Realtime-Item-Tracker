@@ -22,12 +22,12 @@ export function Card({
 }: CardProps) {
   return (
     <div
-      className={`rounded-lg border border-[var(--color-borderColor)] bg-[var(--color-backgroundSecondary)] shadow-sm overflow-hidden ${className}`}
+      className={`glassy-panel overflow-hidden rounded-3xl ${className}`}
       {...props}
     >
-      {header && <div className="px-4 py-2 border-b border-[var(--color-borderColor)]">{header}</div>}
-      <div className="px-4 py-2">{children}</div>
-      {footer && <div className="px-4 py-2 border-t border-[var(--color-borderColor)]">{footer}</div>}
+      {header && <div className="border-b border-white/10 px-5 py-4 text-slate-200/90">{header}</div>}
+      <div className="px-5 py-5 text-slate-100">{children}</div>
+      {footer && <div className="border-t border-white/10 px-5 py-4 text-slate-300/80">{footer}</div>}
     </div>
   );
 }

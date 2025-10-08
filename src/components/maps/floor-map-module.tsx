@@ -354,31 +354,30 @@ export function FloorMapModule({ destinationLabel, floorHint, sectionHint, lastU
   const displayPoint = selectedPoint;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-12">
       <Card
-        className="bg-white"
         header={
           <div className="flex flex-col gap-1">
-            <h3 className="text-lg font-semibold text-gray-900">Floor Map Navigation</h3>
-            <p className="text-sm text-gray-500">
+            <h3 className="text-lg font-semibold text-slate-100">Floor Map Navigation</h3>
+            <p className="text-sm text-slate-300/80">
               Resolve scanned destinations against your uploaded floor maps and send the location to the navigation module.
             </p>
           </div>
         }
       >
-        <div className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="md:col-span-2 space-y-3">
-              <div className="rounded-md border border-gray-200 bg-gray-50 p-4">
-                <p className="text-sm font-semibold text-gray-700">Current Destination</p>
-                <p className="text-lg text-gray-900">{destinationLabel || "—"}</p>
-                {searchStatus && <p className="mt-1 text-sm text-gray-500">{searchStatus}</p>}
+        <div className="space-y-6">
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-white/10 bg-white/5 px-6 py-5">
+                <p className="text-sm font-semibold text-slate-300/90">Current destination</p>
+                <p className="text-2xl font-semibold text-slate-100">{destinationLabel || "—"}</p>
+                {searchStatus && <p className="mt-2 text-sm text-slate-400">{searchStatus}</p>}
               </div>
-              <div className="flex items-center gap-3">
-                <label className="flex flex-1 flex-col text-sm text-gray-700">
-                  <span className="mb-1 font-medium text-gray-900">Active Map</span>
+              <div className="flex flex-col gap-4 md:flex-row md:items-end">
+                <label className="flex-1 text-sm text-slate-300/80">
+                  <span className="mb-1 block font-medium text-slate-100">Active map</span>
                   <select
-                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-100 focus:border-indigo-400/60 focus:outline-none focus:ring-2 focus:ring-indigo-400/40"
                     value={selectedMapId ?? ""}
                     onChange={handleMapChange}
                   >
@@ -396,43 +395,43 @@ export function FloorMapModule({ destinationLabel, floorHint, sectionHint, lastU
                   Refresh
                 </Button>
               </div>
-              {mapError && <p className="text-sm text-red-600">{mapError}</p>}
+              {mapError && <p className="text-sm text-rose-400">{mapError}</p>}
             </div>
-            <div className="space-y-2 rounded-md border border-gray-200 p-4">
-              <p className="text-sm font-semibold text-gray-700">Navigation Payload</p>
-              <dl className="space-y-1 text-sm text-gray-600">
+            <div className="space-y-3 rounded-2xl border border-white/10 bg-white/5 px-6 py-5">
+              <p className="text-sm font-semibold text-slate-300/90">Navigation payload</p>
+              <dl className="space-y-2 text-sm text-slate-300/80">
                 <div className="flex justify-between gap-2">
-                  <dt className="text-gray-500">Label</dt>
-                  <dd className="font-medium text-gray-900">{displayPoint?.label ?? "—"}</dd>
+                  <dt className="text-slate-400">Label</dt>
+                  <dd className="font-medium text-slate-100">{displayPoint?.label ?? "—"}</dd>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <dt className="text-gray-500">Latitude</dt>
-                  <dd className="font-mono">{formatCoord(displayPoint?.lat ?? null)}</dd>
+                  <dt className="text-slate-400">Latitude</dt>
+                  <dd className="font-mono text-slate-200">{formatCoord(displayPoint?.lat ?? null)}</dd>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <dt className="text-gray-500">Longitude</dt>
-                  <dd className="font-mono">{formatCoord(displayPoint?.lon ?? null)}</dd>
+                  <dt className="text-slate-400">Longitude</dt>
+                  <dd className="font-mono text-slate-200">{formatCoord(displayPoint?.lon ?? null)}</dd>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <dt className="text-gray-500">Local X / Y</dt>
-                  <dd className="font-mono">
+                  <dt className="text-slate-400">Local X / Y</dt>
+                  <dd className="font-mono text-slate-200">
                     {displayPoint ? `${displayPoint.x_px.toFixed(1)}, ${displayPoint.y_px.toFixed(1)}` : "—"}
                   </dd>
                 </div>
               </dl>
               <Button className="w-full" onClick={handleStartNavigation} disabled={!displayPoint}>
-                Start Navigation
+                Start navigation
               </Button>
-              {navStatus && <p className="text-xs text-gray-500">{navStatus}</p>}
+              {navStatus && <p className="text-xs text-slate-400">{navStatus}</p>}
             </div>
           </div>
 
           {mapImageUrl && selectedMap && (
-            <div className="relative overflow-hidden rounded-lg border border-gray-200 bg-gray-50">
+            <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-white/5">
               <img src={mapImageUrl} alt={selectedMap.name} className="w-full object-contain" />
               {displayPoint && (
                 <span
-                  className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-blue-600 p-1 shadow-md"
+                  className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/80 bg-indigo-500 p-1 shadow-[0_0_20px_rgba(129,140,248,0.6)]"
                   style={buildMarkerStyle(displayPoint, selectedMap)}
                   title={displayPoint.label}
                 />
@@ -441,9 +440,9 @@ export function FloorMapModule({ destinationLabel, floorHint, sectionHint, lastU
           )}
 
           {!displayPoint && searchResult.alternatives.length > 0 && (
-            <div className="rounded-md border border-yellow-300 bg-yellow-50 p-4">
-              <p className="text-sm font-semibold text-yellow-800">Suggestions</p>
-              <ul className="mt-2 space-y-2 text-sm text-yellow-900">
+            <div className="rounded-2xl border border-amber-300/60 bg-amber-500/10 p-5 text-amber-100">
+              <p className="text-sm font-semibold uppercase tracking-wide text-amber-200">Suggestions</p>
+              <ul className="mt-3 space-y-2 text-sm">
                 {searchResult.alternatives.map((alt) => (
                   <li key={alt.id}>
                     <button
@@ -451,13 +450,11 @@ export function FloorMapModule({ destinationLabel, floorHint, sectionHint, lastU
                         setSelectedPoint(alt);
                         setNavStatus(`Using suggestion ${alt.label}.`);
                       }}
-                      className="text-left font-medium text-blue-700 hover:underline"
+                      className="text-left font-medium text-indigo-200 hover:text-white hover:underline"
                     >
                       {alt.label}
                     </button>
-                    {alt.synonyms.length > 0 && (
-                      <span className="ml-2 text-xs text-yellow-700">Synonyms: {alt.synonyms.join(", ")}</span>
-                    )}
+                    {alt.synonyms.length > 0 && <span className="ml-2 text-xs text-amber-200/80">Synonyms: {alt.synonyms.join(", ")}</span>}
                   </li>
                 ))}
               </ul>
@@ -467,11 +464,10 @@ export function FloorMapModule({ destinationLabel, floorHint, sectionHint, lastU
       </Card>
 
       <Card
-        className="bg-white"
         header={
           <div className="flex flex-col gap-1">
-            <h3 className="text-lg font-semibold text-gray-900">Map Administration</h3>
-            <p className="text-sm text-gray-500">
+            <h3 className="text-lg font-semibold text-slate-100">Map Administration</h3>
+            <p className="text-sm text-slate-300/80">
               Upload new maps and annotate destination points. These annotations power the runtime destination lookup.
             </p>
           </div>
@@ -480,58 +476,58 @@ export function FloorMapModule({ destinationLabel, floorHint, sectionHint, lastU
         <div className="space-y-6">
           <form className="grid gap-4 md:grid-cols-2" onSubmit={handleUploadSubmit}>
             <div className="md:col-span-2">
-              <label className="text-sm text-gray-700">
-                <span className="mb-1 block font-medium text-gray-900">Floor Map Image</span>
+              <label className="text-sm text-slate-300/80">
+                <span className="mb-1 block font-medium text-slate-100">Floor map image</span>
                 <input
                   type="file"
                   accept="image/*"
                   onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
-                  className="block w-full text-sm text-gray-700"
+                  className="block w-full cursor-pointer text-sm text-slate-200 file:mr-4 file:rounded-full file:border-0 file:bg-indigo-500/20 file:px-4 file:py-2 file:text-indigo-200 file:transition hover:file:bg-indigo-500/30"
                 />
               </label>
             </div>
-            <label className="text-sm text-gray-700">
-              <span className="mb-1 block font-medium text-gray-900">Map Name</span>
+            <label className="text-sm text-slate-300/80">
+              <span className="mb-1 block font-medium text-slate-100">Map name</span>
               <Input
                 value={uploadState.name}
                 onChange={(event) => setUploadState((prev) => ({ ...prev, name: event.target.value }))}
                 placeholder="e.g. Main Floor"
               />
             </label>
-            <label className="text-sm text-gray-700">
-              <span className="mb-1 block font-medium text-gray-900">Floor Identifier</span>
+            <label className="text-sm text-slate-300/80">
+              <span className="mb-1 block font-medium text-slate-100">Floor identifier</span>
               <Input
                 value={uploadState.floor}
                 onChange={(event) => setUploadState((prev) => ({ ...prev, floor: event.target.value }))}
                 placeholder="e.g. floor1"
               />
             </label>
-            <label className="text-sm text-gray-700">
-              <span className="mb-1 block font-medium text-gray-900">Origin Latitude</span>
+            <label className="text-sm text-slate-300/80">
+              <span className="mb-1 block font-medium text-slate-100">Origin latitude</span>
               <Input
                 value={uploadState.originLat}
                 onChange={(event) => setUploadState((prev) => ({ ...prev, originLat: event.target.value }))}
                 placeholder="Optional"
               />
             </label>
-            <label className="text-sm text-gray-700">
-              <span className="mb-1 block font-medium text-gray-900">Origin Longitude</span>
+            <label className="text-sm text-slate-300/80">
+              <span className="mb-1 block font-medium text-slate-100">Origin longitude</span>
               <Input
                 value={uploadState.originLon}
                 onChange={(event) => setUploadState((prev) => ({ ...prev, originLon: event.target.value }))}
                 placeholder="Optional"
               />
             </label>
-            <label className="text-sm text-gray-700">
-              <span className="mb-1 block font-medium text-gray-900">Rotation (° clockwise)</span>
+            <label className="text-sm text-slate-300/80">
+              <span className="mb-1 block font-medium text-slate-100">Rotation (° clockwise)</span>
               <Input
                 value={uploadState.rotation}
                 onChange={(event) => setUploadState((prev) => ({ ...prev, rotation: event.target.value }))}
                 placeholder="0"
               />
             </label>
-            <label className="text-sm text-gray-700">
-              <span className="mb-1 block font-medium text-gray-900">Scale (meters per pixel)</span>
+            <label className="text-sm text-slate-300/80">
+              <span className="mb-1 block font-medium text-slate-100">Scale (meters per pixel)</span>
               <Input
                 value={uploadState.scale}
                 onChange={(event) => setUploadState((prev) => ({ ...prev, scale: event.target.value }))}
@@ -540,26 +536,26 @@ export function FloorMapModule({ destinationLabel, floorHint, sectionHint, lastU
             </label>
             <div className="md:col-span-2">
               <Button type="submit" disabled={uploading || !uploadFile}>
-                {uploading ? "Uploading…" : "Upload Floor Map"}
+                {uploading ? "Uploading…" : "Upload floor map"}
               </Button>
             </div>
           </form>
-          {adminStatus && <p className="text-sm text-gray-500">{adminStatus}</p>}
+          {adminStatus && <p className="text-sm text-slate-300/80">{adminStatus}</p>}
 
           {mapImageUrl && mapDetail?.map && (
             <div className="space-y-4">
-              <div className="flex flex-wrap gap-4 text-sm text-gray-600">
+              <div className="flex flex-wrap gap-4 text-sm text-slate-300/80">
                 <div>
-                  <span className="font-semibold text-gray-700">Selected map:</span> {mapDetail.map.name} ({mapDetail.map.floor})
+                  <span className="font-semibold text-slate-100">Selected map:</span> {mapDetail.map.name} ({mapDetail.map.floor})
                 </div>
                 <div>
-                  <span className="font-semibold text-gray-700">Dimensions:</span> {mapDetail.map.width} × {mapDetail.map.height} px
+                  <span className="font-semibold text-slate-100">Dimensions:</span> {mapDetail.map.width} × {mapDetail.map.height} px
                 </div>
                 <div>
-                  <span className="font-semibold text-gray-700">Scale:</span> {formatMetric(mapDetail.map.georef_scale_m_per_px, "m/px")}
+                  <span className="font-semibold text-slate-100">Scale:</span> {formatMetric(mapDetail.map.georef_scale_m_per_px, "m/px")}
                 </div>
               </div>
-              <div className="relative overflow-hidden rounded-lg border border-dashed border-blue-300 bg-blue-50">
+              <div className="relative overflow-hidden rounded-3xl border border-dashed border-indigo-400/40 bg-indigo-500/10">
                 <div
                   ref={mapClickRef}
                   className="relative cursor-crosshair"
@@ -570,14 +566,14 @@ export function FloorMapModule({ destinationLabel, floorHint, sectionHint, lastU
                   {pointsForOverlay.map((point) => (
                     <span
                       key={point.id}
-                      className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-green-500 p-1"
+                      className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/80 bg-emerald-500 p-1"
                       style={buildMarkerStyle(point, mapDetail.map)}
                       title={point.label}
                     />
                   ))}
                   {draftPoint && (
                     <span
-                      className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-orange-500 p-2"
+                      className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/80 bg-orange-500 p-2"
                       style={buildMarkerStyle(draftPoint, mapDetail.map)}
                       title="New point"
                     />
@@ -586,20 +582,20 @@ export function FloorMapModule({ destinationLabel, floorHint, sectionHint, lastU
               </div>
               {draftPoint && (
                 <form className="grid gap-3 md:grid-cols-2" onSubmit={handleSavePoint}>
-                  <div className="md:col-span-2 text-sm text-gray-600">
-                    New point at {draftPoint.x.toFixed(1)}, {draftPoint.y.toFixed(1)} (pixels)
+                  <div className="md:col-span-2 text-sm text-slate-300/80">
+                    New point at <span className="text-slate-100">{draftPoint.x.toFixed(1)}, {draftPoint.y.toFixed(1)}</span> (pixels)
                   </div>
-                  <label className="text-sm text-gray-700">
-                    <span className="mb-1 block font-medium text-gray-900">Destination Label</span>
+                  <label className="text-sm text-slate-300/80">
+                    <span className="mb-1 block font-medium text-slate-100">Destination label</span>
                     <Input value={annotationLabel} onChange={(event) => setAnnotationLabel(event.target.value)} />
                   </label>
-                  <label className="text-sm text-gray-700">
-                    <span className="mb-1 block font-medium text-gray-900">Synonyms (comma separated)</span>
+                  <label className="text-sm text-slate-300/80">
+                    <span className="mb-1 block font-medium text-slate-100">Synonyms (comma separated)</span>
                     <Input value={annotationSynonyms} onChange={(event) => setAnnotationSynonyms(event.target.value)} />
                   </label>
                   <div className="md:col-span-2 flex gap-3">
                     <Button type="submit" disabled={annotationSaving}>
-                      {annotationSaving ? "Saving…" : "Save Point"}
+                      {annotationSaving ? "Saving…" : "Save point"}
                     </Button>
                     <Button
                       type="button"
@@ -616,13 +612,13 @@ export function FloorMapModule({ destinationLabel, floorHint, sectionHint, lastU
                 </form>
               )}
               <div>
-                <h4 className="text-sm font-semibold text-gray-700">Annotated Points</h4>
+                <h4 className="text-sm font-semibold text-slate-100">Annotated points</h4>
                 <div className="mt-2 max-h-64 overflow-y-auto">
                   {pointsForOverlay.length === 0 ? (
-                    <p className="text-sm text-gray-500">No points have been added to this map yet.</p>
+                    <p className="text-sm text-slate-300/80">No points have been added to this map yet.</p>
                   ) : (
-                    <table className="min-w-full divide-y divide-gray-200 text-sm">
-                      <thead className="bg-gray-100 text-left text-xs font-semibold uppercase tracking-wider text-gray-600">
+                    <table className="min-w-full divide-y divide-white/10 text-sm">
+                      <thead className="bg-white/5 text-left text-xs font-semibold uppercase tracking-wider text-slate-300/80">
                         <tr>
                           <th scope="col" className="px-3 py-2">
                             Label
@@ -638,17 +634,17 @@ export function FloorMapModule({ destinationLabel, floorHint, sectionHint, lastU
                           </th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-gray-200 bg-white">
+                      <tbody className="divide-y divide-white/10">
                         {pointsForOverlay.map((point) => (
-                          <tr key={point.id} className="hover:bg-gray-50">
-                            <td className="px-3 py-2 font-medium text-gray-900">{point.label}</td>
-                            <td className="px-3 py-2 font-mono text-gray-600">
+                          <tr key={point.id} className="hover:bg-white/5">
+                            <td className="px-3 py-2 font-medium text-slate-100">{point.label}</td>
+                            <td className="px-3 py-2 font-mono text-slate-300/90">
                               {point.x_px.toFixed(1)}, {point.y_px.toFixed(1)}
                             </td>
-                            <td className="px-3 py-2 font-mono text-gray-600">
+                            <td className="px-3 py-2 font-mono text-slate-300/90">
                               {formatCoord(point.lat)} / {formatCoord(point.lon)}
                             </td>
-                            <td className="px-3 py-2 text-gray-500">
+                            <td className="px-3 py-2 text-slate-300/80">
                               {point.synonyms.length ? point.synonyms.join(", ") : "—"}
                             </td>
                           </tr>
