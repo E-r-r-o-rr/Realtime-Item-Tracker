@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+import FloorMapModule from "@/components/maps/floor-map-module";
 import {
   LiveRecord,
   loadLiveRecord,
@@ -252,7 +253,6 @@ export default function ScannerDashboard() {
   const [file, setFile] = useState<File | null>(null);
   const [kv, setKv] = useState<KvPairs | null>(null);
   const [order, setOrder] = useState<Order | null>(null);
-  const [mapUrl, setMapUrl] = useState<string | null>(null);
   const [floor, setFloor] = useState("");
   const [section, setSection] = useState("");
   const [creating, setCreating] = useState(false);
@@ -262,6 +262,7 @@ export default function ScannerDashboard() {
   const [barcodeWarnings, setBarcodeWarnings] = useState<string[]>([]);
   const [validation, setValidation] = useState<BarcodeValidation | null>(null);
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
+  const [scanToken, setScanToken] = useState(0);
 
   useEffect(() => {
     setLiveRecordState(loadLiveRecord());
@@ -327,7 +328,6 @@ export default function ScannerDashboard() {
     setFile(f ?? null);
     setKv(null);
     setOrder(null);
-    setMapUrl(null);
     setStatus(null);
     setBarcodes([]);
     setBarcodeWarnings([]);
@@ -352,6 +352,7 @@ export default function ScannerDashboard() {
       const data: ApiOcrResponse = await res.json();
 
       setKv(data.kv || {});
+      setScanToken((token) => token + 1);
       setBarcodes(Array.isArray(data.barcodes) ? data.barcodes : []);
       setBarcodeWarnings(Array.isArray(data.barcodeWarnings) ? data.barcodeWarnings : []);
       setValidation(toClientValidation(data.validation));
@@ -404,11 +405,11 @@ export default function ScannerDashboard() {
     setFile(null);
     setKv(sample);
     setOrder(null);
-    setMapUrl(null);
     setStatus("Demo scan loaded into the live buffer.");
     setBarcodes([]);
     setBarcodeWarnings([]);
     setValidation(null);
+    setScanToken((token) => token + 1);
   };
 
   const createNewOrder = async () => {
@@ -458,26 +459,6 @@ export default function ScannerDashboard() {
     } catch (e) {
       console.error(e);
       setStatus("Failed to mark order.");
-    }
-  };
-
-  const retrieveMap = async () => {
-    if (!order && !kv) return;
-    const code = order ? order.code : kv?.item_code;
-    if (!code) return setStatus("No item code found.");
-    setStatus("Resolving map…");
-    try {
-      const res = await fetch(`/api/items/${code}/map`, { headers: { "x-api-key": API_KEY } });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      const mapRes = await fetch(`/api/maps?key=${data.mapKey}`, { headers: { "x-api-key": API_KEY } });
-      if (!mapRes.ok) throw new Error(await mapRes.text());
-      const blob = await mapRes.blob();
-      setMapUrl(URL.createObjectURL(blob));
-      setStatus(`Map for ${code} loaded.`);
-    } catch (e) {
-      console.error(e);
-      setStatus("Failed to retrieve map.");
     }
   };
 
@@ -720,9 +701,6 @@ export default function ScannerDashboard() {
                 Mark as Collected
               </Button>
             )}
-            <Button className="hover:cursor-pointer" onClick={retrieveMap} variant="secondary">
-              Retrieve Map
-            </Button>
           </div>
         </Card>
       )}
@@ -749,16 +727,12 @@ export default function ScannerDashboard() {
         </Card>
       )}
 
-      {mapUrl && (
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900">Retrieved Map</h3>
-          <img
-            src={mapUrl}
-            alt="Map image"
-            className="mt-3 max-w-full rounded-lg border border-gray-200 shadow-sm"
-          />
-        </div>
-      )}
+      <FloorMapModule
+        destinationLabel={liveRecord?.destination || kv?.destination_warehouse_id || ""}
+        floorHint={order?.floor || floor}
+        sectionHint={order?.section || section}
+        lastUpdatedKey={scanToken}
+      />
     </div>
   );
 }
