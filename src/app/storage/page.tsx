@@ -76,96 +76,95 @@ export default function StoragePage() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
-      <div className="mb-8 flex flex-col gap-3">
-        <h1 className="text-3xl font-bold text-gray-900">Storage &amp; Bookings</h1>
-        <p className="max-w-3xl text-base text-gray-600">
-          Manage the editable storage table that powers bookings. Toggle the booked state, adjust rack assignments, and keep
-          expected departure times current. Edits are persisted locally so your staging data is ready for the next shift.
+    <div className="relative z-10 mx-auto w-full max-w-6xl px-4 py-14 sm:px-6 lg:px-8">
+      <div className="mb-10 flex flex-col gap-4">
+        <h1 className="text-4xl font-semibold text-slate-100">
+          Storage &amp; <span className="text-gradient">bookings</span>
+        </h1>
+        <p className="max-w-3xl text-base text-slate-300/90">
+          Manage booking states, rack assignments, and departure timings in a glassy workspace that keeps staging and
+          loading crews aligned.
         </p>
       </div>
 
       <Card
-        className="mb-8 bg-white"
-        header={<span className="font-medium text-gray-900">Storage</span>}
+        className="mb-10"
+        header={<span className="text-lg font-semibold text-slate-100">Storage</span>}
         footer={
-          <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-gray-600">
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-slate-300/80">
             <span>
               {storage.length} rows in storage • {bookings.length} booked
             </span>
             <div className="flex gap-2">
-              <Button className="hover:cursor-pointer" variant="outline" onClick={handleSeed}>
+              <Button variant="outline" onClick={handleSeed}>
                 Seed 15 sample rows
               </Button>
-              <Button
-                className="hover:cursor-pointer"
-                variant="outline"
-                onClick={handleClear}
-                disabled={storage.length === 0}
-              >
-                Clear Storage
+              <Button variant="outline" onClick={handleClear} disabled={storage.length === 0}>
+                Clear storage
               </Button>
             </div>
           </div>
         }
       >
         {storage.length === 0 ? (
-          <p className="text-sm text-gray-500">Storage is empty. Seed sample rows or write items from the live buffer.</p>
+          <p className="text-sm text-slate-300/80">
+            Storage is empty. Seed sample rows or write items from the live buffer to populate slots.
+          </p>
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead className="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+              <thead className="bg-white/5 text-left text-xs font-medium uppercase tracking-wide text-slate-300/80">
                 <tr>
-                  <th className="px-3 py-2">Booked</th>
-                  <th className="px-3 py-2">Destination (Rack)</th>
-                  <th className="px-3 py-2">Item Name</th>
-                  <th className="px-3 py-2">Tracking ID</th>
-                  <th className="px-3 py-2">Truck #</th>
-                  <th className="px-3 py-2">Ship Date</th>
-                  <th className="px-3 py-2">Expected Departure</th>
-                  <th className="px-3 py-2">Origin</th>
-                  <th className="px-3 py-2">Last Updated</th>
-                  <th className="px-3 py-2 text-right">Actions</th>
+                  <th className="px-4 py-3">Booked</th>
+                  <th className="px-4 py-3">Destination (rack)</th>
+                  <th className="px-4 py-3">Item name</th>
+                  <th className="px-4 py-3">Tracking ID</th>
+                  <th className="px-4 py-3">Truck #</th>
+                  <th className="px-4 py-3">Ship date</th>
+                  <th className="px-4 py-3">Expected departure</th>
+                  <th className="px-4 py-3">Origin</th>
+                  <th className="px-4 py-3">Last updated</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {storage.map((record, index) => (
-                  <tr key={`${record.trackingId}-${index}`} className="border-b border-gray-200 last:border-0">
-                    <td className="px-3 py-2 text-gray-700">
+                  <tr key={`${record.trackingId}-${index}`} className="border-b border-white/10 last:border-0">
+                    <td className="px-4 py-3 text-slate-200">
                       <label className="inline-flex items-center gap-2">
                         <input
                           type="checkbox"
                           checked={record.booked}
                           onChange={(e) => toggleBooked(index, e.target.checked)}
-                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          className="h-4 w-4 rounded border-white/20 bg-transparent text-indigo-400 focus:ring-indigo-400/70"
                         />
-                        <span className={`text-xs ${record.booked ? "text-green-600" : "text-gray-500"}`}>
+                        <span className={`text-xs font-semibold ${record.booked ? "text-emerald-400" : "text-slate-400"}`}>
                           {record.booked ? "Booked" : "Not booked"}
                         </span>
                       </label>
                     </td>
-                    <td className="px-3 py-2 text-gray-700">
+                    <td className="px-4 py-3 text-slate-200">
                       <Input
                         value={record.destination}
                         onChange={(e) => updateField(index, "destination", e.target.value)}
                       />
                     </td>
-                    <td className="px-3 py-2 text-gray-700">{record.itemName}</td>
-                    <td className="px-3 py-2 text-gray-700">
+                    <td className="px-4 py-3 text-slate-200">{record.itemName}</td>
+                    <td className="px-4 py-3 text-slate-200">
                       <Input value={record.trackingId} onChange={(e) => updateField(index, "trackingId", e.target.value)} />
                     </td>
-                    <td className="px-3 py-2 text-gray-700">{record.truckNumber}</td>
-                    <td className="px-3 py-2 text-gray-700">{record.shipDate}</td>
-                    <td className="px-3 py-2 text-gray-700">
+                    <td className="px-4 py-3 text-slate-200">{record.truckNumber}</td>
+                    <td className="px-4 py-3 text-slate-200">{record.shipDate}</td>
+                    <td className="px-4 py-3 text-slate-200">
                       <Input
                         value={record.expectedDepartureTime}
                         onChange={(e) => updateField(index, "expectedDepartureTime", e.target.value)}
                       />
                     </td>
-                    <td className="px-3 py-2 text-gray-700">{record.origin}</td>
-                    <td className="px-3 py-2 text-gray-500 text-xs">{formatDateTime(record.lastUpdated)}</td>
-                    <td className="px-3 py-2 text-right">
-                      <Button className="hover:cursor-pointer" variant="outline" onClick={() => removeRow(index)}>
+                    <td className="px-4 py-3 text-slate-200">{record.origin}</td>
+                    <td className="px-4 py-3 text-xs text-slate-400">{formatDateTime(record.lastUpdated)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <Button variant="outline" onClick={() => removeRow(index)}>
                         Remove
                       </Button>
                     </td>
@@ -177,33 +176,33 @@ export default function StoragePage() {
         )}
       </Card>
 
-      <Card className="bg-white" header={<span className="font-medium text-gray-900">Bookings</span>}>
+      <Card header={<span className="text-lg font-semibold text-slate-100">Bookings</span>}>
         {bookings.length === 0 ? (
-          <p className="text-sm text-gray-500">No bookings yet. Mark storage rows as booked to populate this table.</p>
+          <p className="text-sm text-slate-300/80">No bookings yet. Mark storage rows as booked to populate this table.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead className="bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500">
+              <thead className="bg-white/5 text-left text-xs font-medium uppercase tracking-wide text-slate-300/80">
                 <tr>
-                  <th className="px-3 py-2">Destination (Rack)</th>
-                  <th className="px-3 py-2">Item Name</th>
-                  <th className="px-3 py-2">Tracking ID</th>
-                  <th className="px-3 py-2">Truck #</th>
-                  <th className="px-3 py-2">Ship Date</th>
-                  <th className="px-3 py-2">Expected Departure</th>
-                  <th className="px-3 py-2">Origin</th>
+                  <th className="px-4 py-3">Destination (rack)</th>
+                  <th className="px-4 py-3">Item name</th>
+                  <th className="px-4 py-3">Tracking ID</th>
+                  <th className="px-4 py-3">Truck #</th>
+                  <th className="px-4 py-3">Ship date</th>
+                  <th className="px-4 py-3">Expected departure</th>
+                  <th className="px-4 py-3">Origin</th>
                 </tr>
               </thead>
               <tbody>
                 {bookings.map((record) => (
-                  <tr key={`${record.trackingId}-${record.lastUpdated}`} className="border-b border-gray-200 last:border-0">
-                    <td className="px-3 py-2 text-gray-700">{record.destination}</td>
-                    <td className="px-3 py-2 text-gray-700">{record.itemName}</td>
-                    <td className="px-3 py-2 text-gray-700">{record.trackingId}</td>
-                    <td className="px-3 py-2 text-gray-700">{record.truckNumber}</td>
-                    <td className="px-3 py-2 text-gray-700">{record.shipDate}</td>
-                    <td className="px-3 py-2 text-gray-700">{record.expectedDepartureTime}</td>
-                    <td className="px-3 py-2 text-gray-700">{record.origin}</td>
+                  <tr key={`${record.trackingId}-${record.lastUpdated}`} className="border-b border-white/10 last:border-0">
+                    <td className="px-4 py-3 text-slate-200">{record.destination}</td>
+                    <td className="px-4 py-3 text-slate-200">{record.itemName}</td>
+                    <td className="px-4 py-3 text-slate-200">{record.trackingId}</td>
+                    <td className="px-4 py-3 text-slate-200">{record.truckNumber}</td>
+                    <td className="px-4 py-3 text-slate-200">{record.shipDate}</td>
+                    <td className="px-4 py-3 text-slate-200">{record.expectedDepartureTime}</td>
+                    <td className="px-4 py-3 text-slate-200">{record.origin}</td>
                   </tr>
                 ))}
               </tbody>

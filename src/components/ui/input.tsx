@@ -10,7 +10,7 @@ export type InputProps = React.InputHTMLAttributes<HTMLInputElement>;
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
   ({ className = '', ...props }, ref) => {
     const baseStyles =
-      'block w-full rounded-md border border-[var(--color-borderColor)] bg-[var(--color-backgroundSecondary)] px-3 py-2 text-sm text-[var(--color-textPrimary)] placeholder-[var(--color-textSecondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]';
+      'block w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-100 placeholder:text-slate-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur focus:border-indigo-400/60 focus:outline-none focus:ring-2 focus:ring-indigo-400/60';
     return (
       <input
         ref={ref}

@@ -13,26 +13,26 @@ export interface ButtonProps
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className = '', variant = 'default', disabled, ...props }, ref) => {
     let baseStyles =
-      'inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2';
+      'relative inline-flex items-center justify-center rounded-xl px-5 py-2.5 text-sm font-semibold transition duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/70 disabled:cursor-not-allowed disabled:opacity-60';
     let variantStyles = '';
     switch (variant) {
       case 'secondary':
         variantStyles =
-          'bg-gray-200 text-gray-900 hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed';
+          'bg-slate-800/80 text-slate-100 hover:-translate-y-0.5 hover:bg-slate-700/80 hover:shadow-[0_20px_35px_rgba(15,23,42,0.45)]';
         break;
       case 'outline':
         variantStyles =
-          'border border-gray-300 text-gray-900 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed';
+          'border border-indigo-400/50 bg-transparent text-indigo-200 hover:-translate-y-0.5 hover:bg-indigo-500/10 hover:text-white hover:shadow-[0_18px_40px_rgba(99,102,241,0.25)]';
         break;
       default:
         variantStyles =
-          'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed';
+          'bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 text-white shadow-[0_18px_40px_rgba(129,140,248,0.35)] transition-transform hover:-translate-y-0.5 hover:shadow-[0_25px_55px_rgba(129,140,248,0.4)]';
         break;
     }
     return (
       <button
         ref={ref}
-        className={`${baseStyles} ${variantStyles} ${className} px-4 py-2`}
+        className={`${baseStyles} ${variantStyles} ${className}`}
         disabled={disabled}
         {...props}
       />
