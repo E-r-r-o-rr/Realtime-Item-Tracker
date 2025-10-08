@@ -245,6 +245,25 @@ const LIVE_BUFFER_FIELDS: Array<{ label: string; keys: string[] }> = [
   },
 ];
 
+const BARCODE_ALIAS_GROUPS: string[][] = [
+  ["Product Name", "Item Name", "Product", "Item"],
+  ["Item Code", "Item ID", "Order Code", "Tracking ID", "Tracking Number", "Order ID", "Order Reference"],
+  ["Truck Number", "Truck ID", "Truck No", "Truck"],
+  ["Ship Date", "Shipping Date", "Date", "Departure Date"],
+  ["Estimated Departure Time", "Expected Departure Time", "Departure Time", "ETD"],
+  ["Estimated Arrival Time", "Expected Arrival Time", "Arrival Time", "ETA"],
+  ["Current Warehouse ID", "Origin", "Origin Warehouse", "Current Warehouse"],
+  ["Destination Warehouse ID", "Destination", "Destination Warehouse"],
+  ["Shipping Dock ID", "Loading Dock ID", "Dock ID", "Dock", "Shipping Dock", "Loading Dock"],
+  ["Loading Bay", "Bay", "Loading Bay ID", "Dock Bay"],
+  ["Priority Class", "Priority"],
+  ["Loading Time", "Load Time"],
+  ["Loading Priority", "Load Priority"],
+  ["Stow Position", "Stow Pos"],
+  ["Order Reference", "Reference", "Order Ref"],
+  ["Shipping Carrier", "Carrier"],
+];
+
 const DEMO_RECORDS: KvPairs[] = [
   {
     destination_warehouse_id: "R1-A",
