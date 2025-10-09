@@ -435,13 +435,29 @@ const getCanonicalBarcodeKey = (rawKey: string): string | null => {
 const buildBarcodeKeyValueData = (barcodes: string[]): BarcodeKeyValueData => {
   const kv = new Map<string, string>();
   const rawValues = new Set<string>();
+  const structuredKeys = new Set<string>();
 
-  const addValue = (key: string, value: string) => {
+  const addValue = (
+    key: string,
+    value: string,
+    options?: { source?: "structured" | "fallback" },
+  ) => {
     const trimmed = value.trim();
     if (!trimmed) return;
+
+    const source = options?.source ?? "fallback";
     const existing = kv.get(key);
-    if (!existing || trimmed.length > existing.length) {
+
+    if (source === "fallback" && structuredKeys.has(key)) {
+      rawValues.add(trimmed);
+      return;
+    }
+
+    if (!existing || trimmed.length > existing.length || source === "structured") {
       kv.set(key, trimmed);
+      if (source === "structured") {
+        structuredKeys.add(key);
+      }
     }
     rawValues.add(trimmed);
   };
@@ -476,7 +492,7 @@ const buildBarcodeKeyValueData = (barcodes: string[]): BarcodeKeyValueData => {
 
         const value = valueParts.join(" ").trim();
         if (value) {
-          addValue(canonical, value);
+          addValue(canonical, value, { source: "structured" });
           extracted = true;
         }
       }
