@@ -450,8 +450,47 @@ const buildBarcodeKeyValueData = (barcodes: string[]): BarcodeKeyValueData => {
     typeof b === "string" ? b : String(b ?? ""),
   );
 
+  const tryParseDelimitedBlock = (block: string) => {
+    const separators = ["|", ";", "‖"];
+    for (const separator of separators) {
+      if (!block.includes(separator)) continue;
+      const parts = block
+        .split(separator)
+        .map((part) => part.trim())
+        .filter(Boolean);
+      if (parts.length < 2) continue;
+
+      let extracted = false;
+      for (let i = 0; i < parts.length; i += 1) {
+        const possibleKey = parts[i];
+        const canonical = getCanonicalBarcodeKey(possibleKey);
+        if (!canonical) continue;
+
+        let valueParts: string[] = [];
+        for (let j = i + 1; j < parts.length; j += 1) {
+          const maybeKey = getCanonicalBarcodeKey(parts[j]);
+          if (maybeKey) break;
+          valueParts.push(parts[j]);
+          i = j;
+        }
+
+        const value = valueParts.join(" ").trim();
+        if (value) {
+          addValue(canonical, value);
+          extracted = true;
+        }
+      }
+
+      // Only early-return if we successfully extracted structured data.
+      if (extracted) {
+        return;
+      }
+    }
+  };
+
   for (const block of textBlocks) {
     if (!block) continue;
+    tryParseDelimitedBlock(block);
     const lines = block.split(/\r?\n/);
     for (const line of lines) {
       const trimmedLine = line.trim();
@@ -499,7 +538,7 @@ const buildBarcodeKeyValueData = (barcodes: string[]): BarcodeKeyValueData => {
     if (!canonicalKey || kv.has(canonicalKey)) continue;
     for (const alias of group) {
       const aliasPattern = escapeRegex(alias);
-      const regex = new RegExp(`${aliasPattern}\\s*[:#=\\-]*\\s*([^\\n\\r]+)`, "i");
+      const regex = new RegExp(`${aliasPattern}\\s*[#:;=\\|\\-]*\\s*([^\\n\\r]+)`, "i");
       const match = combinedText.match(regex);
       if (match) {
         addValue(canonicalKey, match[1]);
