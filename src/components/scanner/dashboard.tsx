@@ -264,6 +264,22 @@ const BARCODE_ALIAS_GROUPS: string[][] = [
   ["Shipping Carrier", "Carrier"],
 ];
 
+const BARCODE_TITLE_SET = new Set(BARCODE_FIELD_TITLES.map((title) => normalizeKey(title)));
+
+const BARCODE_ALIAS_LOOKUP: Record<string, string> = (() => {
+  const map: Record<string, string> = {};
+  for (const group of BARCODE_ALIAS_GROUPS) {
+    const canonicalAlias = group.find((alias) => BARCODE_TITLE_SET.has(normalizeKey(alias))) ?? group[0];
+    const canonicalKey = normalizeKey(canonicalAlias);
+    for (const alias of group) {
+      map[normalizeKey(alias)] = canonicalKey;
+    }
+  }
+  return map;
+})();
+
+const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|\[\]\\]/g, "\\$&");
+
 const DEMO_RECORDS: KvPairs[] = [
   {
     destination_warehouse_id: "R1-A",
@@ -358,6 +374,11 @@ interface BarcodeFieldValue {
   comparable: string;
 }
 
+interface BarcodeKeyValueData {
+  kv: Map<string, string>;
+  rawValues: string[];
+}
+
 const formatBarcodeValue = (normalizedKey: string, value: string): BarcodeFieldValue => {
   const raw = value;
   const trimmed = value.trim();
@@ -403,6 +424,119 @@ const formatBarcodeValue = (normalizedKey: string, value: string): BarcodeFieldV
 
   const normalized = trimmed.replace(/\s+/g, " ");
   return { raw, display: normalized, comparable: normalized.toLowerCase() };
+};
+
+const getCanonicalBarcodeKey = (rawKey: string): string | null => {
+  const normalized = normalizeKey(rawKey);
+  if (!normalized) return null;
+  return BARCODE_ALIAS_LOOKUP[normalized] ?? (BARCODE_TITLE_SET.has(normalized) ? normalized : null);
+};
+
+const buildBarcodeKeyValueData = (barcodes: string[]): BarcodeKeyValueData => {
+  const kv = new Map<string, string>();
+  const rawValues = new Set<string>();
+
+  const addValue = (key: string, value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const existing = kv.get(key);
+    if (!existing || trimmed.length > existing.length) {
+      kv.set(key, trimmed);
+    }
+    rawValues.add(trimmed);
+  };
+
+  const textBlocks = (Array.isArray(barcodes) ? barcodes : []).map((b) =>
+    typeof b === "string" ? b : String(b ?? ""),
+  );
+
+  for (const block of textBlocks) {
+    if (!block) continue;
+    const lines = block.split(/\r?\n/);
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      if (!trimmedLine) continue;
+
+      const colonMatch = trimmedLine.match(/^(.+?)[\s]*[:=|]\s*(.+)$/);
+      if (colonMatch) {
+        const canonical = getCanonicalBarcodeKey(colonMatch[1]);
+        if (canonical) {
+          addValue(canonical, colonMatch[2]);
+          continue;
+        }
+      }
+
+      const dashMatch = trimmedLine.match(/^(.+?)\s+-\s+(.+)$/);
+      if (dashMatch) {
+        const canonical = getCanonicalBarcodeKey(dashMatch[1]);
+        if (canonical) {
+          addValue(canonical, dashMatch[2]);
+          continue;
+        }
+      }
+
+      const doubleSpaceMatch = trimmedLine.match(/^(.+?)\s{2,}(.+)$/);
+      if (doubleSpaceMatch) {
+        const canonical = getCanonicalBarcodeKey(doubleSpaceMatch[1]);
+        if (canonical) {
+          addValue(canonical, doubleSpaceMatch[2]);
+        }
+      }
+    }
+
+    const tokens = block.match(/[A-Za-z0-9]{4,}/g);
+    if (tokens) {
+      for (const token of tokens) {
+        rawValues.add(token);
+      }
+    }
+  }
+
+  const combinedText = textBlocks.join("\n");
+  for (const group of BARCODE_ALIAS_GROUPS) {
+    const canonicalAlias = group.find((alias) => BARCODE_TITLE_SET.has(normalizeKey(alias))) ?? group[0];
+    const canonicalKey = getCanonicalBarcodeKey(canonicalAlias);
+    if (!canonicalKey || kv.has(canonicalKey)) continue;
+    for (const alias of group) {
+      const aliasPattern = escapeRegex(alias);
+      const regex = new RegExp(`${aliasPattern}\\s*[:#=\\-]*\\s*([^\\n\\r]+)`, "i");
+      const match = combinedText.match(regex);
+      if (match) {
+        addValue(canonicalKey, match[1]);
+        break;
+      }
+    }
+  }
+
+  return { kv, rawValues: Array.from(rawValues) };
+};
+
+const pickBestBarcodeId = (kv: Map<string, string>, rawValues: string[]): string | null => {
+  for (const key of PREFERRED_ID_KEYS) {
+    const candidate = kv.get(normalizeKey(key));
+    if (candidate && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  const candidates = new Set<string>();
+  for (const value of kv.values()) {
+    const trimmed = value.trim();
+    if (trimmed) candidates.add(trimmed);
+  }
+  for (const value of rawValues) {
+    const trimmed = String(value).trim();
+    if (trimmed) candidates.add(trimmed);
+  }
+
+  const ordered = Array.from(candidates).sort((a, b) => b.length - a.length);
+  for (const candidate of ordered) {
+    if (/\d/.test(candidate)) {
+      return candidate;
+    }
+  }
+
+  return ordered[0] ?? null;
 };
 
 const LABEL_TO_RECORD_KEY: Record<string, keyof LiveRecord> = {
@@ -472,6 +606,10 @@ export default function ScannerDashboard() {
   }, [kv]);
 
   const barcodeSearchText = useMemo(() => buildBarcodeSearchText(barcodes), [barcodes]);
+  const { kv: barcodeKv, rawValues: barcodeValues } = useMemo(
+    () => buildBarcodeKeyValueData(barcodes),
+    [barcodes],
+  );
 
   const getBarcodeValueForOcrKey = (normalizedOcrKey: string): BarcodeFieldValue | null => {
     const mapped = OCR_TO_BARCODE_KEY[normalizedOcrKey];
@@ -480,7 +618,7 @@ export default function ScannerDashboard() {
       if (v && v.trim()) return formatBarcodeValue(normalizedOcrKey, v);
     }
     if (ID_LIKE_SET.has(normalizedOcrKey)) {
-      const id = pickBestBarcodeId(barcodeKv);
+      const id = pickBestBarcodeId(barcodeKv, barcodeValues);
       if (id) return formatBarcodeValue(normalizedOcrKey, id);
     }
     return null;
@@ -762,6 +900,7 @@ export default function ScannerDashboard() {
               </thead>
               <tbody>
                 {Object.entries(kv).map(([rawKey, rawVal]) => {
+                  const ocrKey = normalizeKey(rawKey);
                   const ocrValue = String(rawVal ?? "");
                   const barcodeValue = getBarcodeValueForOcrKey(ocrKey);
                   const match = getRowMatch(ocrKey, ocrValue, barcodeValue);
