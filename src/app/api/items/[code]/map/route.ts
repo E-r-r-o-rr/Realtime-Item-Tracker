@@ -1,31 +1,11 @@
 import { NextResponse } from 'next/server';
-import { resolveItemCode } from '@/lib/db';
-import { getMap } from '@/lib/mapService';
-import { publishMapReady } from '@/lib/events';
 
-export async function GET(
-  req: Request,
-  context: { params: Promise<{ code: string }> },
-) {
-  const { code } = await context.params;
-  const resolved = resolveItemCode(code);
-  if (!resolved) {
-    return NextResponse.json({ error: 'Item not found' }, { status: 404 });
-  }
-  const { floor, section } = resolved;
-  const map = getMap(floor, section);
-  if (!map) {
-    return NextResponse.json({ error: 'Map not found' }, { status: 404 });
-  }
-  const { meta } = map;
-  const mapKey = meta.key;
-  // Publish event (async but don't block response)
-  publishMapReady({
-    item_code: code,
-    floor,
-    section,
-    map_key: mapKey,
-    checksum: meta.checksum,
-  }).catch((err) => console.warn('Failed to publish MapReady event', err));
-  return NextResponse.json({ floor, section, mapKey, checksum: meta.checksum });
+export function GET(_: Request, { params }: { params: { code: string } }) {
+  return NextResponse.json(
+    {
+      error: `Map lookups by item code (${params.code}) are no longer supported. Use the floor_maps API to query coordinates directly.`,
+    },
+    { status: 410 },
+  );
 }
+

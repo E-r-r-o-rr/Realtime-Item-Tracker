@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
-import FloorMapModule from "@/components/maps/floor-map-module";
 import {
   LiveRecord,
   loadLiveRecord,
@@ -15,15 +14,6 @@ import {
 
 interface KvPairs {
   [key: string]: any;
-}
-
-interface Order {
-  id: number;
-  code: string;
-  data: any;
-  collected: number;
-  floor: string;
-  section: string;
 }
 
 interface BarcodeValidation {
@@ -612,17 +602,12 @@ const buildLiveRecord = (getBufferValue: (keys: string[]) => string): LiveRecord
 export default function ScannerDashboard() {
   const [file, setFile] = useState<File | null>(null);
   const [kv, setKv] = useState<KvPairs | null>(null);
-  const [order, setOrder] = useState<Order | null>(null);
-  const [floor, setFloor] = useState("");
-  const [section, setSection] = useState("");
-  const [creating, setCreating] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [barcodes, setBarcodes] = useState<string[]>([]);
   const [barcodeWarnings, setBarcodeWarnings] = useState<string[]>([]);
   const [validation, setValidation] = useState<BarcodeValidation | null>(null);
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
-  const [scanToken, setScanToken] = useState(0);
 
   useEffect(() => {
     setLiveRecordState(loadLiveRecord());
@@ -696,7 +681,6 @@ export default function ScannerDashboard() {
     const f = e.target.files?.[0];
     setFile(f ?? null);
     setKv(null);
-    setOrder(null);
     setStatus(null);
     setBarcodes([]);
     setBarcodeWarnings([]);
@@ -736,30 +720,76 @@ export default function ScannerDashboard() {
       const vStatus = data.validation?.status;
       if (vStatus) setStatus(statusFromValidation[vStatus]);
 
-      const code = data.kv?.item_code;
-      if (code && (!vStatus || vStatus === "match")) {
-        setStatus(`Extracted item code ${code}. Checking database…`);
-        const resOrder = await fetch(`/api/orders?code=${encodeURIComponent(code)}`, {
-          headers: { "x-api-key": API_KEY },
-        });
-        if (resOrder.ok) {
-          const json = await resOrder.json();
-          if (json.order) {
-            setOrder(json.order as Order);
-            setFloor(json.order.floor);
-            setSection(json.order.section);
-            setStatus(`Order ${code} found.`);
-          } else {
-            setOrder(null);
-            setFloor("");
-            setSection("");
-            setStatus(`Order ${code} not found. You can add it below.`);
-          }
+      const normalizedKv = new Map<string, string>();
+      if (data.kv) {
+        for (const [key, value] of Object.entries(data.kv)) {
+          const normalized = normalizeKey(key);
+          const formatted =
+            value == null
+              ? ""
+              : Array.isArray(value)
+              ? value.join(", ")
+              : typeof value === "object"
+              ? JSON.stringify(value)
+              : String(value);
+          normalizedKv.set(normalized, formatted.trim());
         }
       }
 
-      if (!data.kv?.item_code && !vStatus) {
-        setStatus("No item code extracted.");
+      const recordCandidate = buildLiveRecord((keys) => {
+        for (const key of keys) {
+          const val = normalizedKv.get(normalizeKey(key));
+          if (val && val.trim()) return val.trim();
+        }
+        return "";
+      });
+
+      if (recordCandidate) {
+        const missingField = (Object.entries(recordCandidate) as Array<[keyof LiveRecord, string]>).find(
+          ([, value]) => !value || !value.trim(),
+        );
+        if (missingField) {
+          setStatus(
+            `Live buffer updated locally but missing "${missingField[0]}" to sync with bookings and storage.`,
+          );
+        } else {
+          setStatus(`Validating booking for ${recordCandidate.trackingId}…`);
+          const response = await fetch(`/api/orders`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
+            body: JSON.stringify({
+              destination: recordCandidate.destination,
+              itemName: recordCandidate.itemName,
+              trackingId: recordCandidate.trackingId,
+              truckNumber: recordCandidate.truckNumber,
+              shipDate: recordCandidate.shipDate,
+              expectedDepartureTime: recordCandidate.expectedDepartureTime,
+              originLocation: recordCandidate.origin,
+            }),
+          });
+          const payload = await response.json().catch(() => ({ error: "" }));
+          if (!response.ok) {
+            const reason = typeof payload.error === "string" && payload.error ? payload.error : response.statusText;
+            setStatus(reason || "Failed to validate booking.");
+          } else {
+            const record = payload.record;
+            if (record) {
+              const nextRecord: LiveRecord = {
+                destination: record.destination,
+                itemName: record.itemName,
+                trackingId: record.trackingId,
+                truckNumber: record.truckNumber,
+                shipDate: record.shipDate,
+                expectedDepartureTime: record.expectedDepartureTime,
+                origin: record.originLocation,
+              };
+              updateLiveRecord(nextRecord);
+              setStatus(`Live buffer synchronized for ${nextRecord.trackingId}.`);
+            } else {
+              setStatus("Live buffer synchronized.");
+            }
+          }
+        }
       }
     } catch (err) {
       console.error(err);
@@ -773,62 +803,10 @@ export default function ScannerDashboard() {
     const sample = DEMO_RECORDS[Math.floor(Math.random() * DEMO_RECORDS.length)];
     setFile(null);
     setKv(sample);
-    setOrder(null);
     setStatus("Demo scan loaded into the live buffer.");
     setBarcodes([]);
     setBarcodeWarnings([]);
     setValidation(null);
-    setScanToken((token) => token + 1);
-  };
-
-  const createNewOrder = async () => {
-    if (!kv) return;
-    const code = kv.item_code;
-    if (!code || !floor || !section) {
-      setStatus("Please enter floor and section.");
-      return;
-    }
-    if (validation?.status === "mismatch") {
-      setStatus("Resolve the barcode mismatch before creating a new order.");
-      return;
-    }
-    setCreating(true);
-    setStatus("Creating order…");
-    try {
-      const res = await fetch("/api/orders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
-        body: JSON.stringify({ code, data: kv, floor, section }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const json = await res.json();
-      setOrder(json.order as Order);
-      setStatus(`Order ${code} created.`);
-    } catch (e) {
-      console.error(e);
-      setStatus("Failed to create order.");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const markCollected = async () => {
-    if (!order) return;
-    setStatus("Marking as collected…");
-    try {
-      const res = await fetch("/api/orders", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
-        body: JSON.stringify({ code: order.code, collected: true }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const json = await res.json();
-      setOrder(json.order as Order);
-      setStatus(`Order ${order.code} marked as collected.`);
-    } catch (e) {
-      console.error(e);
-      setStatus("Failed to mark order.");
-    }
   };
 
   const handleSaveHistory = () => {
@@ -1062,54 +1040,13 @@ export default function ScannerDashboard() {
         </Card>
       )}
 
-      {order && (
-        <Card header={<span className="text-lg font-semibold text-slate-100">Order information</span>}>
-          <div className="space-y-3 text-sm text-slate-200">
-            <p>
-              <span className="font-semibold text-slate-100">Code:</span> {order.code}
-            </p>
-            <p>
-              <span className="font-semibold text-slate-100">Floor:</span> {order.floor}
-            </p>
-            <p>
-              <span className="font-semibold text-slate-100">Section:</span> {order.section}
-            </p>
-            <p>
-              <span className="font-semibold text-slate-100">Collected:</span> {order.collected ? "Yes" : "No"}
-            </p>
-          </div>
-          <div className="mt-6 flex flex-wrap gap-3">
-            {!order.collected && (
-              <Button onClick={markCollected}>Mark as collected</Button>
-            )}
-          </div>
-        </Card>
-      )}
-
-      {kv && !order && (
-        <Card header={<span className="text-lg font-semibold text-slate-100">Create order</span>}>
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="text-sm text-slate-300/90">
-              <span className="mb-1 block font-medium text-slate-100">Floor</span>
-              <Input type="text" value={floor} onChange={(e) => setFloor(e.target.value)} placeholder="e.g. floor1" />
-            </label>
-            <label className="text-sm text-slate-300/90">
-              <span className="mb-1 block font-medium text-slate-100">Section</span>
-              <Input type="text" value={section} onChange={(e) => setSection(e.target.value)} placeholder="e.g. section-a" />
-            </label>
-          </div>
-          <Button className="mt-6" onClick={createNewOrder} disabled={creating || validation?.status === "mismatch"}>
-            {creating ? "Creating…" : "Create order"}
-          </Button>
-        </Card>
-      )}
-
-      <FloorMapModule
-        destinationLabel={liveRecord?.destination || kv?.destination_warehouse_id || ""}
-        floorHint={order?.floor || floor}
-        sectionHint={order?.section || section}
-        lastUpdatedKey={scanToken}
-      />
+      <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-sm text-slate-200">
+        <p className="font-semibold text-slate-100">Need dock routing?</p>
+        <p className="mt-2 text-slate-300/80">
+          The map module is temporarily unavailable while the database transition to the new logistics tables
+          completes. Live buffer entries now sync directly from bookings and storage records.
+        </p>
+      </div>
     </div>
   );
 }
