@@ -224,7 +224,7 @@ export const updateFloorMap = (
 };
 
 export const getFloorMapById = (id: number): FloorMapRecord | undefined => {
-  const row = getDb().prepare(`SELECT * FROM floor_maps WHERE id = ?`).get(id);
+  const row = getDb().prepare(`SELECT * FROM floor_maps WHERE id = ?`).get(id) as any;
   if (!row) return undefined;
   return {
     id: row.id,
@@ -419,7 +419,7 @@ export const ingestLiveBufferEntry = (
 
 export const syncLiveBufferWithStorage = (): LiveBufferRecord[] => {
   const database = getDb();
-  const rows = database.prepare(`SELECT * FROM live_buffer`).all();
+  const rows = database.prepare(`SELECT * FROM live_buffer`).all() as any[];
   const updateStmt = database.prepare(
     `UPDATE live_buffer SET
        destination = ?,

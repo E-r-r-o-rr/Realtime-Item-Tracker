@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getFloorMapById, updateFloorMap } from '@/lib/db';
 
-export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
-  const id = Number(params.id);
+type RouteParams = { id: string };
+
+const parseId = async (context: { params: Promise<RouteParams> }) => {
+  const { id } = await context.params;
+  const numericId = Number(id);
+  return Number.isFinite(numericId) ? numericId : NaN;
+};
+
+export async function GET(_: NextRequest, context: { params: Promise<RouteParams> }) {
+  const id = await parseId(context);
   if (!Number.isFinite(id)) {
     return NextResponse.json({ error: 'Invalid map id' }, { status: 400 });
   }
@@ -13,8 +21,8 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
   return NextResponse.json({ map });
 }
 
-export async function PUT(request: NextRequest, { params }: { params: { id: string } }) {
-  const id = Number(params.id);
+export async function PUT(request: NextRequest, context: { params: Promise<RouteParams> }) {
+  const id = await parseId(context);
   if (!Number.isFinite(id)) {
     return NextResponse.json({ error: 'Invalid map id' }, { status: 400 });
   }

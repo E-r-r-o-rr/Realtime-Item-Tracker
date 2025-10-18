@@ -705,7 +705,6 @@ export default function ScannerDashboard() {
       const data: ApiOcrResponse = await res.json();
 
       setKv(data.kv || {});
-      setScanToken((token) => token + 1);
       setBarcodes(Array.isArray(data.barcodes) ? data.barcodes : []);
       setBarcodeWarnings(Array.isArray(data.barcodeWarnings) ? data.barcodeWarnings : []);
       setValidation(toClientValidation(data.validation));
