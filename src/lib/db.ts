@@ -623,13 +623,6 @@ export const getLiveBufferByTrackingId = (trackingId: string): LiveBufferRecord 
   return row ? mapLiveBufferRow(row) : undefined;
 };
 
-const getBookingByTrackingId = (trackingId: string): BookingRecord | undefined => {
-  const row = getDb()
-    .prepare(`SELECT * FROM bookings WHERE tracking_id = ?`)
-    .get(trackingId);
-  return row ? mapBookingRow(row) : undefined;
-};
-
 export const listBookings = (): BookingRecord[] => {
   const rows = getDb().prepare(`SELECT * FROM bookings ORDER BY created_at DESC`).all();
   return rows.map(mapBookingRow);
@@ -809,10 +802,6 @@ export const deleteHistoryEntry = (id: number): boolean => {
 export const ingestLiveBufferEntry = (
   payload: LogisticsFields,
 ): { record?: LiveBufferRecord; historyEntry?: HistoryRecord; message?: string } => {
-  const booking = getBookingByTrackingId(payload.trackingId);
-  const existingStorage = getStorageByTrackingId(payload.trackingId);
-  const shouldBook = booking ? true : existingStorage ? existingStorage.booked === 1 : false;
-  const storage = upsertStorageRecord({ ...payload, booked: shouldBook });
   const database = getDb();
   database
     .prepare(
@@ -826,19 +815,11 @@ export const ingestLiveBufferEntry = (
          origin_location = excluded.origin_location,
          last_synced_at = CURRENT_TIMESTAMP`
     )
-    .run(
-      storage.destination,
-      storage.itemName,
-      storage.trackingId,
-      storage.truckNumber,
-      storage.shipDate,
-      storage.expectedDepartureTime,
-      storage.originLocation,
-    );
-  const historyEntry = appendHistoryRecord(storage);
+    .run(...toLogisticsArray(payload));
+  const historyEntry = appendHistoryRecord(payload);
   const row = database
     .prepare(`SELECT * FROM live_buffer WHERE tracking_id = ?`)
-    .get(storage.trackingId);
+    .get(payload.trackingId);
   return { record: mapLiveBufferRow(row), historyEntry };
 };
 

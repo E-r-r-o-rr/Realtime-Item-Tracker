@@ -766,10 +766,10 @@ export default function ScannerDashboard() {
         );
         if (missingField) {
           setStatus(
-            `Live buffer updated locally but missing "${missingField[0]}" to sync with bookings and storage.`,
+            `Live buffer updated locally but missing "${missingField[0]}" to sync with the history log.`,
           );
         } else {
-          setStatus(`Validating booking for ${recordCandidate.trackingId}…`);
+          setStatus(`Logging scan for ${recordCandidate.trackingId}…`);
           const response = await fetch(`/api/orders`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
@@ -798,7 +798,7 @@ export default function ScannerDashboard() {
           } = await response.json().catch(() => ({ error: "" }));
           if (!response.ok) {
             const reason = typeof payload.error === "string" && payload.error ? payload.error : response.statusText;
-            setStatus(reason || "Failed to validate booking.");
+            setStatus(reason || "Failed to log scan.");
           } else {
             const record = payload.record;
             if (record) {
