@@ -10,6 +10,7 @@ const links = [
   { href: "/", label: "Scanner" },
   { href: "/history", label: "History" },
   { href: "/storage", label: "Storage" },
+  { href: "/floor-maps", label: "Map Admin" },
 ];
 
 const baseLinkStyles =

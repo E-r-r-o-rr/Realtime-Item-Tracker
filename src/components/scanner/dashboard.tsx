@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { FloorMapViewer } from "@/components/scanner/floor-map-viewer";
-import { FloorMapAdmin } from "@/components/scanner/floor-map-admin";
 
 interface LiveRecord {
   destination: string;
@@ -1269,7 +1268,6 @@ export default function ScannerDashboard() {
 
 
       <FloorMapViewer activeDestination={activeDestination || undefined} />
-      <FloorMapAdmin />
     </div>
   );
 }
