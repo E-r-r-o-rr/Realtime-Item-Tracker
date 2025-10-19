@@ -819,9 +819,6 @@ export const ingestLiveBufferEntry = (
 ): { record?: LiveBufferRecord; historyEntry?: HistoryRecord; message?: string } => {
   const database = getDb();
   const booking = getBookingByTrackingId(payload.trackingId);
-  if (!booking) {
-    return { message: 'Booked item not found' };
-  }
   database
     .prepare(
       `INSERT INTO live_buffer (${TABLE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -839,7 +836,15 @@ export const ingestLiveBufferEntry = (
   const row = database
     .prepare(`SELECT * FROM live_buffer WHERE tracking_id = ?`)
     .get(payload.trackingId);
-  return { record: mapLiveBufferRow(row), historyEntry };
+  const result: {
+    record?: LiveBufferRecord;
+    historyEntry?: HistoryRecord;
+    message?: string;
+  } = { record: mapLiveBufferRow(row), historyEntry };
+  if (!booking) {
+    result.message = 'Booked item not found';
+  }
+  return result;
 };
 
 export const syncLiveBufferWithStorage = (): LiveBufferRecord[] => {

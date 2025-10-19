@@ -638,6 +638,7 @@ export default function ScannerDashboard() {
   const [barcodeWarnings, setBarcodeWarnings] = useState<string[]>([]);
   const [validation, setValidation] = useState<BarcodeValidation | null>(null);
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
+  const [bookingWarning, setBookingWarning] = useState<string | null>(null);
 
   const mapApiRecordToLive = useCallback((record: ApiLiveBufferRecord): LiveRecord => ({
     destination: record.destination,
@@ -665,10 +666,13 @@ export default function ScannerDashboard() {
       const records = Array.isArray(payload.liveBuffer) ? payload.liveBuffer : [];
       if (records.length > 0) {
         updateLiveRecord(mapApiRecordToLive(records[0]));
+        setBookingWarning(null);
       } else if (payload.record) {
         updateLiveRecord(mapApiRecordToLive(payload.record));
+        setBookingWarning(null);
       } else {
         updateLiveRecord(null);
+        setBookingWarning(null);
       }
     } catch (error) {
       console.error("Failed to load live buffer", error);
@@ -754,6 +758,7 @@ export default function ScannerDashboard() {
     setBarcodes([]);
     setBarcodeWarnings([]);
     setValidation(null);
+    setBookingWarning(null);
   };
 
   const scanDocument = async () => {
@@ -846,13 +851,20 @@ export default function ScannerDashboard() {
               originLocation: string;
             };
             historyEntry?: ApiHistoryEntry;
+            warning?: string;
             error?: string;
           } = await response.json().catch(() => ({ error: "" }));
           if (!response.ok) {
             const reason = typeof payload.error === "string" && payload.error ? payload.error : response.statusText;
             setStatus(reason || "Failed to log scan.");
+            setBookingWarning(null);
           } else {
             const record = payload.record;
+            const warningRaw = typeof payload.warning === "string" ? payload.warning.trim() : "";
+            const warning = warningRaw.length > 0 ? warningRaw : null;
+            setBookingWarning(warning);
+            const scanId = payload.historyEntry?.scanId;
+            const messageParts: string[] = [];
             if (record) {
               const nextRecord: LiveRecord = {
                 destination: record.destination,
@@ -864,20 +876,17 @@ export default function ScannerDashboard() {
                 origin: record.originLocation,
               };
               updateLiveRecord(nextRecord);
-              const scanId = payload.historyEntry?.scanId;
-              setStatus(
-                scanId
-                  ? `Live buffer synchronized for ${nextRecord.trackingId}. Scan ID ${scanId} saved to history.`
-                  : `Live buffer synchronized for ${nextRecord.trackingId}.`,
-              );
+              messageParts.push(`Live buffer synchronized for ${nextRecord.trackingId}.`);
             } else {
-              const scanId = payload.historyEntry?.scanId;
-              setStatus(
-                scanId
-                  ? `Live buffer synchronized. Scan ID ${scanId} saved to history.`
-                  : "Live buffer synchronized.",
-              );
+              messageParts.push("Live buffer synchronized.");
             }
+            if (scanId) {
+              messageParts.push(`Scan ID ${scanId} saved to history.`);
+            }
+            if (warning) {
+              messageParts.push(warning.endsWith(".") ? warning : `${warning}.`);
+            }
+            setStatus(messageParts.join(" ").trim());
           }
         }
       }
@@ -897,6 +906,7 @@ export default function ScannerDashboard() {
     setBarcodes([]);
     setBarcodeWarnings([]);
     setValidation(null);
+    setBookingWarning(null);
   };
 
   const handleWriteStorage = async () => {
@@ -942,6 +952,7 @@ export default function ScannerDashboard() {
         updateLiveRecord(null);
       }
       setStatus("Live buffer cleared.");
+      setBookingWarning(null);
     } catch (error) {
       console.error(error);
       setStatus(error instanceof Error ? error.message : "Failed to clear live buffer.");
@@ -1025,6 +1036,31 @@ export default function ScannerDashboard() {
         </div>
       )}
 
+      {bookingWarning && (
+        <div className="glassy-panel flex items-start gap-3 rounded-2xl border border-rose-400/40 bg-rose-500/10 px-5 py-4 text-sm text-rose-100">
+          <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-rose-400/15">
+            <svg
+              className="h-5 w-5 text-rose-300"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v5m0 4h.01" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 3.75a8.25 8.25 0 110 16.5 8.25 8.25 0 010-16.5z"
+              />
+            </svg>
+          </span>
+          <div>
+            <span className="font-semibold uppercase tracking-[0.3em] text-rose-200/80">Booking alert</span>
+            <p className="mt-2 text-base text-rose-100/90">{bookingWarning}</p>
+          </div>
+        </div>
+      )}
+
       {kv && (
         <Card header={<span className="text-lg font-semibold text-slate-100">Extracted OCR &amp; barcode data</span>}>
           <div className="overflow-x-auto">
@@ -1093,7 +1129,33 @@ export default function ScannerDashboard() {
 
       {liveRecord && (
         <Card
-          header={<span className="text-lg font-semibold text-slate-100">Live buffer (latest scan)</span>}
+          header={
+            <div className="flex items-center gap-2">
+              <span className="text-lg font-semibold text-slate-100">Live buffer (latest scan)</span>
+              {bookingWarning && (
+                <span
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-rose-500/15"
+                  title={bookingWarning}
+                >
+                  <svg
+                    className="h-4 w-4 text-rose-400"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v5m0 4h.01" />
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 3.75a8.25 8.25 0 110 16.5 8.25 8.25 0 010-16.5z"
+                    />
+                  </svg>
+                  <span className="sr-only">{bookingWarning}</span>
+                </span>
+              )}
+            </div>
+          }
           footer={
             <div className="flex flex-wrap justify-end gap-3">
               <Button onClick={handleWriteStorage}>Write to storage</Button>

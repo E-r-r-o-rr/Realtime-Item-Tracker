@@ -70,10 +70,14 @@ export async function POST(req: Request) {
     const body = await req.json();
     const payload = normalizePayload(body ?? {});
     const result = ingestLiveBufferEntry(payload);
-    if (result.message) {
-      return NextResponse.json({ error: result.message }, { status: 404 });
-    }
-    return NextResponse.json({ record: result.record, historyEntry: result.historyEntry }, { status: 201 });
+    return NextResponse.json(
+      {
+        record: result.record,
+        historyEntry: result.historyEntry,
+        warning: result.message,
+      },
+      { status: 201 },
+    );
   } catch (error: any) {
     if (error instanceof Error) {
       return NextResponse.json({ error: error.message }, { status: 400 });
