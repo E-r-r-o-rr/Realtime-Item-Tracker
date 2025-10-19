@@ -658,6 +658,11 @@ export const getStorageByTruckAndShipDate = (
   return row ? mapStorageRow(row) : undefined;
 };
 
+export const getStorageByTrackingId = (trackingId: string): StorageRecord | undefined => {
+  const row = getDb().prepare(`SELECT * FROM storage WHERE tracking_id = ?`).get(trackingId);
+  return row ? mapStorageRow(row) : undefined;
+};
+
 const synchronizeBookingForStorage = (storage: StorageRecord) => {
   const database = getDb();
   if (storage.booked) {
@@ -805,13 +810,9 @@ export const ingestLiveBufferEntry = (
   payload: LogisticsFields,
 ): { record?: LiveBufferRecord; historyEntry?: HistoryRecord; message?: string } => {
   const booking = getBookingByTrackingId(payload.trackingId);
-  if (!booking) {
-    return { message: 'Booked item not found' };
-  }
-  const storage = getStorageByTruckAndShipDate(payload.truckNumber, payload.shipDate);
-  if (!storage) {
-    return { message: 'Storage entry not found for booked item' };
-  }
+  const existingStorage = getStorageByTrackingId(payload.trackingId);
+  const shouldBook = booking ? true : existingStorage ? existingStorage.booked === 1 : false;
+  const storage = upsertStorageRecord({ ...payload, booked: shouldBook });
   const database = getDb();
   database
     .prepare(
@@ -857,7 +858,7 @@ export const syncLiveBufferWithStorage = (): LiveBufferRecord[] => {
      WHERE id = ?`
   );
   for (const row of rows) {
-    const storage = getStorageByTruckAndShipDate(row.truck_number, row.ship_date);
+    const storage = getStorageByTrackingId(row.tracking_id);
     if (storage) {
       updateStmt.run(
         storage.destination,
