@@ -133,6 +133,39 @@ const mapHistoryRow = (row: any): HistoryRecord => ({
   recordedAt: row.recorded_at,
 });
 
+const SAMPLE_DESTINATIONS = [
+  'R1-A',
+  'R2-B',
+  'R3-C',
+  'R4-A',
+  'R5-D',
+  'R6-F',
+  'R2-A',
+  'R1-C',
+  'R7-B',
+  'R8-A',
+  'R9-D',
+  'R10-C',
+  'R11-A',
+  'R12-B',
+  'R13-C',
+];
+
+const SAMPLE_PRODUCTS = [
+  'Widget Alpha',
+  'Widget Beta',
+  'Gizmo Max',
+  'Gizmo Mini',
+  'Box Small',
+  'Box Large',
+  'Crate A',
+  'Crate B',
+  'Bag Red',
+  'Bag Blue',
+];
+
+const SAMPLE_ORIGINS = ['Dock 1', 'Dock 2', 'Dock 3', 'Inbound A', 'Inbound B'];
+
 function initDb() {
   if (db) return;
   const dataDir = path.join(process.cwd(), 'data');
@@ -575,6 +608,14 @@ export const listStorage = (): StorageRecord[] => {
   return rows.map(mapStorageRow);
 };
 
+export const clearStorageAndBookings = () => {
+  getDb().exec(`
+    DELETE FROM live_buffer;
+    DELETE FROM bookings;
+    DELETE FROM storage;
+  `);
+};
+
 export const getStorageByTruckAndShipDate = (
   truckNumber: string,
   shipDate: string,
@@ -671,6 +712,34 @@ export const updateStorageRecord = (
   const storage = mapStorageRow(refreshedRow);
   synchronizeBookingForStorage(storage);
   return storage;
+};
+
+export const deleteStorageRecord = (trackingId: string): boolean => {
+  const database = getDb();
+  const info = database.prepare(`DELETE FROM storage WHERE tracking_id = ?`).run(trackingId);
+  database.prepare(`DELETE FROM bookings WHERE tracking_id = ?`).run(trackingId);
+  database.prepare(`DELETE FROM live_buffer WHERE tracking_id = ?`).run(trackingId);
+  return info.changes > 0;
+};
+
+export const seedStorageSamples = (count = 15): StorageRecord[] => {
+  clearStorageAndBookings();
+  const totalOrigins = SAMPLE_ORIGINS.length;
+  const totalProducts = SAMPLE_PRODUCTS.length;
+  const totalDestinations = SAMPLE_DESTINATIONS.length;
+  for (let i = 0; i < count; i++) {
+    const payload: LogisticsFields = {
+      destination: SAMPLE_DESTINATIONS[i % totalDestinations],
+      itemName: SAMPLE_PRODUCTS[i % totalProducts],
+      trackingId: `TRK${String(100000 + i)}`,
+      truckNumber: String(200 + (i % 7)),
+      shipDate: `2025-09-${String(10 + (i % 15)).padStart(2, '0')}`,
+      expectedDepartureTime: `${String(8 + (i % 9)).padStart(2, '0')}:${String((i * 7) % 60).padStart(2, '0')}`,
+      originLocation: SAMPLE_ORIGINS[i % totalOrigins],
+    };
+    upsertStorageRecord({ ...payload, booked: i < Math.min(count, 10) });
+  }
+  return listStorage();
 };
 
 export const appendHistoryRecord = (payload: LogisticsFields): HistoryRecord => {

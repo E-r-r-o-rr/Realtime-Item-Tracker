@@ -11,7 +11,6 @@ import {
   loadLiveRecord,
   persistLiveRecord,
   pushHistoryRecord,
-  writeRecordToStorage,
 } from "@/lib/localStorage";
 
 interface KvPairs {
@@ -824,10 +823,31 @@ export default function ScannerDashboard() {
     setStatus("Saved to history.");
   };
 
-  const handleWriteStorage = () => {
+  const handleWriteStorage = async () => {
     if (!liveRecord) return;
-    writeRecordToStorage(liveRecord);
-    setStatus("Written to storage.");
+    try {
+      const response = await fetch("/api/storage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          destination: liveRecord.destination,
+          itemName: liveRecord.itemName,
+          trackingId: liveRecord.trackingId,
+          truckNumber: liveRecord.truckNumber,
+          shipDate: liveRecord.shipDate,
+          expectedDepartureTime: liveRecord.expectedDepartureTime,
+          originLocation: liveRecord.origin,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+      setStatus(`Storage updated for ${liveRecord.trackingId}.`);
+    } catch (err) {
+      console.error(err);
+      setStatus(err instanceof Error ? err.message : "Failed to write storage.");
+    }
   };
 
   const handleClearLive = () => {
