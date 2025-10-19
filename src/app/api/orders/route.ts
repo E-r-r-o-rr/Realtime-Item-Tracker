@@ -71,7 +71,7 @@ export async function POST(req: Request) {
     if (result.message) {
       return NextResponse.json({ error: result.message }, { status: 404 });
     }
-    return NextResponse.json({ record: result.record }, { status: 201 });
+    return NextResponse.json({ record: result.record, historyEntry: result.historyEntry }, { status: 201 });
   } catch (error: any) {
     if (error instanceof Error) {
       return NextResponse.json({ error: error.message }, { status: 400 });

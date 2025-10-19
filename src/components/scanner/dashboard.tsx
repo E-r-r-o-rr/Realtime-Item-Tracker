@@ -6,12 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { FloorMapViewer } from "@/components/scanner/floor-map-viewer";
 import { FloorMapAdmin } from "@/components/scanner/floor-map-admin";
-import {
-  LiveRecord,
-  loadLiveRecord,
-  persistLiveRecord,
-  pushHistoryRecord,
-} from "@/lib/localStorage";
+import { LiveRecord, loadLiveRecord, persistLiveRecord } from "@/lib/localStorage";
 
 interface KvPairs {
   [key: string]: any;
@@ -37,6 +32,19 @@ interface ApiOcrResponse {
   barcodes?: string[];
   barcodeWarnings?: string[];
   validation?: ApiValidation;
+}
+
+interface ApiHistoryEntry {
+  id: number;
+  scanId: string;
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  originLocation: string;
+  recordedAt: string;
 }
 
 const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
@@ -775,7 +783,19 @@ export default function ScannerDashboard() {
               originLocation: recordCandidate.origin,
             }),
           });
-          const payload = await response.json().catch(() => ({ error: "" }));
+          const payload: {
+            record?: {
+              destination: string;
+              itemName: string;
+              trackingId: string;
+              truckNumber: string;
+              shipDate: string;
+              expectedDepartureTime: string;
+              originLocation: string;
+            };
+            historyEntry?: ApiHistoryEntry;
+            error?: string;
+          } = await response.json().catch(() => ({ error: "" }));
           if (!response.ok) {
             const reason = typeof payload.error === "string" && payload.error ? payload.error : response.statusText;
             setStatus(reason || "Failed to validate booking.");
@@ -792,9 +812,19 @@ export default function ScannerDashboard() {
                 origin: record.originLocation,
               };
               updateLiveRecord(nextRecord);
-              setStatus(`Live buffer synchronized for ${nextRecord.trackingId}.`);
+              const scanId = payload.historyEntry?.scanId;
+              setStatus(
+                scanId
+                  ? `Live buffer synchronized for ${nextRecord.trackingId}. Scan ID ${scanId} saved to history.`
+                  : `Live buffer synchronized for ${nextRecord.trackingId}.`,
+              );
             } else {
-              setStatus("Live buffer synchronized.");
+              const scanId = payload.historyEntry?.scanId;
+              setStatus(
+                scanId
+                  ? `Live buffer synchronized. Scan ID ${scanId} saved to history.`
+                  : "Live buffer synchronized.",
+              );
             }
           }
         }
@@ -815,12 +845,6 @@ export default function ScannerDashboard() {
     setBarcodes([]);
     setBarcodeWarnings([]);
     setValidation(null);
-  };
-
-  const handleSaveHistory = () => {
-    if (!liveRecord) return;
-    pushHistoryRecord(liveRecord);
-    setStatus("Saved to history.");
   };
 
   const handleWriteStorage = async () => {
@@ -1004,9 +1028,6 @@ export default function ScannerDashboard() {
           footer={
             <div className="flex flex-wrap justify-end gap-3">
               <Button onClick={handleWriteStorage}>Write to storage</Button>
-              <Button onClick={handleSaveHistory} variant="secondary">
-                Save to history
-              </Button>
               <Button onClick={handleClearLive} variant="outline">
                 Clear live buffer
               </Button>

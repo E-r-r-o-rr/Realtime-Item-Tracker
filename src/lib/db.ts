@@ -59,6 +59,7 @@ export interface StorageRecord extends LogisticsFields {
 
 export interface HistoryRecord extends LogisticsFields {
   id: number;
+  scanId: string;
   recordedAt: string;
 }
 
@@ -123,6 +124,7 @@ const mapStorageRow = (row: any): StorageRecord => ({
 
 const mapHistoryRow = (row: any): HistoryRecord => ({
   id: row.id,
+  scanId: row.scan_id,
   destination: row.destination,
   itemName: row.item_name,
   trackingId: row.tracking_id,
@@ -174,6 +176,7 @@ function initDb() {
   db = new Database(dbPath);
   db.pragma('foreign_keys = ON');
   ensureFloorMapSchema(db);
+  ensureHistorySchema(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS live_buffer (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -211,6 +214,7 @@ function initDb() {
     );
     CREATE TABLE IF NOT EXISTS history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scan_id TEXT NOT NULL UNIQUE,
       destination TEXT NOT NULL,
       item_name TEXT NOT NULL,
       tracking_id TEXT NOT NULL,
@@ -271,6 +275,34 @@ function ensureFloorMapSchema(database: Database.Database) {
 
   if (!hasLegacySchema && existingColumns.length > 0 && !hasDestinationTagColumn) {
     database.exec(`ALTER TABLE floor_maps ADD COLUMN destination_tag TEXT`);
+  }
+}
+
+const generateScanId = (seed?: number) => {
+  if (typeof seed === 'number' && Number.isFinite(seed)) {
+    return `SCAN-${String(seed).padStart(6, '0')}`;
+  }
+  const random = Math.random().toString(36).slice(2, 8).toUpperCase();
+  return `SCAN-${Date.now()}-${random}`;
+};
+
+function ensureHistorySchema(database: Database.Database) {
+  const columns = database.prepare(`PRAGMA table_info(history)`).all() as Array<{ name: string }>;
+  if (columns.length === 0) {
+    return;
+  }
+  const hasScanId = columns.some((column) => column.name === 'scan_id');
+  if (!hasScanId) {
+    database.exec(`ALTER TABLE history ADD COLUMN scan_id TEXT`);
+  }
+  const missingScanIds = database
+    .prepare(`SELECT id FROM history WHERE scan_id IS NULL OR LENGTH(TRIM(scan_id)) = 0`)
+    .all() as Array<{ id: number }>;
+  if (missingScanIds.length > 0) {
+    const update = database.prepare(`UPDATE history SET scan_id = ? WHERE id = ?`);
+    for (const row of missingScanIds) {
+      update.run(generateScanId(row.id), row.id);
+    }
   }
 }
 
@@ -743,10 +775,11 @@ export const seedStorageSamples = (count = 15): StorageRecord[] => {
 };
 
 export const appendHistoryRecord = (payload: LogisticsFields): HistoryRecord => {
+  const scanId = generateScanId();
   const stmt = getDb().prepare(
-    `INSERT INTO history (${TABLE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO history (${TABLE_COLUMNS}, scan_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   );
-  const info = stmt.run(...toLogisticsArray(payload));
+  const info = stmt.run(...toLogisticsArray(payload), scanId);
   const row = getDb()
     .prepare(`SELECT * FROM history WHERE id = ?`)
     .get(Number(info.lastInsertRowid));
@@ -758,9 +791,19 @@ export const listHistory = (): HistoryRecord[] => {
   return rows.map(mapHistoryRow);
 };
 
+export const clearHistory = (): number => {
+  const info = getDb().prepare(`DELETE FROM history`).run();
+  return info.changes ?? 0;
+};
+
+export const deleteHistoryEntry = (id: number): boolean => {
+  const info = getDb().prepare(`DELETE FROM history WHERE id = ?`).run(id);
+  return (info.changes ?? 0) > 0;
+};
+
 export const ingestLiveBufferEntry = (
   payload: LogisticsFields,
-): { record?: LiveBufferRecord; message?: string } => {
+): { record?: LiveBufferRecord; historyEntry?: HistoryRecord; message?: string } => {
   const booking = getBookingByTrackingId(payload.trackingId);
   if (!booking) {
     return { message: 'Booked item not found' };
@@ -791,11 +834,11 @@ export const ingestLiveBufferEntry = (
       storage.expectedDepartureTime,
       storage.originLocation,
     );
-  appendHistoryRecord(storage);
+  const historyEntry = appendHistoryRecord(storage);
   const row = database
     .prepare(`SELECT * FROM live_buffer WHERE tracking_id = ?`)
     .get(storage.trackingId);
-  return { record: mapLiveBufferRow(row) };
+  return { record: mapLiveBufferRow(row), historyEntry };
 };
 
 export const syncLiveBufferWithStorage = (): LiveBufferRecord[] => {
