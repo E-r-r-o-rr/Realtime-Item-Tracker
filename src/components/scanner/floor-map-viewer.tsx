@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { FloorMap, MapPoint } from "@/types/floor-maps";
+import { safeParseJson } from "@/lib/json";
 
 interface FloorMapViewerProps {
   activeDestination?: string | null;
@@ -58,9 +59,12 @@ export function FloorMapViewer({ activeDestination }: FloorMapViewerProps) {
       const response = await fetch("/api/floor-maps?includePoints=true", {
         cache: "no-store",
       });
-      if (!response.ok) throw new Error(await response.text());
-      const payload = await response.json();
-      const incomingMaps: FloorMap[] = payload.maps ?? [];
+      const raw = await response.text();
+      if (!response.ok) {
+        throw new Error(raw || "Failed to load floor maps.");
+      }
+      const payload = safeParseJson<{ maps?: FloorMap[] }>(raw, { maps: [] }, "floor map list");
+      const incomingMaps: FloorMap[] = Array.isArray(payload.maps) ? payload.maps : [];
       setMaps(incomingMaps);
       if (!incomingMaps.length) {
         setSelectedMapId(null);

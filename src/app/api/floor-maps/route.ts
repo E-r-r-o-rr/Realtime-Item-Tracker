@@ -11,16 +11,21 @@ const toClientMap = (map: ReturnType<typeof listFloorMaps>[number]) => ({
 });
 
 export async function GET(request: NextRequest) {
-  const includePoints = request.nextUrl.searchParams.get('includePoints') === 'true';
-  if (includePoints) {
-    const maps = listFloorMapsWithPoints().map((map) => ({
-      ...toClientMap(map),
-      points: map.points,
-    }));
+  try {
+    const includePoints = request.nextUrl.searchParams.get('includePoints') === 'true';
+    if (includePoints) {
+      const maps = listFloorMapsWithPoints().map((map) => ({
+        ...toClientMap(map),
+        points: map.points,
+      }));
+      return NextResponse.json({ maps });
+    }
+    const maps = listFloorMaps().map(toClientMap);
     return NextResponse.json({ maps });
+  } catch (error) {
+    console.error('Failed to list floor maps', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
-  const maps = listFloorMaps().map(toClientMap);
-  return NextResponse.json({ maps });
 }
 
 export async function POST(request: NextRequest) {

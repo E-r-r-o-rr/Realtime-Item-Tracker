@@ -311,13 +311,15 @@ const RAD_TO_DEG = 180 / Math.PI;
 
 const parseSynonyms = (raw: any): string[] => {
   if (typeof raw !== 'string') return [];
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(trimmed);
     if (Array.isArray(parsed)) {
       return parsed.map((entry) => String(entry)).filter((entry) => entry.trim().length > 0);
     }
-  } catch (error) {
-    console.warn('Failed to parse synonyms JSON', error);
+  } catch (_error) {
+    // Fall through to return an empty list when malformed JSON is stored.
   }
   return [];
 };

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { FloorMap } from "@/types/floor-maps";
+import { safeParseJson } from "@/lib/json";
 
 interface PendingPoint {
   xPx: number;
@@ -66,9 +67,12 @@ export function FloorMapAdmin() {
     setLoading(true);
     try {
       const response = await fetch("/api/floor-maps?includePoints=true", { cache: "no-store" });
-      if (!response.ok) throw new Error(await response.text());
-      const payload = await response.json();
-      const list: FloorMap[] = payload.maps ?? [];
+      const raw = await response.text();
+      if (!response.ok) {
+        throw new Error(raw || "Failed to load maps.");
+      }
+      const payload = safeParseJson<{ maps?: FloorMap[] }>(raw, { maps: [] }, "floor map admin list");
+      const list: FloorMap[] = Array.isArray(payload.maps) ? payload.maps : [];
       setMaps(list);
       setPendingPoint(emptyPendingPoint);
       if (!list.length) {
