@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { createMapPoint, getFloorMapById, listMapPoints } from "@/lib/db";
+import { readJsonBody } from "@/lib/json";
 
 type RouteParams = { id: string };
 
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest, context: { params: Promise<Rout
     return NextResponse.json({ error: "Map not found" }, { status: 404 });
   }
   try {
-    const body = await request.json();
+    const body = await readJsonBody<any>(request, {}, "create map point");
     const label = typeof body.label === "string" ? body.label.trim() : "";
     const xPx = Number(body.xPx);
     const yPx = Number(body.yPx);

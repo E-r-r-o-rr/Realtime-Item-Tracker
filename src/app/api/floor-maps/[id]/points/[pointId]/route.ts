@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { deleteMapPoint, getFloorMapById, updateMapPoint } from "@/lib/db";
+import { readJsonBody } from "@/lib/json";
 
 type RouteParams = { id: string; pointId: string };
 
@@ -24,7 +25,7 @@ export async function PUT(request: NextRequest, context: { params: Promise<Route
     return NextResponse.json({ error: "Map not found" }, { status: 404 });
   }
   try {
-    const body = await request.json();
+    const body = await readJsonBody<any>(request, {}, "update map point");
     const updates = {
       label: typeof body.label === "string" ? body.label.trim() : undefined,
       synonyms: Array.isArray(body.synonyms)

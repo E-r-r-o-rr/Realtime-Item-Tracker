@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getFloorMapById, getFloorMapWithPoints, updateFloorMap } from '@/lib/db';
+import { readJsonBody } from '@/lib/json';
 
 type RouteParams = { id: string };
 
@@ -35,7 +36,7 @@ export async function PUT(request: NextRequest, context: { params: Promise<Route
     return NextResponse.json({ error: 'Invalid map id' }, { status: 400 });
   }
   try {
-    const body = await request.json();
+    const body = await readJsonBody<any>(request, {}, 'floor map update');
     const updates = {
       name: typeof body.name === 'string' ? body.name.trim() : undefined,
       floor: typeof body.floor === 'string' ? body.floor.trim() : body.floor === null ? null : undefined,
