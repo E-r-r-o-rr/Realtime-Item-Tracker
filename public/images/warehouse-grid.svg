@@ -1,0 +1,33 @@
+<svg width="1200" height="600" viewBox="0 0 1200 600" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="paint0_linear" x1="0" y1="0" x2="1200" y2="600" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#312e81"/>
+      <stop offset="0.5" stop-color="#1e1b4b"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="paint1_linear" x1="0" y1="0" x2="0" y2="600" gradientUnits="userSpaceOnUse">
+      <stop stop-color="rgba(59,130,246,0.35)"/>
+      <stop offset="1" stop-color="rgba(236,72,153,0.2)"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="600" rx="48" fill="url(#paint0_linear)"/>
+  <path d="M0 75H1200M0 150H1200M0 225H1200M0 300H1200M0 375H1200M0 450H1200M0 525H1200" stroke="rgba(148,163,184,0.12)" stroke-width="1"/>
+  <path d="M100 0V600M200 0V600M300 0V600M400 0V600M500 0V600M600 0V600M700 0V600M800 0V600M900 0V600M1000 0V600M1100 0V600" stroke="rgba(148,163,184,0.12)" stroke-width="1"/>
+  <rect x="80" y="100" width="240" height="140" rx="12" fill="rgba(15,23,42,0.65)" stroke="rgba(129,140,248,0.5)" stroke-width="1.5"/>
+  <rect x="880" y="380" width="240" height="140" rx="12" fill="rgba(15,23,42,0.65)" stroke="rgba(236,72,153,0.45)" stroke-width="1.5"/>
+  <path d="M200 230C260 260 340 320 420 340C500 360 600 340 680 310C760 280 840 230 900 210" stroke="rgba(236,72,153,0.45)" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 14"/>
+  <circle cx="240" cy="210" r="14" fill="rgba(34,197,94,0.9)"/>
+  <circle cx="900" cy="210" r="14" fill="rgba(244,114,182,0.85)"/>
+  <circle cx="960" cy="450" r="16" fill="rgba(59,130,246,0.85)"/>
+  <circle cx="360" cy="170" r="9" fill="rgba(148,163,184,0.45)"/>
+  <circle cx="780" cy="420" r="7" fill="rgba(148,163,184,0.35)"/>
+  <rect x="560" y="60" width="80" height="24" rx="12" fill="rgba(30,64,175,0.8)"/>
+  <rect x="560" y="516" width="120" height="24" rx="12" fill="rgba(190,24,93,0.6)"/>
+  <rect x="1040" y="120" width="80" height="24" rx="12" fill="rgba(125,211,252,0.6)"/>
+  <rect x="60" y="480" width="100" height="26" rx="13" fill="rgba(56,189,248,0.45)"/>
+  <rect x="460" y="400" width="120" height="32" rx="16" fill="rgba(129,140,248,0.35)"/>
+  <rect x="260" y="340" width="140" height="32" rx="16" fill="rgba(244,114,182,0.35)"/>
+  <rect x="720" y="120" width="160" height="32" rx="16" fill="rgba(96,165,250,0.35)"/>
+  <rect x="104" y="112" width="200" height="112" rx="10" fill="url(#paint1_linear)" opacity="0.4"/>
+  <rect x="904" y="392" width="200" height="112" rx="10" fill="url(#paint1_linear)" opacity="0.4"/>
+</svg>
