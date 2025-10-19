@@ -31,6 +31,7 @@ export function FloorMapAdmin() {
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadName, setUploadName] = useState("");
   const [uploadFloor, setUploadFloor] = useState("");
+  const [uploadDestinationTag, setUploadDestinationTag] = useState("");
   const [uploadWidth, setUploadWidth] = useState<number | null>(null);
   const [uploadHeight, setUploadHeight] = useState<number | null>(null);
   const [uploadOriginLat, setUploadOriginLat] = useState("");
@@ -54,6 +55,7 @@ export function FloorMapAdmin() {
   const [georefForm, setGeorefForm] = useState({
     name: "",
     floor: "",
+    destinationTag: "",
     georefOriginLat: "",
     georefOriginLon: "",
     georefRotationDeg: "0",
@@ -93,6 +95,7 @@ export function FloorMapAdmin() {
       setGeorefForm({
         name: "",
         floor: "",
+        destinationTag: "",
         georefOriginLat: "",
         georefOriginLon: "",
         georefRotationDeg: "0",
@@ -103,6 +106,7 @@ export function FloorMapAdmin() {
     setGeorefForm({
       name: selectedMap.name,
       floor: selectedMap.floor ?? "",
+      destinationTag: selectedMap.destinationTag ?? "",
       georefOriginLat: formatNumber(selectedMap.georefOriginLat, 6),
       georefOriginLon: formatNumber(selectedMap.georefOriginLon, 6),
       georefRotationDeg: formatNumber(selectedMap.georefRotationDeg, 2),
@@ -138,6 +142,7 @@ export function FloorMapAdmin() {
     setUploadFile(null);
     setUploadName("");
     setUploadFloor("");
+    setUploadDestinationTag("");
     setUploadWidth(null);
     setUploadHeight(null);
     setUploadOriginLat("");
@@ -160,6 +165,7 @@ export function FloorMapAdmin() {
     formData.append("file", uploadFile);
     formData.append("name", uploadName.trim());
     if (uploadFloor.trim()) formData.append("floor", uploadFloor.trim());
+    if (uploadDestinationTag.trim()) formData.append("destinationTag", uploadDestinationTag.trim());
     formData.append("width", uploadWidth.toString());
     formData.append("height", uploadHeight.toString());
     if (uploadOriginLat.trim()) formData.append("georefOriginLat", uploadOriginLat.trim());
@@ -314,6 +320,7 @@ export function FloorMapAdmin() {
         body: JSON.stringify({
           name: georefForm.name.trim() || selectedMap.name,
           floor: georefForm.floor.trim() || null,
+          destinationTag: georefForm.destinationTag.trim() || null,
           georefOriginLat: originLat,
           georefOriginLon: originLon,
           georefRotationDeg: rotation,
@@ -372,6 +379,14 @@ export function FloorMapAdmin() {
                 <span className="text-slate-300">Floor / zone (optional)</span>
                 <Input value={uploadFloor} onChange={(event) => setUploadFloor(event.target.value)} placeholder="Floor 1" />
               </label>
+              <label className="flex flex-col gap-2 text-sm md:col-span-2">
+                <span className="text-slate-300">Destination tag (optional)</span>
+                <Input
+                  value={uploadDestinationTag}
+                  onChange={(event) => setUploadDestinationTag(event.target.value)}
+                  placeholder="North Dock"
+                />
+              </label>
             </div>
             <label className="flex flex-col gap-2 text-sm">
               <span className="text-slate-300">Map image</span>
@@ -427,6 +442,7 @@ export function FloorMapAdmin() {
                       <option key={map.id} value={map.id}>
                         {map.name}
                         {map.floor ? ` · ${map.floor}` : ""}
+                        {map.destinationTag ? ` · Tag ${map.destinationTag}` : ""}
                       </option>
                     ))}
                   </select>
@@ -542,6 +558,13 @@ export function FloorMapAdmin() {
                 <Input
                   value={georefForm.floor}
                   onChange={(event) => setGeorefForm((prev) => ({ ...prev, floor: event.target.value }))}
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-sm">
+                <span className="text-slate-300">Destination tag</span>
+                <Input
+                  value={georefForm.destinationTag}
+                  onChange={(event) => setGeorefForm((prev) => ({ ...prev, destinationTag: event.target.value }))}
                 />
               </label>
               <label className="flex flex-col gap-2 text-sm">

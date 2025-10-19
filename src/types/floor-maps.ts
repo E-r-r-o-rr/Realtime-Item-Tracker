@@ -14,6 +14,7 @@ export type FloorMap = {
   id: number;
   name: string;
   floor: string | null;
+  destinationTag: string | null;
   imageUrl: string;
   width: number;
   height: number;

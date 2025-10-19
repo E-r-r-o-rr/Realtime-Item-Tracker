@@ -6,6 +6,7 @@ export interface FloorMapRecord {
   id: number;
   name: string;
   floor: string | null;
+  destinationTag: string | null;
   imagePath: string;
   width: number;
   height: number;
@@ -197,6 +198,7 @@ function ensureFloorMapSchema(database: Database.Database) {
       'latitude',
       'longitude',
     ].includes(col.name));
+  const hasDestinationTagColumn = existingColumns.some((col) => col.name === 'destination_tag');
 
   if (hasLegacySchema) {
     database.exec(`DROP TABLE IF EXISTS floor_maps`);
@@ -207,6 +209,7 @@ function ensureFloorMapSchema(database: Database.Database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       floor TEXT,
+      destination_tag TEXT,
       image_path TEXT NOT NULL,
       width INTEGER NOT NULL,
       height INTEGER NOT NULL,
@@ -232,6 +235,10 @@ function ensureFloorMapSchema(database: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_map_points_label ON map_points(label);
     CREATE INDEX IF NOT EXISTS idx_map_points_map_label ON map_points(map_id, label);
   `);
+
+  if (!hasLegacySchema && existingColumns.length > 0 && !hasDestinationTagColumn) {
+    database.exec(`ALTER TABLE floor_maps ADD COLUMN destination_tag TEXT`);
+  }
 }
 
 const EARTH_RADIUS_M = 6_378_137;
@@ -261,6 +268,7 @@ const mapFloorMapRow = (row: any): FloorMapRecord => ({
   id: row.id,
   name: row.name,
   floor: row.floor ?? null,
+  destinationTag: row.destination_tag ?? null,
   imagePath: row.image_path,
   width: row.width,
   height: row.height,
@@ -333,6 +341,7 @@ export const getFloorMapWithPoints = (id: number): (FloorMapRecord & { points: M
 export const createFloorMap = (payload: {
   name: string;
   floor?: string | null;
+  destinationTag?: string | null;
   imagePath: string;
   width: number;
   height: number;
@@ -342,12 +351,13 @@ export const createFloorMap = (payload: {
   georefScaleMPx?: number;
 }): FloorMapRecord => {
   const stmt = getDb().prepare(
-    `INSERT INTO floor_maps (name, floor, image_path, width, height, georef_origin_lat, georef_origin_lon, georef_rotation_deg, georef_scale_m_per_px)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO floor_maps (name, floor, destination_tag, image_path, width, height, georef_origin_lat, georef_origin_lon, georef_rotation_deg, georef_scale_m_per_px)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const info = stmt.run(
     payload.name,
     payload.floor ?? null,
+    payload.destinationTag ?? null,
     payload.imagePath,
     payload.width,
     payload.height,
@@ -366,6 +376,7 @@ export const updateFloorMap = (
   updates: Partial<{
     name: string;
     floor: string | null;
+    destinationTag: string | null;
     imagePath: string;
     width: number;
     height: number;
@@ -381,6 +392,7 @@ export const updateFloorMap = (
   const next = {
     name: updates.name ?? existing.name,
     floor: updates.floor === undefined ? existing.floor : updates.floor,
+    destinationTag: updates.destinationTag === undefined ? existing.destinationTag : updates.destinationTag,
     imagePath: updates.imagePath ?? existing.imagePath,
     width: updates.width ?? existing.width,
     height: updates.height ?? existing.height,
@@ -395,6 +407,7 @@ export const updateFloorMap = (
       `UPDATE floor_maps
          SET name = ?,
              floor = ?,
+             destination_tag = ?,
              image_path = ?,
              width = ?,
              height = ?,
@@ -408,6 +421,7 @@ export const updateFloorMap = (
     .run(
       next.name,
       next.floor ?? null,
+      next.destinationTag ?? null,
       next.imagePath,
       next.width,
       next.height,

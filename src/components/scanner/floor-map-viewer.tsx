@@ -25,6 +25,7 @@ const buildNavigationPayload = (map: FloorMap, point: MapPoint) => ({
     id: map.id,
     name: map.name,
     floor: map.floor,
+    destination_tag: map.destinationTag,
     georeference: {
       origin_lat: map.georefOriginLat,
       origin_lon: map.georefOriginLon,
@@ -36,8 +37,10 @@ const buildNavigationPayload = (map: FloorMap, point: MapPoint) => ({
 });
 
 const formatFloorLabel = (map: FloorMap) => {
-  if (!map.floor) return map.name;
-  return `${map.name} · ${map.floor}`;
+  const parts = [map.name];
+  if (map.floor) parts.push(map.floor);
+  if (map.destinationTag) parts.push(`Tag ${map.destinationTag}`);
+  return parts.join(' · ');
 };
 
 export function FloorMapViewer({ activeDestination }: FloorMapViewerProps) {
@@ -111,6 +114,12 @@ export function FloorMapViewer({ activeDestination }: FloorMapViewerProps) {
       return;
     }
     const normalizedDestination = normalize(activeDestination);
+    const tagMatch = maps.find(
+      (map) => map.destinationTag && normalize(map.destinationTag) === normalizedDestination,
+    );
+    if (tagMatch && tagMatch.id !== selectedMapId) {
+      setSelectedMapId(tagMatch.id);
+    }
     let matched: { map: FloorMap; point: MapPoint } | undefined;
     const suggestionPool: Array<{ map: FloorMap; point: MapPoint; score: number }> = [];
 
@@ -141,7 +150,7 @@ export function FloorMapViewer({ activeDestination }: FloorMapViewerProps) {
     suggestionPool.sort((a, b) => b.score - a.score || a.point.label.localeCompare(b.point.label));
     setSuggestions(suggestionPool.slice(0, 5).map(({ map, point }) => ({ mapId: map.id, point })));
     setNavigationStatus(`No map label matched "${activeDestination}". Select a suggestion to continue.`);
-  }, [activeDestination, maps]);
+  }, [activeDestination, maps, selectedMapId]);
 
   const selectedPoint = useMemo(() => {
     if (!selectedMap || selectedPointId === null) return null;

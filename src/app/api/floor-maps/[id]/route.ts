@@ -39,6 +39,12 @@ export async function PUT(request: NextRequest, context: { params: Promise<Route
     const updates = {
       name: typeof body.name === 'string' ? body.name.trim() : undefined,
       floor: typeof body.floor === 'string' ? body.floor.trim() : body.floor === null ? null : undefined,
+      destinationTag:
+        typeof body.destinationTag === 'string'
+          ? body.destinationTag.trim() || null
+          : body.destinationTag === null
+            ? null
+            : undefined,
       georefOriginLat:
         body.georefOriginLat === null || body.georefOriginLat === undefined || body.georefOriginLat === ''
           ? null

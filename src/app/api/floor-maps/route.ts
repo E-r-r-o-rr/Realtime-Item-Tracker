@@ -29,6 +29,7 @@ export async function POST(request: NextRequest) {
     const file = formData.get('file');
     const nameValue = formData.get('name');
     const floorValue = formData.get('floor');
+    const destinationTagValue = formData.get('destinationTag');
     const widthValue = formData.get('width');
     const heightValue = formData.get('height');
     const georefOriginLat = formData.get('georefOriginLat');
@@ -38,6 +39,7 @@ export async function POST(request: NextRequest) {
 
     const name = typeof nameValue === 'string' ? nameValue.trim() : '';
     const floor = typeof floorValue === 'string' ? floorValue.trim() : null;
+    const destinationTag = typeof destinationTagValue === 'string' ? destinationTagValue.trim() : '';
     const width = typeof widthValue === 'string' ? Number(widthValue) : Number.NaN;
     const height = typeof heightValue === 'string' ? Number(heightValue) : Number.NaN;
     const georefRotationDeg = typeof georefRotationValue === 'string' ? Number(georefRotationValue) : Number(georefRotationValue ?? 0);
@@ -86,6 +88,7 @@ export async function POST(request: NextRequest) {
     const map = createFloorMap({
       name,
       floor,
+      destinationTag: destinationTag || null,
       imagePath: path.join('maps', filename),
       width,
       height,
