@@ -647,6 +647,7 @@ export default function ScannerDashboard() {
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
   const [bookingWarning, setBookingWarning] = useState<string | null>(null);
   const [bookingSuccess, setBookingSuccess] = useState<string | null>(null);
+  const [checkingBooking, setCheckingBooking] = useState(false);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState<number>(DEFAULT_REFRESH_MS);
   const [hasHydrated, setHasHydrated] = useState(false);
 
@@ -1032,6 +1033,68 @@ export default function ScannerDashboard() {
     setBookingSuccess(null);
   };
 
+  const handleRecheckBooking = useCallback(async () => {
+    const activeTrackingId = liveRecord?.trackingId?.trim();
+    if (!activeTrackingId) {
+      setStatus("No tracking ID available to recheck.");
+      return;
+    }
+
+    setCheckingBooking(true);
+    try {
+      const params = new URLSearchParams({
+        trackingId: activeTrackingId,
+        verifyBooking: "true",
+      });
+      const response = await fetch(`/api/orders?${params.toString()}`, { cache: "no-store" });
+      const payload: {
+        record?: ApiLiveBufferRecord;
+        bookingFound?: boolean;
+        warning?: string;
+        message?: string;
+        error?: string;
+      } = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+
+      if (payload.record) {
+        updateLiveRecord(mapApiRecordToLive(payload.record));
+      }
+
+      const refreshedTrackingId = payload.record?.trackingId?.trim() || activeTrackingId;
+      const warningMessage = typeof payload.warning === "string" ? payload.warning.trim() : "";
+      const message = typeof payload.message === "string" ? payload.message.trim() : "";
+
+      if (payload.bookingFound) {
+        const successCopy = message || `Booked item found for ${refreshedTrackingId}`;
+        setBookingWarning(null);
+        setBookingSuccess(successCopy);
+        const statusSegments: string[] = [];
+        if (refreshedTrackingId) {
+          statusSegments.push(`Order ${refreshedTrackingId} -`);
+        }
+        statusSegments.push("Booked item found.");
+        setStatus(statusSegments.join(" ").replace(/\s+/g, " ").trim());
+      } else {
+        const warningCopy = warningMessage || message || "Booked item not found";
+        setBookingWarning(warningCopy);
+        setBookingSuccess(null);
+        const statusSegments: string[] = [];
+        if (refreshedTrackingId) {
+          statusSegments.push(`Order ${refreshedTrackingId} -`);
+        }
+        statusSegments.push("Booked item not found.");
+        setStatus(statusSegments.join(" ").replace(/\s+/g, " ").trim());
+      }
+    } catch (error) {
+      console.error("Failed to recheck booking status", error);
+      setStatus("Failed to recheck booking status.");
+    } finally {
+      setCheckingBooking(false);
+    }
+  }, [liveRecord, mapApiRecordToLive, updateLiveRecord]);
+
   const handleRefreshIntervalChange = useCallback(
     (event: React.ChangeEvent<HTMLSelectElement>) => {
       const rawValue = Number(event.target.value);
@@ -1193,9 +1256,20 @@ export default function ScannerDashboard() {
               />
             </svg>
           </span>
-          <div>
-            <span className="font-semibold uppercase tracking-[0.3em] text-rose-200/80">Booking alert</span>
-            <p className="mt-2 text-base text-rose-100/90">{bookingWarning}</p>
+          <div className="flex w-full flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <span className="font-semibold uppercase tracking-[0.3em] text-rose-200/80">Booking alert</span>
+              <p className="mt-2 text-base text-rose-100/90">{bookingWarning}</p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleRecheckBooking}
+              disabled={checkingBooking}
+              className="shrink-0 border-rose-400/60 px-4 py-2 text-xs text-rose-100 hover:bg-rose-500/10 hover:text-rose-50"
+            >
+              {checkingBooking ? "Checking…" : "Check again"}
+            </Button>
           </div>
         </div>
       )}

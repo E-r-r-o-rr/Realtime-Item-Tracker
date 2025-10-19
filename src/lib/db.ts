@@ -866,6 +866,72 @@ export const ingestLiveBufferEntry = (
   return result;
 };
 
+export const recheckBookingForLiveBuffer = (
+  trackingId: string,
+): { record?: LiveBufferRecord; bookingFound: boolean; message?: string } => {
+  const currentRecord = getLiveBufferByTrackingId(trackingId);
+  if (!currentRecord) {
+    return { bookingFound: false };
+  }
+
+  const booking = getBookingByTrackingId(trackingId);
+  if (!booking) {
+    return {
+      record: currentRecord,
+      bookingFound: false,
+      message: 'Booked item not found',
+    };
+  }
+
+  const storageMatch =
+    getStorageByTruckAndShipDate(currentRecord.truckNumber, currentRecord.shipDate) ||
+    getStorageByTrackingId(trackingId);
+
+  if (storageMatch) {
+    getDb()
+      .prepare(
+        `UPDATE live_buffer SET
+           destination = ?,
+           item_name = ?,
+           tracking_id = ?,
+           truck_number = ?,
+           ship_date = ?,
+           expected_departure_time = ?,
+           origin_location = ?,
+           last_synced_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+      )
+      .run(
+        storageMatch.destination,
+        storageMatch.itemName,
+        storageMatch.trackingId,
+        storageMatch.truckNumber,
+        storageMatch.shipDate,
+        storageMatch.expectedDepartureTime,
+        storageMatch.originLocation,
+        currentRecord.id,
+      );
+
+    const refreshedTrackingId = storageMatch.trackingId || trackingId;
+    const refreshedRecord =
+      getLiveBufferByTrackingId(refreshedTrackingId) || getLiveBufferByTrackingId(trackingId);
+    if (refreshedRecord) {
+      return {
+        record: refreshedRecord,
+        bookingFound: true,
+        message: `Booked item found for ${refreshedRecord.trackingId}`,
+      };
+    }
+  }
+
+  const fallbackRecord = getLiveBufferByTrackingId(trackingId) || currentRecord;
+  return {
+    record: fallbackRecord,
+    bookingFound: true,
+    message: `Booked item found for ${fallbackRecord.trackingId}`,
+  };
+};
+
 export const syncLiveBufferWithStorage = (): LiveBufferRecord[] => {
   const database = getDb();
   const rows = database.prepare(`SELECT * FROM live_buffer`).all() as any[];

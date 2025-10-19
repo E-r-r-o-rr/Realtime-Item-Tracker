@@ -7,6 +7,7 @@ import {
   updateStorageRecord,
   deleteLiveBufferEntry,
   clearLiveBuffer,
+  recheckBookingForLiveBuffer,
 } from '@/lib/db';
 
 const REQUIRED_FIELDS = [
@@ -48,6 +49,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const trackingId = searchParams.get('trackingId') ?? searchParams.get('code');
   const shouldSync = searchParams.get('sync') === 'true';
+  const verifyBooking = searchParams.get('verifyBooking') === 'true';
 
   if (shouldSync) {
     syncLiveBufferWithStorage();
@@ -61,6 +63,22 @@ export async function GET(req: Request) {
   const record = getLiveBufferByTrackingId(trackingId);
   if (!record) {
     return NextResponse.json({ error: 'Live buffer entry not found' }, { status: 404 });
+  }
+
+  if (verifyBooking) {
+    const result = recheckBookingForLiveBuffer(trackingId);
+    const responseRecord = result.record ?? record;
+    const payload: Record<string, unknown> = {
+      record: responseRecord,
+      bookingFound: result.bookingFound,
+    };
+    if (result.message) {
+      payload.message = result.message;
+    }
+    if (!result.bookingFound && result.message) {
+      payload.warning = result.message;
+    }
+    return NextResponse.json(payload);
   }
   return NextResponse.json({ record });
 }
