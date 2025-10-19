@@ -2,458 +2,451 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
-export interface OrderRecord {
-  id: number;
-  code: string;
-  data: any;
-  collected: number;
-  floor: string;
-  section: string;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface FloorMapRecord {
   id: number;
-  name: string;
-  image_path: string;
-  width: number;
-  height: number;
-  georef_origin_lat: number | null;
-  georef_origin_lon: number | null;
-  georef_rotation_deg: number | null;
-  georef_scale_m_per_px: number | null;
-  floor: string;
-  created_at: string;
-  updated_at: string;
+  destination: string;
+  latitude: number;
+  longitude: number;
 }
 
-export interface MapPointRecord {
+export interface LogisticsFields {
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  originLocation: string;
+}
+
+export interface LiveBufferRecord extends LogisticsFields {
   id: number;
-  map_id: number;
-  label: string;
-  x_px: number;
-  y_px: number;
-  lat: number | null;
-  lon: number | null;
-  created_at: string;
-  updated_at: string;
+  lastSyncedAt: string;
 }
 
-export interface MapPointWithSynonyms extends MapPointRecord {
-  synonyms: string[];
+export interface BookingRecord extends LogisticsFields {
+  id: number;
+  createdAt: string;
 }
 
-export interface FloorMapSummary extends FloorMapRecord {
-  point_count: number;
+export interface StorageRecord extends LogisticsFields {
+  id: number;
+  booked: number;
+  lastUpdated: string;
+}
+
+export interface HistoryRecord extends LogisticsFields {
+  id: number;
+  recordedAt: string;
 }
 
 let db: Database.Database | null = null;
 
-/**
- * Ensure the SQLite database and required tables exist. This function must be
- * called before any database operation. We use a file-based SQLite DB
- * located in the project's `data` directory for portability. SQLite is
- * well-suited for simple, file-based applications and avoids the overhead
- * of client‑server databases like PostgreSQL【575545403815759†L70-L114】.
- */
+const TABLE_COLUMNS = `
+  destination,
+  item_name,
+  tracking_id,
+  truck_number,
+  ship_date,
+  expected_departure_time,
+  origin_location
+`;
+
+const toLogisticsArray = (payload: LogisticsFields) => [
+  payload.destination,
+  payload.itemName,
+  payload.trackingId,
+  payload.truckNumber,
+  payload.shipDate,
+  payload.expectedDepartureTime,
+  payload.originLocation,
+];
+
+const mapLiveBufferRow = (row: any): LiveBufferRecord => ({
+  id: row.id,
+  destination: row.destination,
+  itemName: row.item_name,
+  trackingId: row.tracking_id,
+  truckNumber: row.truck_number,
+  shipDate: row.ship_date,
+  expectedDepartureTime: row.expected_departure_time,
+  originLocation: row.origin_location,
+  lastSyncedAt: row.last_synced_at,
+});
+
+const mapBookingRow = (row: any): BookingRecord => ({
+  id: row.id,
+  destination: row.destination,
+  itemName: row.item_name,
+  trackingId: row.tracking_id,
+  truckNumber: row.truck_number,
+  shipDate: row.ship_date,
+  expectedDepartureTime: row.expected_departure_time,
+  originLocation: row.origin_location,
+  createdAt: row.created_at,
+});
+
+const mapStorageRow = (row: any): StorageRecord => ({
+  id: row.id,
+  destination: row.destination,
+  itemName: row.item_name,
+  trackingId: row.tracking_id,
+  truckNumber: row.truck_number,
+  shipDate: row.ship_date,
+  expectedDepartureTime: row.expected_departure_time,
+  originLocation: row.origin_location,
+  booked: row.booked,
+  lastUpdated: row.last_updated,
+});
+
+const mapHistoryRow = (row: any): HistoryRecord => ({
+  id: row.id,
+  destination: row.destination,
+  itemName: row.item_name,
+  trackingId: row.tracking_id,
+  truckNumber: row.truck_number,
+  shipDate: row.ship_date,
+  expectedDepartureTime: row.expected_departure_time,
+  originLocation: row.origin_location,
+  recordedAt: row.recorded_at,
+});
+
 function initDb() {
   if (db) return;
   const dataDir = path.join(process.cwd(), 'data');
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
   const dbPath = path.join(dataDir, 'app.db');
   db = new Database(dbPath);
-  // Enable foreign keys
   db.pragma('foreign_keys = ON');
-  // Create tables if they do not exist
   db.exec(`
-    CREATE TABLE IF NOT EXISTS orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      code TEXT NOT NULL UNIQUE,
-      data TEXT,
-      collected INTEGER NOT NULL DEFAULT 0,
-      floor TEXT,
-      section TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS aliases (
-      alias TEXT PRIMARY KEY,
-      code TEXT NOT NULL,
-      FOREIGN KEY (code) REFERENCES orders(code) ON DELETE CASCADE
-    );
     CREATE TABLE IF NOT EXISTS floor_maps (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      image_path TEXT NOT NULL,
-      width INTEGER NOT NULL,
-      height INTEGER NOT NULL,
-      georef_origin_lat REAL,
-      georef_origin_lon REAL,
-      georef_rotation_deg REAL,
-      georef_scale_m_per_px REAL,
-      floor TEXT NOT NULL,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      destination TEXT NOT NULL,
+      latitude REAL NOT NULL,
+      longitude REAL NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS map_points (
+    CREATE TABLE IF NOT EXISTS live_buffer (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      map_id INTEGER NOT NULL,
-      label TEXT NOT NULL,
-      x_px REAL NOT NULL,
-      y_px REAL NOT NULL,
-      lat REAL,
-      lon REAL,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (map_id) REFERENCES floor_maps(id) ON DELETE CASCADE
+      destination TEXT NOT NULL,
+      item_name TEXT NOT NULL,
+      tracking_id TEXT NOT NULL UNIQUE,
+      truck_number TEXT NOT NULL,
+      ship_date TEXT NOT NULL,
+      expected_departure_time TEXT NOT NULL,
+      origin_location TEXT NOT NULL,
+      last_synced_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE TABLE IF NOT EXISTS map_point_synonyms (
+    CREATE TABLE IF NOT EXISTS bookings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      point_id INTEGER NOT NULL,
-      synonym TEXT NOT NULL,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (point_id) REFERENCES map_points(id) ON DELETE CASCADE,
-      UNIQUE(point_id, synonym)
+      destination TEXT NOT NULL,
+      item_name TEXT NOT NULL,
+      tracking_id TEXT NOT NULL UNIQUE,
+      truck_number TEXT NOT NULL,
+      ship_date TEXT NOT NULL,
+      expected_departure_time TEXT NOT NULL,
+      origin_location TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS storage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      destination TEXT NOT NULL,
+      item_name TEXT NOT NULL,
+      tracking_id TEXT NOT NULL UNIQUE,
+      truck_number TEXT NOT NULL,
+      ship_date TEXT NOT NULL,
+      expected_departure_time TEXT NOT NULL,
+      origin_location TEXT NOT NULL,
+      booked INTEGER NOT NULL DEFAULT 0,
+      last_updated TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      destination TEXT NOT NULL,
+      item_name TEXT NOT NULL,
+      tracking_id TEXT NOT NULL,
+      truck_number TEXT NOT NULL,
+      ship_date TEXT NOT NULL,
+      expected_departure_time TEXT NOT NULL,
+      origin_location TEXT NOT NULL,
+      recorded_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
   `);
 }
 
-/**
- * Get the singleton database connection. Initializes the database on first
- * call.
- */
 export function getDb(): Database.Database {
   initDb();
   if (!db) throw new Error('Failed to initialize database');
   return db;
 }
 
-/**
- * Retrieve an order by its item code. Returns undefined if no such order
- * exists.
- */
-export function getOrder(code: string): OrderRecord | undefined {
+export const listFloorMaps = (): FloorMapRecord[] => {
+  const rows = getDb()
+    .prepare(`SELECT * FROM floor_maps ORDER BY destination COLLATE NOCASE`)
+    .all();
+  return rows.map((row: any) => ({
+    id: row.id,
+    destination: row.destination,
+    latitude: row.latitude,
+    longitude: row.longitude,
+  }));
+};
+
+export const createFloorMap = (payload: { destination: string; latitude: number; longitude: number }): FloorMapRecord => {
   const stmt = getDb().prepare(
-    `SELECT * FROM orders WHERE code = ? LIMIT 1`,
+    `INSERT INTO floor_maps (destination, latitude, longitude) VALUES (?, ?, ?)`
   );
-  const row = stmt.get(code);
-  return row as OrderRecord | undefined;
-}
-
-/**
- * Create a new order. Accepts an object containing the item code, arbitrary
- * JSON data (stored as a string) and optional floor/section assignments. If
- * an alias list is provided, the function inserts them into the aliases table.
- */
-export function createOrder(
-  code: string,
-  data: any,
-  floor: string,
-  section: string,
-  aliases?: string[],
-): OrderRecord {
-  const db = getDb();
-  const tx = db.transaction(() => {
-    db.prepare(
-      `INSERT INTO orders (code, data, floor, section) VALUES (?, ?, ?, ?)`,
-    ).run(code, JSON.stringify(data), floor, section);
-    if (aliases) {
-      const aliasStmt = db.prepare(
-        `INSERT OR IGNORE INTO aliases (alias, code) VALUES (?, ?)`,
-      );
-      for (const alias of aliases) aliasStmt.run(alias, code);
-    }
-    const order = db.prepare(`SELECT * FROM orders WHERE code = ?`).get(code);
-    return order as OrderRecord;
-  });
-  return tx();
-}
-
-/**
- * Update an existing order. Accepts a partial record with optional fields.
- */
-export function updateOrder(
-  code: string,
-  updates: { collected?: boolean; data?: any; floor?: string; section?: string },
-): OrderRecord | undefined {
-  const db = getDb();
-  const existing = getOrder(code);
-  if (!existing) return undefined;
-  const newCollected = updates.collected !== undefined ? (updates.collected ? 1 : 0) : existing.collected;
-  const newData = updates.data !== undefined ? JSON.stringify(updates.data) : existing.data;
-  const newFloor = updates.floor ?? existing.floor;
-  const newSection = updates.section ?? existing.section;
-  db.prepare(
-    `UPDATE orders SET collected = ?, data = ?, floor = ?, section = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?`,
-  ).run(newCollected, newData, newFloor, newSection, code);
-  return getOrder(code);
-}
-
-/**
- * Resolve an item code or alias to the canonical order code and its location.
- * If multiple orders share the same alias (ambiguous), return undefined.
- */
-export function resolveItemCode(codeOrAlias: string): { code: string; floor: string; section: string } | undefined {
-  const db = getDb();
-  // Try to match exact code first
-  const direct = db
-    .prepare(`SELECT code, floor, section FROM orders WHERE code = ?`)
-    .get(codeOrAlias) as { code: string; floor: string; section: string } | undefined;
-  if (direct) return direct;
-  // Then look up alias mapping
-  const aliasRows = db
-    .prepare(`SELECT code FROM aliases WHERE alias = ?`)
-    .all(codeOrAlias) as { code: string }[];
-  if (aliasRows.length === 1) {
-    const { code } = aliasRows[0];
-    const order = db
-      .prepare(`SELECT code, floor, section FROM orders WHERE code = ?`)
-      .get(code) as { code: string; floor: string; section: string };
-    return order;
-  }
-  // Ambiguous or not found
-  return undefined;
-}
-
-const normalizeLabel = (label: string) => label.trim().toLowerCase();
-
-const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
-
-const computeLatLonFromPx = (
-  map: FloorMapRecord,
-  x: number,
-  y: number,
-): { lat: number | null; lon: number | null } => {
-  const originLat = map.georef_origin_lat;
-  const originLon = map.georef_origin_lon;
-  const scale = map.georef_scale_m_per_px;
-  if (originLat == null || originLon == null || !scale || Number.isNaN(scale)) {
-    return { lat: originLat ?? null, lon: originLon ?? null };
-  }
-  const rotation = toRadians(map.georef_rotation_deg ?? 0);
-  const metersEast = x * scale;
-  const metersNorth = -y * scale;
-  const rotatedEast = metersEast * Math.cos(rotation) - metersNorth * Math.sin(rotation);
-  const rotatedNorth = metersEast * Math.sin(rotation) + metersNorth * Math.cos(rotation);
-  const metersPerDegreeLat = 111_320;
-  const metersPerDegreeLon = metersPerDegreeLat * Math.cos(toRadians(originLat));
-  if (!metersPerDegreeLon) {
-    return { lat: originLat + rotatedNorth / metersPerDegreeLat, lon: originLon };
-  }
+  const info = stmt.run(payload.destination, payload.latitude, payload.longitude);
   return {
-    lat: originLat + rotatedNorth / metersPerDegreeLat,
-    lon: originLon + rotatedEast / metersPerDegreeLon,
+    id: Number(info.lastInsertRowid),
+    destination: payload.destination,
+    latitude: payload.latitude,
+    longitude: payload.longitude,
   };
-};
-
-const getMapPointRow = (id: number): MapPointWithSynonyms | undefined => {
-  const db = getDb();
-  const row = db.prepare(`SELECT * FROM map_points WHERE id = ?`).get(id) as MapPointRecord | undefined;
-  if (!row) return undefined;
-  const synonymRows = db
-    .prepare(`SELECT synonym FROM map_point_synonyms WHERE point_id = ? ORDER BY synonym`)
-    .all(id) as { synonym: string }[];
-  return { ...row, synonyms: synonymRows.map((s) => s.synonym) };
-};
-
-export interface MapPointSearchResult {
-  match: MapPointWithSynonyms | null;
-  alternatives: MapPointWithSynonyms[];
-}
-
-export const listFloorMaps = (): FloorMapSummary[] => {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT fm.*, (
-          SELECT COUNT(*) FROM map_points mp WHERE mp.map_id = fm.id
-        ) AS point_count
-       FROM floor_maps fm
-       ORDER BY fm.updated_at DESC`,
-    )
-    .all() as FloorMapSummary[];
-  return rows;
-};
-
-export const getFloorMapById = (id: number): FloorMapRecord | undefined => {
-  const db = getDb();
-  const row = db.prepare(`SELECT * FROM floor_maps WHERE id = ?`).get(id);
-  return row as FloorMapRecord | undefined;
-};
-
-export const createFloorMap = (payload: {
-  name: string;
-  imagePath: string;
-  width: number;
-  height: number;
-  georefOriginLat?: number | null;
-  georefOriginLon?: number | null;
-  georefRotationDeg?: number | null;
-  georefScaleMetersPerPixel?: number | null;
-  floor: string;
-}): FloorMapRecord => {
-  const db = getDb();
-  const info = db
-    .prepare(
-      `INSERT INTO floor_maps (
-        name,
-        image_path,
-        width,
-        height,
-        georef_origin_lat,
-        georef_origin_lon,
-        georef_rotation_deg,
-        georef_scale_m_per_px,
-        floor
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      payload.name,
-      payload.imagePath,
-      payload.width,
-      payload.height,
-      payload.georefOriginLat ?? null,
-      payload.georefOriginLon ?? null,
-      payload.georefRotationDeg ?? null,
-      payload.georefScaleMetersPerPixel ?? null,
-      payload.floor,
-    );
-  const id = Number(info.lastInsertRowid);
-  return getFloorMapById(id)!;
 };
 
 export const updateFloorMap = (
   id: number,
-  updates: Partial<{
-    name: string;
-    georefOriginLat: number | null;
-    georefOriginLon: number | null;
-    georefRotationDeg: number | null;
-    georefScaleMetersPerPixel: number | null;
-    floor: string;
-  }>,
+  updates: Partial<{ destination: string; latitude: number; longitude: number }>,
 ): FloorMapRecord | undefined => {
-  const db = getDb();
-  const existing = getFloorMapById(id);
+  const existing = getDb().prepare(`SELECT * FROM floor_maps WHERE id = ?`).get(id) as any;
   if (!existing) return undefined;
   const next = {
-    name: updates.name ?? existing.name,
-    georef_origin_lat:
-      updates.georefOriginLat !== undefined ? updates.georefOriginLat : existing.georef_origin_lat,
-    georef_origin_lon:
-      updates.georefOriginLon !== undefined ? updates.georefOriginLon : existing.georef_origin_lon,
-    georef_rotation_deg:
-      updates.georefRotationDeg !== undefined ? updates.georefRotationDeg : existing.georef_rotation_deg,
-    georef_scale_m_per_px:
-      updates.georefScaleMetersPerPixel !== undefined
-        ? updates.georefScaleMetersPerPixel
-        : existing.georef_scale_m_per_px,
-    floor: updates.floor ?? existing.floor,
+    destination: updates.destination ?? existing.destination,
+    latitude: updates.latitude ?? existing.latitude,
+    longitude: updates.longitude ?? existing.longitude,
   };
-  db.prepare(
-    `UPDATE floor_maps
-     SET name = ?,
-         georef_origin_lat = ?,
-         georef_origin_lon = ?,
-         georef_rotation_deg = ?,
-         georef_scale_m_per_px = ?,
-         floor = ?,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE id = ?`,
-  ).run(
-    next.name,
-    next.georef_origin_lat,
-    next.georef_origin_lon,
-    next.georef_rotation_deg,
-    next.georef_scale_m_per_px,
-    next.floor,
-    id,
-  );
-  return getFloorMapById(id) ?? undefined;
+  getDb()
+    .prepare(
+      `UPDATE floor_maps SET destination = ?, latitude = ?, longitude = ? WHERE id = ?`
+    )
+    .run(next.destination, next.latitude, next.longitude, id);
+  return { id, ...next };
 };
 
-export const listMapPoints = (mapId: number): MapPointWithSynonyms[] => {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT mp.*, GROUP_CONCAT(mps.synonym, '\u0001') AS synonyms
-       FROM map_points mp
-       LEFT JOIN map_point_synonyms mps ON mps.point_id = mp.id
-       WHERE mp.map_id = ?
-       GROUP BY mp.id
-       ORDER BY mp.label COLLATE NOCASE`,
-    )
-    .all(mapId) as (MapPointRecord & { synonyms: string | null })[];
-  return rows.map((row) => ({
-    ...row,
-    synonyms: row.synonyms ? row.synonyms.split('\u0001').filter(Boolean) : [],
-  }));
+export const getFloorMapById = (id: number): FloorMapRecord | undefined => {
+  const row = getDb().prepare(`SELECT * FROM floor_maps WHERE id = ?`).get(id) as any;
+  if (!row) return undefined;
+  return {
+    id: row.id,
+    destination: row.destination,
+    latitude: row.latitude,
+    longitude: row.longitude,
+  };
 };
 
-export const createMapPoint = (payload: {
-  mapId: number;
-  label: string;
-  x_px: number;
-  y_px: number;
-  synonyms?: string[];
-}): MapPointWithSynonyms => {
-  const map = getFloorMapById(payload.mapId);
-  if (!map) throw new Error(`Map ${payload.mapId} not found`);
-  const coords = computeLatLonFromPx(map, payload.x_px, payload.y_px);
-  const db = getDb();
-  const info = db
+export const listLiveBuffer = (): LiveBufferRecord[] => {
+  const rows = getDb().prepare(`SELECT * FROM live_buffer ORDER BY last_synced_at DESC`).all();
+  return rows.map(mapLiveBufferRow);
+};
+
+export const getLiveBufferByTrackingId = (trackingId: string): LiveBufferRecord | undefined => {
+  const row = getDb()
+    .prepare(`SELECT * FROM live_buffer WHERE tracking_id = ?`)
+    .get(trackingId);
+  return row ? mapLiveBufferRow(row) : undefined;
+};
+
+const getBookingByTrackingId = (trackingId: string): BookingRecord | undefined => {
+  const row = getDb()
+    .prepare(`SELECT * FROM bookings WHERE tracking_id = ?`)
+    .get(trackingId);
+  return row ? mapBookingRow(row) : undefined;
+};
+
+export const listBookings = (): BookingRecord[] => {
+  const rows = getDb().prepare(`SELECT * FROM bookings ORDER BY created_at DESC`).all();
+  return rows.map(mapBookingRow);
+};
+
+export const listStorage = (): StorageRecord[] => {
+  const rows = getDb().prepare(`SELECT * FROM storage ORDER BY last_updated DESC`).all();
+  return rows.map(mapStorageRow);
+};
+
+export const getStorageByTruckAndShipDate = (
+  truckNumber: string,
+  shipDate: string,
+): StorageRecord | undefined => {
+  const row = getDb()
+    .prepare(`SELECT * FROM storage WHERE truck_number = ? AND ship_date = ? LIMIT 1`)
+    .get(truckNumber, shipDate);
+  return row ? mapStorageRow(row) : undefined;
+};
+
+const synchronizeBookingForStorage = (storage: StorageRecord) => {
+  const database = getDb();
+  if (storage.booked) {
+    database
+      .prepare(
+        `INSERT INTO bookings (${TABLE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(tracking_id) DO UPDATE SET
+           destination = excluded.destination,
+           item_name = excluded.item_name,
+           truck_number = excluded.truck_number,
+           ship_date = excluded.ship_date,
+           expected_departure_time = excluded.expected_departure_time,
+           origin_location = excluded.origin_location`
+      )
+      .run(...toLogisticsArray(storage));
+  } else {
+    database.prepare(`DELETE FROM bookings WHERE tracking_id = ?`).run(storage.trackingId);
+  }
+};
+
+export const upsertStorageRecord = (
+  payload: LogisticsFields & { booked?: boolean },
+): StorageRecord => {
+  const database = getDb();
+  const bookedFlag = payload.booked ? 1 : 0;
+  database
     .prepare(
-      `INSERT INTO map_points (map_id, label, x_px, y_px, lat, lon)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO storage (${TABLE_COLUMNS}, booked) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(tracking_id) DO UPDATE SET
+         destination = excluded.destination,
+         item_name = excluded.item_name,
+         truck_number = excluded.truck_number,
+         ship_date = excluded.ship_date,
+         expected_departure_time = excluded.expected_departure_time,
+         origin_location = excluded.origin_location,
+         booked = excluded.booked,
+         last_updated = CURRENT_TIMESTAMP`
     )
-    .run(payload.mapId, payload.label.trim(), payload.x_px, payload.y_px, coords.lat, coords.lon);
-  const pointId = Number(info.lastInsertRowid);
-  if (payload.synonyms?.length) {
-    const stmt = db.prepare(
-      `INSERT OR IGNORE INTO map_point_synonyms (point_id, synonym)
-       VALUES (?, ?)`,
+    .run(...toLogisticsArray(payload), bookedFlag);
+  const row = database
+    .prepare(`SELECT * FROM storage WHERE tracking_id = ?`)
+    .get(payload.trackingId);
+  const storage = mapStorageRow(row);
+  synchronizeBookingForStorage(storage);
+  return storage;
+};
+
+export const updateStorageRecord = (
+  trackingId: string,
+  updates: Partial<Pick<LogisticsFields, 'destination' | 'trackingId' | 'expectedDepartureTime'>> & {
+    booked?: boolean;
+  },
+): StorageRecord | undefined => {
+  const database = getDb();
+  const existingRow = database
+    .prepare(`SELECT * FROM storage WHERE tracking_id = ?`)
+    .get(trackingId);
+  if (!existingRow) return undefined;
+  const existing = mapStorageRow(existingRow);
+  const nextTrackingId = updates.trackingId ?? existing.trackingId;
+  const trackingChanged = nextTrackingId !== existing.trackingId;
+  database
+    .prepare(
+      `UPDATE storage SET
+         destination = ?,
+         tracking_id = ?,
+         expected_departure_time = ?,
+         booked = ?,
+         last_updated = CURRENT_TIMESTAMP
+       WHERE id = ?`
+    )
+    .run(
+      updates.destination ?? existing.destination,
+      nextTrackingId,
+      updates.expectedDepartureTime ?? existing.expectedDepartureTime,
+      updates.booked !== undefined ? (updates.booked ? 1 : 0) : existing.booked,
+      existing.id,
     );
-    for (const synonym of payload.synonyms) {
-      const trimmed = synonym.trim();
-      if (trimmed) stmt.run(pointId, trimmed);
+  if (trackingChanged) {
+    database.prepare(`DELETE FROM bookings WHERE tracking_id = ?`).run(existing.trackingId);
+  }
+  const refreshedRow = database.prepare(`SELECT * FROM storage WHERE id = ?`).get(existing.id);
+  if (!refreshedRow) return undefined;
+  const storage = mapStorageRow(refreshedRow);
+  synchronizeBookingForStorage(storage);
+  return storage;
+};
+
+export const appendHistoryRecord = (payload: LogisticsFields): HistoryRecord => {
+  const stmt = getDb().prepare(
+    `INSERT INTO history (${TABLE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  const info = stmt.run(...toLogisticsArray(payload));
+  const row = getDb()
+    .prepare(`SELECT * FROM history WHERE id = ?`)
+    .get(Number(info.lastInsertRowid));
+  return mapHistoryRow(row);
+};
+
+export const listHistory = (): HistoryRecord[] => {
+  const rows = getDb().prepare(`SELECT * FROM history ORDER BY recorded_at DESC`).all();
+  return rows.map(mapHistoryRow);
+};
+
+export const ingestLiveBufferEntry = (
+  payload: LogisticsFields,
+): { record?: LiveBufferRecord; message?: string } => {
+  const booking = getBookingByTrackingId(payload.trackingId);
+  if (!booking) {
+    return { message: 'Booked item not found' };
+  }
+  const storage = getStorageByTruckAndShipDate(payload.truckNumber, payload.shipDate);
+  if (!storage) {
+    return { message: 'Storage entry not found for booked item' };
+  }
+  const database = getDb();
+  database
+    .prepare(
+      `INSERT INTO live_buffer (${TABLE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(tracking_id) DO UPDATE SET
+         destination = excluded.destination,
+         item_name = excluded.item_name,
+         truck_number = excluded.truck_number,
+         ship_date = excluded.ship_date,
+         expected_departure_time = excluded.expected_departure_time,
+         origin_location = excluded.origin_location,
+         last_synced_at = CURRENT_TIMESTAMP`
+    )
+    .run(
+      storage.destination,
+      storage.itemName,
+      storage.trackingId,
+      storage.truckNumber,
+      storage.shipDate,
+      storage.expectedDepartureTime,
+      storage.originLocation,
+    );
+  appendHistoryRecord(storage);
+  const row = database
+    .prepare(`SELECT * FROM live_buffer WHERE tracking_id = ?`)
+    .get(storage.trackingId);
+  return { record: mapLiveBufferRow(row) };
+};
+
+export const syncLiveBufferWithStorage = (): LiveBufferRecord[] => {
+  const database = getDb();
+  const rows = database.prepare(`SELECT * FROM live_buffer`).all() as any[];
+  const updateStmt = database.prepare(
+    `UPDATE live_buffer SET
+       destination = ?,
+       item_name = ?,
+       tracking_id = ?,
+       truck_number = ?,
+       ship_date = ?,
+       expected_departure_time = ?,
+       origin_location = ?,
+       last_synced_at = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  );
+  for (const row of rows) {
+    const storage = getStorageByTruckAndShipDate(row.truck_number, row.ship_date);
+    if (storage) {
+      updateStmt.run(
+        storage.destination,
+        storage.itemName,
+        storage.trackingId,
+        storage.truckNumber,
+        storage.shipDate,
+        storage.expectedDepartureTime,
+        storage.originLocation,
+        row.id,
+      );
     }
   }
-  const point = getMapPointRow(pointId);
-  if (!point) throw new Error('Failed to create map point');
-  return point;
+  return listLiveBuffer();
 };
 
-export const addSynonymsToPoint = (pointId: number, synonyms: string[]) => {
-  if (!synonyms.length) return;
-  const db = getDb();
-  const stmt = db.prepare(
-    `INSERT OR IGNORE INTO map_point_synonyms (point_id, synonym)
-     VALUES (?, ?)`,
-  );
-  for (const synonym of synonyms) {
-    const trimmed = synonym.trim();
-    if (trimmed) stmt.run(pointId, trimmed);
-  }
-};
-
-export const searchMapPoint = (mapId: number, label: string): MapPointSearchResult => {
-  const points = listMapPoints(mapId);
-  const target = normalizeLabel(label);
-  if (!target) return { match: null, alternatives: points.slice(0, 5) };
-  const match = points.find((point) => {
-    if (normalizeLabel(point.label) === target) return true;
-    return point.synonyms.some((syn) => normalizeLabel(syn) === target);
-  });
-  if (match) {
-    return { match, alternatives: points.filter((p) => p.id !== match.id).slice(0, 5) };
-  }
-  const alternatives = points
-    .filter((point) => {
-      if (point.label && normalizeLabel(point.label).includes(target)) return true;
-      return point.synonyms.some((syn) => normalizeLabel(syn).includes(target));
-    })
-    .slice(0, 5);
-  return { match: null, alternatives };
-};

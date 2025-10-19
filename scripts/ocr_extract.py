@@ -1,49 +1,66 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Local OCR + Qwen inference pipeline.
+"""PaddleOCR detection + Hugging Face Inference key/value extraction.
 
-This script replaces the previous PaddleOCR + hosted Qwen pipeline with an
-entirely local workflow based on ``Qwen/Qwen2-VL-2B-Instruct``.  The goal is to
-mirror the original command-line interface so the Node.js wrapper can continue
-invoking the script without changes while keeping all computation on the local
-machine.
+This script keeps the command-line interface expected by
+``src/lib/ocrService.ts`` while swapping the heavy local Qwen dependency for a
+lighter pipeline:
 
-High level flow:
-1. Load the requested Qwen vision-language model via ``transformers``.
-2. Optionally downscale the input image to keep VRAM/CPU usage manageable.
-3. Run a single-turn chat prompt that instructs the model to emit header
-   key/value pairs as JSON.
-4. Post-process the raw text into a dictionary using the same universal parser
-   that the previous implementation used.
-5. Write the structured artifacts expected by ``src/lib/ocrService.ts``.
+1. Detect raw text snippets with ``PaddleOCR``.
+2. Summarise the snippets into structured logistics metadata using a
+   Hugging Face Inference endpoint (chat or text-generation models).
+3. Normalise the language model output into key/value JSON and persist the
+   same ``structured.json`` artefact that the Node.js layer consumes.
 
-The script is intentionally self-contained: there is no dependency on
-``paddleocr`` or ``huggingface_hub`` APIs, and no remote calls are made.
+If either dependency is unavailable the script exits with a non-zero code so
+that the Node.js wrapper can fall back to its filename-based stub logic.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import sys
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-import torch
-from PIL import Image
-from transformers import AutoModelForImageTextToText, AutoProcessor
+try:  # PaddleOCR is optional at runtime
+    from paddleocr import PaddleOCR  # type: ignore
+except Exception as exc:  # pragma: no cover - surfaced at runtime
+    PaddleOCR = None  # type: ignore
+    _PADDLE_IMPORT_ERROR = exc
+else:
+    _PADDLE_IMPORT_ERROR = None
+
+try:  # Hugging Face Inference client is optional at runtime
+    from huggingface_hub import InferenceClient
+except Exception as exc:  # pragma: no cover - surfaced at runtime
+    InferenceClient = None  # type: ignore
+    _HF_IMPORT_ERROR = exc
+else:
+    _HF_IMPORT_ERROR = None
+
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
-DEFAULT_MODEL = "Qwen/Qwen2-VL-2B-Instruct"
-DEFAULT_INSTRUCTION = (
-    "You are given a document image. Extract all visible header key/value pairs "
-    "and return a single flat JSON object. Do not include table line items."
+DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.2"
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a logistics control tower assistant. Extract structured key/value "
+    "data from OCR text. Always reply with a single flat JSON object."
 )
-DEFAULT_MAX_PIXELS = 500 * 500
-DEFAULT_MAX_NEW_TOKENS = 600
+DEFAULT_INSTRUCTION = (
+    "Use the detected manifest text to fill these fields when possible: "
+    "Destination, Item Name, Tracking/Order ID, Truck Number, Ship Date, "
+    "Expected Departure Time, Origin Location. Include other key/value pairs "
+    "that appear important."
+)
+DEFAULT_MAX_NEW_TOKENS = 512
+DEFAULT_TEMPERATURE = 0.1
+DEFAULT_MIN_CONFIDENCE = 0.3
 
-_RESAMPLING = getattr(Image, "Resampling", Image)
+_RESAMPLING = None  # Kept for backwards compatibility with previous versions
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +92,10 @@ def write_csv(rows: List[Dict[str, Any]], out_csv: str) -> None:
         w = csv.DictWriter(f, fieldnames=["image", "json"])
         w.writeheader()
         for r in rows:
-            w.writerow({"image": r["image"], "json": json.dumps(r.get("json", {}), ensure_ascii=False)})
+            json_payload = r.get("json", {})
+            if not isinstance(json_payload, str):
+                json_payload = json.dumps(json_payload, ensure_ascii=False)
+            w.writerow({"image": r.get("image"), "json": json_payload})
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +150,7 @@ def try_json_load(text: str) -> Optional[dict]:
     t = _preclean(text)
     span = _find_object_span(t)
     if span:
-        frag = t[span[0]: span[1]]
+        frag = t[span[0] : span[1]]
         try:
             return json.loads(frag)
         except Exception:
@@ -189,7 +209,7 @@ def parse_universal_kv(llm_raw: str, normalize_dates: bool = True) -> Dict[str, 
     region = t
     span = _find_object_span(t)
     if span:
-        region = t[span[0]: span[1]]
+        region = t[span[0] : span[1]]
 
     out = OrderedDict()
     for m in PAIR_STR_STR.finditer(region):
@@ -198,153 +218,199 @@ def parse_universal_kv(llm_raw: str, normalize_dates: bool = True) -> Dict[str, 
     for m in PAIR_STR_BARE.finditer(region):
         k = m.group(1)
         tail_match = re.search(r":\s*([^\s,}\n\r]+)", m.group(0))
-        v = tail_match.group(1) if tail_match else ""
-        out[_trim(k)] = maybe_zero_pad_dates(v, normalize_dates)
+        if tail_match:
+            out[_trim(k)] = maybe_zero_pad_dates(tail_match.group(1), normalize_dates)
     for m in PAIR_BARE_STR.finditer(region):
         k, v = m.group(1), m.group(2)
         out[_trim(k)] = maybe_zero_pad_dates(v, normalize_dates)
     for m in PAIR_BARE_BARE.finditer(region):
         k, v = m.group(1), m.group(2)
-        v = re.sub(r"[}\]]\s*$", "", v).strip()
         out[_trim(k)] = maybe_zero_pad_dates(v, normalize_dates)
 
     return dict(out)
 
 
+def fallback_pairs_from_lines(lines: Sequence[str]) -> Dict[str, str]:
+    pairs: Dict[str, str] = {}
+    for line in lines:
+        if ":" in line:
+            k, v = line.split(":", 1)
+            key = k.strip()
+            val = v.strip()
+            if key and val and key not in pairs:
+                pairs[key] = val
+    return pairs
+
+
 # ---------------------------------------------------------------------------
-# Local Qwen inference helpers
+# PaddleOCR + Hugging Face inference helpers
 # ---------------------------------------------------------------------------
-def resolve_device(arg: Optional[str]) -> torch.device:
-    if arg:
-        dev = torch.device(arg)
-        if dev.type == "cuda" and not torch.cuda.is_available():
-            raise SystemExit("CUDA requested but no GPU is available.")
-        return dev
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+_HF_CLIENTS: Dict[Tuple[str, Optional[str]], InferenceClient] = {}
+_PADDLE_CLIENTS: Dict[Tuple[str, bool], PaddleOCR] = {}
 
 
-def resolve_dtype(arg: Optional[str], device: torch.device) -> torch.dtype:
-    if arg:
-        mapping = {
-            "float16": torch.float16,
-            "float32": torch.float32,
-            "bfloat16": torch.bfloat16,
-            "auto": None,
-        }
-        if arg not in mapping:
-            raise SystemExit(f"Unsupported dtype: {arg}")
-        if mapping[arg] is not None:
-            if device.type == "cpu" and mapping[arg] == torch.float16:
-                raise SystemExit("float16 is not supported on CPU. Choose float32 or auto.")
-            return mapping[arg]
-    if device.type == "cuda":
-        return torch.float16
-    return torch.float32
+def env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-_MODEL_CACHE: Dict[Tuple[str, str, str], Tuple[AutoProcessor, AutoModelForImageTextToText]] = {}
-
-
-def load_model(model_id: str, device: torch.device, dtype: torch.dtype) -> Tuple[AutoProcessor, AutoModelForImageTextToText]:
-    key = (model_id, device.type, str(dtype))
-    if key not in _MODEL_CACHE:
-        processor = AutoProcessor.from_pretrained(model_id)
-        model = AutoModelForImageTextToText.from_pretrained(
-            model_id,
-            torch_dtype=dtype,
-            attn_implementation="sdpa",
-        ).to(device)
-        model.eval()
-        _MODEL_CACHE[key] = (processor, model)
-    return _MODEL_CACHE[key]
-
-
-def downscale_to_max_pixels(img: Image.Image, max_pixels: int = DEFAULT_MAX_PIXELS) -> Image.Image:
-    w, h = img.size
-    if w * h <= max_pixels:
-        return img
-    scale = (max_pixels / (w * h)) ** 0.5
-    nw, nh = max(64, int(w * scale)), max(64, int(h * scale))
-    return img.resize((nw, nh), _RESAMPLING.LANCZOS)
-
-
-def run_qwen(
-    image_path: str,
-    instruction: str,
-    model_id: str,
-    device: torch.device,
-    dtype: torch.dtype,
-    max_pixels: int,
-    max_new_tokens: int,
-) -> str:
-    processor, model = load_model(model_id, device, dtype)
-    img = Image.open(image_path).convert("RGB")
-    img = downscale_to_max_pixels(img, max_pixels=max_pixels)
-
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image"},
-                {"type": "text", "text": instruction},
-            ],
-        }
-    ]
-    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-    inputs = processor(text=[prompt], images=[img], padding=True, return_tensors="pt").to(device)
-
-    with torch.inference_mode():
-        output = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            use_cache=False,
-            eos_token_id=processor.tokenizer.eos_token_id,
-            pad_token_id=processor.tokenizer.eos_token_id,
+def load_paddle(lang: str, use_gpu: bool) -> PaddleOCR:
+    if PaddleOCR is None:  # pragma: no cover - dependency missing at runtime
+        raise SystemExit(
+            "PaddleOCR is required but could not be imported: "
+            f"{_PADDLE_IMPORT_ERROR!r}"
         )
-    generated = output[:, inputs.input_ids.shape[1]:]
-    text = processor.batch_decode(generated, skip_special_tokens=True, clean_up_tokenization_spaces=True)[0]
-    return text.strip()
+    key = (lang, use_gpu)
+    if key not in _PADDLE_CLIENTS:
+        _PADDLE_CLIENTS[key] = PaddleOCR(
+            lang=lang,
+            use_angle_cls=True,
+            use_gpu=use_gpu,
+            show_log=False,
+        )
+    return _PADDLE_CLIENTS[key]
 
 
-# ---------------------------------------------------------------------------
-# Pipeline orchestration
-# ---------------------------------------------------------------------------
+def load_hf_client(model: str, endpoint: Optional[str], token: Optional[str]) -> InferenceClient:
+    if InferenceClient is None:  # pragma: no cover - dependency missing at runtime
+        raise SystemExit(
+            "huggingface_hub.InferenceClient is required but could not be imported: "
+            f"{_HF_IMPORT_ERROR!r}"
+        )
+    key = (model if endpoint is None else endpoint, endpoint)
+    if key not in _HF_CLIENTS:
+        _HF_CLIENTS[key] = InferenceClient(
+            model=None if endpoint else model,
+            base_url=endpoint,
+            token=token,
+            timeout=120,
+        )
+    return _HF_CLIENTS[key]
+
+
+def extract_text_lines(image_path: str, ocr: PaddleOCR, min_confidence: float) -> List[str]:
+    lines: List[str] = []
+    result = ocr.ocr(image_path, cls=True)
+    for block in result or []:
+        for entry in block or []:
+            try:
+                text, score = entry[1][0], float(entry[1][1])
+            except Exception:
+                continue
+            if score < min_confidence:
+                continue
+            cleaned = text.strip()
+            if cleaned:
+                lines.append(cleaned)
+    return lines
+
+
+def build_prompt(instruction: str, detected_lines: Sequence[str]) -> str:
+    bullet_list = "\n".join(f"- {line}" for line in detected_lines)
+    return f"{instruction.strip()}\n\nDetected text:\n{bullet_list}"
+
+
+def call_hf(
+    model: str,
+    endpoint: Optional[str],
+    token: Optional[str],
+    system_prompt: str,
+    instruction: str,
+    lines: Sequence[str],
+    max_new_tokens: int,
+    temperature: float,
+) -> str:
+    if not lines:
+        return ""
+    client = load_hf_client(model=model, endpoint=endpoint, token=token)
+    prompt = build_prompt(instruction, lines)
+
+    try:
+        response = client.chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=max_new_tokens,
+            temperature=temperature,
+        )
+        if response.choices:
+            content = response.choices[0].message.get("content", "")
+            if isinstance(content, list):
+                text_parts = [part.get("text", "") for part in content if isinstance(part, dict)]
+                return "".join(text_parts).strip()
+            return str(content).strip()
+    except Exception as err:  # pragma: no cover - network/runtime errors
+        print(f"[warn] chat_completion failed: {err}", file=sys.stderr)
+
+    # Fallback to plain text generation if chat-completions are unsupported.
+    try:
+        text = client.text_generation(
+            f"{system_prompt}\n\n{prompt}\n\nJSON:",
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            stream=False,
+        )
+        if isinstance(text, str):
+            return text.strip()
+    except Exception as err:  # pragma: no cover - network/runtime errors
+        print(f"[warn] text_generation failed: {err}", file=sys.stderr)
+
+    return ""
+
+
 def process_one(
     image_path: str,
+    paddle: PaddleOCR,
+    min_confidence: float,
+    model: str,
+    endpoint: Optional[str],
+    token: Optional[str],
+    system_prompt: str,
     instruction: str,
-    model_id: str,
-    device: torch.device,
-    dtype: torch.dtype,
-    max_pixels: int,
     max_new_tokens: int,
+    temperature: float,
     normalize_dates: bool,
 ) -> Dict[str, Any]:
-    raw = run_qwen(
-        image_path=image_path,
+    detected_lines = extract_text_lines(image_path, paddle, min_confidence=min_confidence)
+    llm_raw = call_hf(
+        model=model,
+        endpoint=endpoint,
+        token=token,
+        system_prompt=system_prompt,
         instruction=instruction,
-        model_id=model_id,
-        device=device,
-        dtype=dtype,
-        max_pixels=max_pixels,
+        lines=detected_lines,
         max_new_tokens=max_new_tokens,
+        temperature=temperature,
     )
-    parsed = parse_universal_kv(raw, normalize_dates=normalize_dates)
+    if not llm_raw:
+        llm_raw = "\n".join(detected_lines)
+
+    parsed = parse_universal_kv(llm_raw, normalize_dates=normalize_dates)
+    if not parsed and detected_lines:
+        parsed = fallback_pairs_from_lines(detected_lines)
+
     return {
         "image": Path(image_path).name,
-        "llm_raw": raw,
+        "ocr_text": detected_lines,
+        "llm_raw": llm_raw,
         "llm_parsed": parsed,
     }
 
 
 def process_folder(
     data_dir: str,
+    paddle: PaddleOCR,
+    min_confidence: float,
+    model: str,
+    endpoint: Optional[str],
+    token: Optional[str],
+    system_prompt: str,
     instruction: str,
-    model_id: str,
-    device: torch.device,
-    dtype: torch.dtype,
-    max_pixels: int,
     max_new_tokens: int,
+    temperature: float,
     out_dir: str,
     normalize_dates: bool,
 ) -> None:
@@ -365,17 +431,20 @@ def process_folder(
         print(f"[proc] {p.name}")
         rec = process_one(
             image_path=str(p),
+            paddle=paddle,
+            min_confidence=min_confidence,
+            model=model,
+            endpoint=endpoint,
+            token=token,
+            system_prompt=system_prompt,
             instruction=instruction,
-            model_id=model_id,
-            device=device,
-            dtype=dtype,
-            max_pixels=max_pixels,
             max_new_tokens=max_new_tokens,
+            temperature=temperature,
             normalize_dates=normalize_dates,
         )
         structured.append(rec)
-        rows_csv.append({"image": rec["image"], "json": rec["llm_parsed"]})
-        llm_recs.append({"image": rec["image"], "raw": rec["llm_raw"], "parsed": rec["llm_parsed"]})
+        rows_csv.append({"image": rec["image"], "json": rec.get("llm_parsed", {})})
+        llm_recs.append({"image": rec["image"], "raw": rec.get("llm_raw"), "parsed": rec.get("llm_parsed")})
 
     write_csv(rows_csv, out_csv)
     append_jsonl(llm_recs, llm_jsonl)
@@ -392,37 +461,70 @@ def process_folder(
 # CLI entry point
 # ---------------------------------------------------------------------------
 def build_arg_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="Local OCR → Qwen KV extraction")
+    ap = argparse.ArgumentParser(description="PaddleOCR + Hugging Face inference pipeline")
     ap.add_argument("--image", help="Single image path")
     ap.add_argument("--data_dir", help="Folder of images (recursive)")
     ap.add_argument("--out_dir", default="./output")
     ap.add_argument("--model", default=DEFAULT_MODEL, help="Hugging Face model id")
-    ap.add_argument("--device", choices=["cpu", "cuda"], help="Override inference device")
-    ap.add_argument(
-        "--dtype",
-        choices=["auto", "float16", "float32", "bfloat16"],
-        default="auto",
-        help="Torch dtype used when loading the model",
-    )
-    ap.add_argument(
-        "--instruction",
-        default=DEFAULT_INSTRUCTION,
-        help="Instruction prompt supplied to the model",
-    )
-    ap.add_argument("--max_pixels", type=int, default=DEFAULT_MAX_PIXELS, help="Max pixel area after downscaling")
-    ap.add_argument("--max_new_tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS, help="Generation cap")
+    ap.add_argument("--system_prompt", default=DEFAULT_SYSTEM_PROMPT)
+    ap.add_argument("--instruction", default=DEFAULT_INSTRUCTION)
+    ap.add_argument("--hf_token", help="Hugging Face token (falls back to env)")
+    ap.add_argument("--hf_endpoint", help="Custom Inference Endpoints URL")
+    ap.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
+    ap.add_argument("--max_new_tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS)
+    ap.add_argument("--paddle_lang", default="en", help="PaddleOCR language code")
+    ap.add_argument("--min_confidence", type=float, default=DEFAULT_MIN_CONFIDENCE)
+    ap.add_argument("--use_gpu", action="store_true", help="Force PaddleOCR GPU usage")
     ap.add_argument("--no_normalize_dates", action="store_true", help="Disable MM/DD/YYYY zero padding")
     return ap
+
+
+def resolve_token(cli_token: Optional[str]) -> Optional[str]:
+    if cli_token:
+        return cli_token
+    for key in ("OCR_HF_TOKEN", "HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN"):
+        val = os.getenv(key)
+        if val:
+            return val
+    return None
+
+
+def resolve_endpoint(cli_endpoint: Optional[str]) -> Optional[str]:
+    if cli_endpoint:
+        return cli_endpoint
+    return os.getenv("OCR_HF_ENDPOINT") or None
+
+
+def resolve_language(cli_lang: str) -> str:
+    return os.getenv("OCR_PADDLE_LANG", cli_lang)
+
+
+def resolve_min_confidence(cli_conf: float) -> float:
+    env_val = os.getenv("OCR_MIN_CONFIDENCE")
+    if not env_val:
+        return cli_conf
+    try:
+        return float(env_val)
+    except ValueError:
+        return cli_conf
 
 
 def main() -> None:
     ap = build_arg_parser()
     args = ap.parse_args()
 
-    device = resolve_device(args.device)
-    dtype = resolve_dtype(args.dtype, device)
-    safe_mkdir(args.out_dir)
+    token = resolve_token(args.hf_token)
+    endpoint = resolve_endpoint(args.hf_endpoint)
+    lang = resolve_language(args.paddle_lang)
+    min_confidence = resolve_min_confidence(args.min_confidence)
+    use_gpu = args.use_gpu or env_flag("OCR_PADDLE_USE_GPU")
     normalize_dates = not args.no_normalize_dates
+
+    if not args.image and not args.data_dir:
+        raise SystemExit("Provide --image or --data_dir")
+
+    paddle = load_paddle(lang=lang, use_gpu=use_gpu)
+    safe_mkdir(args.out_dir)
 
     if args.image:
         p = Path(args.image)
@@ -431,19 +533,25 @@ def main() -> None:
         print(f"[proc] {p.name}")
         rec = process_one(
             image_path=str(p),
+            paddle=paddle,
+            min_confidence=min_confidence,
+            model=args.model,
+            endpoint=endpoint,
+            token=token,
+            system_prompt=args.system_prompt,
             instruction=args.instruction,
-            model_id=args.model,
-            device=device,
-            dtype=dtype,
-            max_pixels=args.max_pixels,
             max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
             normalize_dates=normalize_dates,
         )
         write_json_array([rec], str(Path(args.out_dir) / "structured.json"))
         append_jsonl([rec], str(Path(args.out_dir) / "structured.jsonl"))
-        write_csv([{"image": rec["image"], "json": rec["llm_parsed"]}], str(Path(args.out_dir) / "predictions.csv"))
+        write_csv(
+            [{"image": rec["image"], "json": rec.get("llm_parsed", {})}],
+            str(Path(args.out_dir) / "predictions.csv"),
+        )
         append_jsonl(
-            [{"image": rec["image"], "raw": rec["llm_raw"], "parsed": rec["llm_parsed"]}],
+            [{"image": rec["image"], "raw": rec.get("llm_raw"), "parsed": rec.get("llm_parsed")}],
             str(Path(args.out_dir) / "llm_preds.jsonl"),
         )
         print(json.dumps(rec, ensure_ascii=False, indent=2))
@@ -454,18 +562,19 @@ def main() -> None:
             raise SystemExit(f"[FATAL] Folder not found: {args.data_dir}")
         process_folder(
             data_dir=args.data_dir,
+            paddle=paddle,
+            min_confidence=min_confidence,
+            model=args.model,
+            endpoint=endpoint,
+            token=token,
+            system_prompt=args.system_prompt,
             instruction=args.instruction,
-            model_id=args.model,
-            device=device,
-            dtype=dtype,
-            max_pixels=args.max_pixels,
             max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
             out_dir=args.out_dir,
             normalize_dates=normalize_dates,
         )
         return
-
-    raise SystemExit("Provide --image or --data_dir")
 
 
 if __name__ == "__main__":

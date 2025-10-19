@@ -4,7 +4,7 @@ import path from 'path';
 import os from 'os';
 import { randomUUID } from 'crypto';
 
-const DEFAULT_MODEL = process.env.OCR_MODEL || 'Qwen/Qwen2-VL-2B-Instruct';
+const DEFAULT_MODEL = process.env.OCR_MODEL || 'mistralai/Mistral-7B-Instruct-v0.2';
 
 // Prefer explicit venv python; fall back to system python
 const PY_BIN =
@@ -39,16 +39,39 @@ export async function extractKvPairs(filePath: string): Promise<Record<string, s
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-out-'));
 
   const args = [
-   OCR_SCRIPT,
-   '--image', filePath,
-   '--out_dir', outDir,
-   '--model', DEFAULT_MODEL,
-   // Optional tuning (uncomment if you want explicit control)
-   // '--device', process.env.OCR_DEVICE || (process.env.CUDA_VISIBLE_DEVICES ? 'cuda' : 'cpu'),
-   // '--dtype', process.env.OCR_DTYPE || 'auto',
-   // '--max_pixels', String(process.env.OCR_MAX_PIXELS || 384*384),
-   // '--max_new_tokens', String(process.env.OCR_MAX_NEW_TOKENS || 600),
- ];
+    OCR_SCRIPT,
+    '--image', filePath,
+    '--out_dir', outDir,
+    '--model', DEFAULT_MODEL,
+  ];
+
+  if (process.env.OCR_SYSTEM_PROMPT) {
+    args.push('--system_prompt', process.env.OCR_SYSTEM_PROMPT);
+  }
+  if (process.env.OCR_INSTRUCTION) {
+    args.push('--instruction', process.env.OCR_INSTRUCTION);
+  }
+  if (process.env.OCR_HF_TOKEN) {
+    args.push('--hf_token', process.env.OCR_HF_TOKEN);
+  }
+  if (process.env.OCR_HF_ENDPOINT) {
+    args.push('--hf_endpoint', process.env.OCR_HF_ENDPOINT);
+  }
+  if (process.env.OCR_TEMPERATURE) {
+    args.push('--temperature', process.env.OCR_TEMPERATURE);
+  }
+  if (process.env.OCR_MAX_NEW_TOKENS) {
+    args.push('--max_new_tokens', process.env.OCR_MAX_NEW_TOKENS);
+  }
+  if (process.env.OCR_PADDLE_LANG) {
+    args.push('--paddle_lang', process.env.OCR_PADDLE_LANG);
+  }
+  if (process.env.OCR_MIN_CONFIDENCE) {
+    args.push('--min_confidence', process.env.OCR_MIN_CONFIDENCE);
+  }
+  if (process.env.OCR_PADDLE_USE_GPU === '1') {
+    args.push('--use_gpu');
+  }
 
   const env = { ...process.env };
 

@@ -1,70 +1,109 @@
 import { NextResponse } from 'next/server';
-import { getOrder, createOrder, updateOrder } from '@/lib/db';
+import {
+  ingestLiveBufferEntry,
+  listLiveBuffer,
+  getLiveBufferByTrackingId,
+  syncLiveBufferWithStorage,
+  updateStorageRecord,
+} from '@/lib/db';
 
-/**
- * GET /api/orders
- * If `code` is provided as a query parameter, returns a single order.
- * Otherwise, this endpoint currently returns an empty array since listing
- * orders is not part of the initial requirements. Extend as needed.
- */
+const REQUIRED_FIELDS = [
+  'destination',
+  'itemName',
+  'trackingId',
+  'truckNumber',
+  'shipDate',
+  'expectedDepartureTime',
+  'originLocation',
+] as const;
+
+type RequiredField = (typeof REQUIRED_FIELDS)[number];
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
+
+const normalizePayload = (input: Record<string, unknown>) => {
+  const payload: Record<RequiredField, string> = {
+    destination: '',
+    itemName: '',
+    trackingId: '',
+    truckNumber: '',
+    shipDate: '',
+    expectedDepartureTime: '',
+    originLocation: '',
+  };
+  for (const key of REQUIRED_FIELDS) {
+    const value = input[key];
+    if (!isNonEmptyString(value)) {
+      throw new Error(`Missing required field: ${key}`);
+    }
+    payload[key] = value.trim();
+  }
+  return payload;
+};
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const code = searchParams.get('code');
-  if (!code) {
-    return NextResponse.json({ orders: [] });
+  const trackingId = searchParams.get('trackingId') ?? searchParams.get('code');
+  const shouldSync = searchParams.get('sync') === 'true';
+
+  if (shouldSync) {
+    syncLiveBufferWithStorage();
   }
-  const order = getOrder(code);
-  if (!order) {
-    return NextResponse.json({ error: 'Order not found' }, { status: 404 });
+
+  if (!trackingId) {
+    const records = listLiveBuffer();
+    return NextResponse.json({ liveBuffer: records });
   }
-  return NextResponse.json({ order });
+
+  const record = getLiveBufferByTrackingId(trackingId);
+  if (!record) {
+    return NextResponse.json({ error: 'Live buffer entry not found' }, { status: 404 });
+  }
+  return NextResponse.json({ record });
 }
 
-/**
- * POST /api/orders
- * Create a new order. Expects a JSON body with `code`, `data`, `floor`,
- * `section`, and optional `aliases` array. Returns the newly created order.
- */
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { code, data, floor, section, aliases } = body;
-    if (!code || !floor || !section) {
-      return NextResponse.json(
-        { error: 'Missing required fields: code, floor, section' },
-        { status: 400 },
-      );
+    const payload = normalizePayload(body ?? {});
+    const result = ingestLiveBufferEntry(payload);
+    if (result.message) {
+      return NextResponse.json({ error: result.message }, { status: 404 });
     }
-    const order = createOrder(code, data ?? {}, floor, section, aliases);
-    return NextResponse.json({ order }, { status: 201 });
-  } catch (err: any) {
-    if (err && err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-      return NextResponse.json({ error: 'Order already exists' }, { status: 409 });
+    return NextResponse.json({ record: result.record }, { status: 201 });
+  } catch (error: any) {
+    if (error instanceof Error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
     }
-    console.error('Error creating order', err);
+    console.error('Unexpected error ingesting live buffer entry', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
-/**
- * PUT /api/orders
- * Update an existing order. Expects a JSON body with `code` and optional
- * `collected`, `data`, `floor`, `section`. Returns the updated record.
- */
 export async function PUT(req: Request) {
   try {
     const body = await req.json();
-    const { code, collected, data, floor, section } = body;
-    if (!code) {
-      return NextResponse.json({ error: 'Missing code' }, { status: 400 });
+    const trackingId = typeof body.trackingId === 'string' ? body.trackingId.trim() : '';
+    if (!trackingId) {
+      return NextResponse.json({ error: 'trackingId is required' }, { status: 400 });
     }
-    const updated = updateOrder(code, { collected, data, floor, section });
-    if (!updated) {
-      return NextResponse.json({ error: 'Order not found' }, { status: 404 });
+    const updates = {
+      destination: typeof body.destination === 'string' ? body.destination.trim() : undefined,
+      trackingId: typeof body.newTrackingId === 'string' ? body.newTrackingId.trim() : undefined,
+      expectedDepartureTime:
+        typeof body.expectedDepartureTime === 'string' ? body.expectedDepartureTime.trim() : undefined,
+      booked: typeof body.booked === 'boolean' ? body.booked : undefined,
+    };
+    const storage = updateStorageRecord(trackingId, updates);
+    if (!storage) {
+      return NextResponse.json({ error: 'Storage record not found' }, { status: 404 });
     }
-    return NextResponse.json({ order: updated });
-  } catch (err: any) {
-    console.error('Error updating order', err);
+    const liveBuffer = syncLiveBufferWithStorage();
+    return NextResponse.json({ storage, liveBuffer });
+  } catch (error: any) {
+    console.error('Error updating storage record', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
+
