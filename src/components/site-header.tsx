@@ -4,8 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 
-import { Button } from "@/components/ui/button";
-
 const links = [
   { href: "/", label: "Scanner" },
   { href: "/history", label: "History" },
@@ -24,7 +22,6 @@ const inactiveLinkStyles =
 export function SiteHeader() {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [loggingOut, setLoggingOut] = useState(false);
 
   const isActive = (href: string) => {
     if (href === "/") {
@@ -34,17 +31,6 @@ export function SiteHeader() {
   };
 
   const toggleMenu = () => setMenuOpen((open) => !open);
-
-  const handleLogout = async () => {
-    setLoggingOut(true);
-    try {
-      await fetch("/api/auth/logout", { method: "POST" });
-    } catch (error) {
-      console.error("Failed to log out", error);
-    } finally {
-      window.location.href = "/login";
-    }
-  };
 
   return (
     <header className="relative z-20 border-b border-white/10 bg-slate-900/50 backdrop-blur-xl">
@@ -68,17 +54,6 @@ export function SiteHeader() {
             </Link>
           ))}
         </nav>
-        <div className="hidden items-center gap-3 md:flex">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={handleLogout}
-            disabled={loggingOut}
-            className="border-white/20 text-xs uppercase tracking-[0.3em]"
-          >
-            {loggingOut ? "Signing out…" : "Sign out"}
-          </Button>
-        </div>
         <button
           type="button"
           className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-slate-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 md:hidden"
@@ -103,13 +78,6 @@ export function SiteHeader() {
                 {link.label}
               </Link>
             ))}
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="relative inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-slate-100 transition hover:bg-white/10"
-            >
-              {loggingOut ? "Signing out…" : "Sign out"}
-            </button>
           </nav>
         </div>
       )}

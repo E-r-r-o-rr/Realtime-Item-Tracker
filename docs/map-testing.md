@@ -4,7 +4,7 @@ This document captures the manual checks run against the floor-map workflow. The
 
 ## Prerequisites
 
-1. Sign in to the dashboard (default passphrase: `demo-access`) and navigate to the Home view.
+1. Open the dashboard and navigate to the Home view.
 2. Scroll to **Map Administration** and upload at least three floor variants using the built-in uploader. For quick testing you can reuse any internal warehouse schematics or the bundled sample SVG (`public/images/warehouse-grid.svg`).
 3. Annotate each map with a handful of destinations. For example:
    - `floor1`: add points for `Dock 3`, `R1-A`, and `W9`.
@@ -28,4 +28,4 @@ This document captures the manual checks run against the floor-map workflow. The
 - All coordinates are derived from the map’s georeference. Even with approximate indoor GPS values, the payload always includes both `{lat, lon}` and the exact `{x_px, y_px}` for downstream modules.
 - The module can operate with coarse geodata. When no origin is specified the UI still surfaces the local pixel coordinates, allowing the navigation service to align against indoor positioning systems.
 - The admin uploader accepts common web image formats (PNG, JPG, SVG, WebP). Uploaded files are stored in `data/maps/` and served via `/api/floor-maps/{id}/image`.
-- Authentication is enforced across the dashboard and APIs. Use the `/login` form or set `DASHBOARD_PASSWORD` to rotate credentials for deployments.
+- Authentication is currently disabled across the dashboard and APIs; no login is required for testing.
