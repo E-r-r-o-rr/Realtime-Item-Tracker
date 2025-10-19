@@ -638,6 +638,11 @@ export const listBookings = (): BookingRecord[] => {
   return rows.map(mapBookingRow);
 };
 
+export const getBookingByTrackingId = (trackingId: string): BookingRecord | undefined => {
+  const row = getDb().prepare(`SELECT * FROM bookings WHERE tracking_id = ?`).get(trackingId);
+  return row ? mapBookingRow(row) : undefined;
+};
+
 export const listStorage = (): StorageRecord[] => {
   const rows = getDb().prepare(`SELECT * FROM storage ORDER BY last_updated DESC`).all();
   return rows.map(mapStorageRow);
@@ -813,6 +818,10 @@ export const ingestLiveBufferEntry = (
   payload: LogisticsFields,
 ): { record?: LiveBufferRecord; historyEntry?: HistoryRecord; message?: string } => {
   const database = getDb();
+  const booking = getBookingByTrackingId(payload.trackingId);
+  if (!booking) {
+    return { message: 'Booked item not found' };
+  }
   database
     .prepare(
       `INSERT INTO live_buffer (${TABLE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
