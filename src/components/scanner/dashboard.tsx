@@ -68,6 +68,12 @@ interface ApiHistoryEntry {
 }
 
 const PERSISTED_STATE_KEY = "scanner.dashboard.ui_state.v1";
+const DEFAULT_REFRESH_MS = 300_000;
+const REFRESH_INTERVAL_OPTIONS: { label: string; value: number }[] = [
+  { label: "Every 30 seconds", value: 30_000 },
+  { label: "Every 1 minute", value: 60_000 },
+  { label: "Every 5 minutes", value: 300_000 },
+];
 
 const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
   if (!v) return null;
@@ -641,6 +647,7 @@ export default function ScannerDashboard() {
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
   const [bookingWarning, setBookingWarning] = useState<string | null>(null);
   const [bookingSuccess, setBookingSuccess] = useState<string | null>(null);
+  const [refreshIntervalMs, setRefreshIntervalMs] = useState<number>(DEFAULT_REFRESH_MS);
   const [hasHydrated, setHasHydrated] = useState(false);
 
   useEffect(() => {
@@ -690,6 +697,11 @@ export default function ScannerDashboard() {
             });
           }
         }
+
+        const maybeRefresh = (parsed as { refreshIntervalMs?: unknown }).refreshIntervalMs;
+        if (typeof maybeRefresh === "number" && Number.isFinite(maybeRefresh) && maybeRefresh > 0) {
+          setRefreshIntervalMs(maybeRefresh);
+        }
       }
     } catch (error) {
       console.error("Failed to load persisted scanner state", error);
@@ -709,12 +721,23 @@ export default function ScannerDashboard() {
         barcodes,
         barcodeWarnings,
         validation,
+        refreshIntervalMs,
       };
       window.localStorage.setItem(PERSISTED_STATE_KEY, JSON.stringify(payload));
     } catch (error) {
       console.error("Failed to persist scanner state", error);
     }
-  }, [status, bookingWarning, bookingSuccess, kv, barcodes, barcodeWarnings, validation, hasHydrated]);
+  }, [
+    status,
+    bookingWarning,
+    bookingSuccess,
+    kv,
+    barcodes,
+    barcodeWarnings,
+    validation,
+    refreshIntervalMs,
+    hasHydrated,
+  ]);
 
   const mapApiRecordToLive = useCallback((record: ApiLiveBufferRecord): LiveRecord => ({
     destination: record.destination,
@@ -730,9 +753,10 @@ export default function ScannerDashboard() {
     setLiveRecordState(record);
   }, []);
 
-  const fetchLiveBuffer = useCallback(async () => {
+  const fetchLiveBuffer = useCallback(async (options?: { sync?: boolean }) => {
     try {
-      const response = await fetch("/api/orders", { cache: "no-store" });
+      const query = options?.sync ? "?sync=true" : "";
+      const response = await fetch(`/api/orders${query}`, { cache: "no-store" });
       const payload: { liveBuffer?: ApiLiveBufferRecord[]; record?: ApiLiveBufferRecord; error?: string } = await response
         .json()
         .catch(() => ({}));
@@ -753,8 +777,16 @@ export default function ScannerDashboard() {
   }, [mapApiRecordToLive, updateLiveRecord]);
 
   useEffect(() => {
-    fetchLiveBuffer();
+    fetchLiveBuffer({ sync: true });
   }, [fetchLiveBuffer]);
+
+  useEffect(() => {
+    if (!refreshIntervalMs || typeof window === "undefined") return;
+    const id = window.setInterval(() => {
+      fetchLiveBuffer({ sync: true });
+    }, refreshIntervalMs);
+    return () => window.clearInterval(id);
+  }, [refreshIntervalMs, fetchLiveBuffer]);
 
   const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "my-secret-api-key";
 
@@ -999,6 +1031,17 @@ export default function ScannerDashboard() {
     setBookingWarning(null);
     setBookingSuccess(null);
   };
+
+  const handleRefreshIntervalChange = useCallback(
+    (event: React.ChangeEvent<HTMLSelectElement>) => {
+      const rawValue = Number(event.target.value);
+      if (Number.isFinite(rawValue) && rawValue > 0) {
+        setRefreshIntervalMs(rawValue);
+        fetchLiveBuffer({ sync: true });
+      }
+    },
+    [fetchLiveBuffer],
+  );
 
   const handleWriteStorage = async () => {
     if (!liveRecord) return;
@@ -1246,44 +1289,60 @@ export default function ScannerDashboard() {
       {liveRecord && (
         <Card
           header={
-            <div className="flex items-center gap-2">
-              <span className="text-lg font-semibold text-slate-100">Live buffer (latest scan)</span>
-              {(bookingWarning || bookingSuccess) && (
-                <span
-                  className={`inline-flex h-6 w-6 items-center justify-center rounded-full ${
-                    bookingWarning ? "bg-rose-500/15" : "bg-emerald-500/15"
-                  }`}
-                  title={bookingWarning ?? bookingSuccess ?? undefined}
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-lg font-semibold text-slate-100">Live buffer (latest scan)</span>
+                {(bookingWarning || bookingSuccess) && (
+                  <span
+                    className={`inline-flex h-6 w-6 items-center justify-center rounded-full ${
+                      bookingWarning ? "bg-rose-500/15" : "bg-emerald-500/15"
+                    }`}
+                    title={bookingWarning ?? bookingSuccess ?? undefined}
+                  >
+                    {bookingWarning ? (
+                      <svg
+                        className="h-4 w-4 text-rose-400"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v5m0 4h.01" />
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M12 3.75a8.25 8.25 0 110 16.5 8.25 8.25 0 010-16.5z"
+                        />
+                      </svg>
+                    ) : (
+                      <svg
+                        className="h-4 w-4 text-emerald-400"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                      </svg>
+                    )}
+                    <span className="sr-only">{bookingWarning ?? bookingSuccess}</span>
+                  </span>
+                )}
+              </div>
+              <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-slate-300/70 sm:flex-row sm:items-center sm:gap-3">
+                <span className="font-semibold text-slate-300/80">Auto refresh</span>
+                <select
+                  value={refreshIntervalMs}
+                  onChange={handleRefreshIntervalChange}
+                  className="rounded-full border border-white/15 bg-slate-900/70 px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-slate-100 shadow-sm transition focus:border-indigo-400 focus:outline-none focus:ring-0"
                 >
-                  {bookingWarning ? (
-                    <svg
-                      className="h-4 w-4 text-rose-400"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v5m0 4h.01" />
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M12 3.75a8.25 8.25 0 110 16.5 8.25 8.25 0 010-16.5z"
-                      />
-                    </svg>
-                  ) : (
-                    <svg
-                      className="h-4 w-4 text-emerald-400"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                    </svg>
-                  )}
-                  <span className="sr-only">{bookingWarning ?? bookingSuccess}</span>
-                </span>
-              )}
+                  {REFRESH_INTERVAL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value} className="text-slate-900">
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
           }
           footer={

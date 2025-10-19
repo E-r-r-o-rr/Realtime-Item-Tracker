@@ -819,6 +819,23 @@ export const ingestLiveBufferEntry = (
 ): { record?: LiveBufferRecord; historyEntry?: HistoryRecord; message?: string } => {
   const database = getDb();
   const booking = getBookingByTrackingId(payload.trackingId);
+
+  let persistPayload: LogisticsFields = { ...payload };
+  if (booking) {
+    const storageMatch = getStorageByTruckAndShipDate(payload.truckNumber, payload.shipDate);
+    if (storageMatch) {
+      persistPayload = {
+        destination: storageMatch.destination,
+        itemName: storageMatch.itemName,
+        trackingId: storageMatch.trackingId,
+        truckNumber: storageMatch.truckNumber,
+        shipDate: storageMatch.shipDate,
+        expectedDepartureTime: storageMatch.expectedDepartureTime,
+        originLocation: storageMatch.originLocation,
+      };
+    }
+  }
+
   database
     .prepare(
       `INSERT INTO live_buffer (${TABLE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -831,11 +848,11 @@ export const ingestLiveBufferEntry = (
          origin_location = excluded.origin_location,
          last_synced_at = CURRENT_TIMESTAMP`
     )
-    .run(...toLogisticsArray(payload));
-  const historyEntry = appendHistoryRecord(payload);
+    .run(...toLogisticsArray(persistPayload));
+  const historyEntry = appendHistoryRecord(persistPayload);
   const row = database
     .prepare(`SELECT * FROM live_buffer WHERE tracking_id = ?`)
-    .get(payload.trackingId);
+    .get(persistPayload.trackingId);
   const result: {
     record?: LiveBufferRecord;
     historyEntry?: HistoryRecord;
@@ -863,7 +880,10 @@ export const syncLiveBufferWithStorage = (): LiveBufferRecord[] => {
      WHERE id = ?`
   );
   for (const row of rows) {
-    const storage = getStorageByTrackingId(row.tracking_id);
+    let storage = getStorageByTrackingId(row.tracking_id);
+    if (!storage) {
+      storage = getStorageByTruckAndShipDate(row.truck_number, row.ship_date);
+    }
     if (storage) {
       updateStmt.run(
         storage.destination,
