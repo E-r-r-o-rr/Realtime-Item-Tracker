@@ -6,7 +6,28 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { FloorMapViewer } from "@/components/scanner/floor-map-viewer";
 import { FloorMapAdmin } from "@/components/scanner/floor-map-admin";
-import { LiveRecord, loadLiveRecord, persistLiveRecord } from "@/lib/localStorage";
+
+interface LiveRecord {
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  origin: string;
+}
+
+interface ApiLiveBufferRecord {
+  id: number;
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  originLocation: string;
+  lastSyncedAt: string;
+}
 
 interface KvPairs {
   [key: string]: any;
@@ -618,14 +639,45 @@ export default function ScannerDashboard() {
   const [validation, setValidation] = useState<BarcodeValidation | null>(null);
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
 
-  useEffect(() => {
-    setLiveRecordState(loadLiveRecord());
-  }, []);
+  const mapApiRecordToLive = useCallback((record: ApiLiveBufferRecord): LiveRecord => ({
+    destination: record.destination,
+    itemName: record.itemName,
+    trackingId: record.trackingId,
+    truckNumber: record.truckNumber,
+    shipDate: record.shipDate,
+    expectedDepartureTime: record.expectedDepartureTime,
+    origin: record.originLocation,
+  }), []);
 
   const updateLiveRecord = useCallback((record: LiveRecord | null) => {
     setLiveRecordState(record);
-    persistLiveRecord(record);
   }, []);
+
+  const fetchLiveBuffer = useCallback(async () => {
+    try {
+      const response = await fetch("/api/orders", { cache: "no-store" });
+      const payload: { liveBuffer?: ApiLiveBufferRecord[]; record?: ApiLiveBufferRecord; error?: string } = await response
+        .json()
+        .catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+      const records = Array.isArray(payload.liveBuffer) ? payload.liveBuffer : [];
+      if (records.length > 0) {
+        updateLiveRecord(mapApiRecordToLive(records[0]));
+      } else if (payload.record) {
+        updateLiveRecord(mapApiRecordToLive(payload.record));
+      } else {
+        updateLiveRecord(null);
+      }
+    } catch (error) {
+      console.error("Failed to load live buffer", error);
+    }
+  }, [mapApiRecordToLive, updateLiveRecord]);
+
+  useEffect(() => {
+    fetchLiveBuffer();
+  }, [fetchLiveBuffer]);
 
   const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "my-secret-api-key";
 
@@ -874,9 +926,26 @@ export default function ScannerDashboard() {
     }
   };
 
-  const handleClearLive = () => {
-    updateLiveRecord(null);
-    setStatus("Live buffer cleared.");
+  const handleClearLive = async () => {
+    try {
+      const response = await fetch("/api/orders", { method: "DELETE" });
+      const payload: { liveBuffer?: ApiLiveBufferRecord[]; error?: string } = await response
+        .json()
+        .catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+      const records = Array.isArray(payload.liveBuffer) ? payload.liveBuffer : [];
+      if (records.length > 0) {
+        updateLiveRecord(mapApiRecordToLive(records[0]));
+      } else {
+        updateLiveRecord(null);
+      }
+      setStatus("Live buffer cleared.");
+    } catch (error) {
+      console.error(error);
+      setStatus(error instanceof Error ? error.message : "Failed to clear live buffer.");
+    }
   };
 
   return (

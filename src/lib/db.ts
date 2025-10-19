@@ -623,6 +623,16 @@ export const getLiveBufferByTrackingId = (trackingId: string): LiveBufferRecord 
   return row ? mapLiveBufferRow(row) : undefined;
 };
 
+export const deleteLiveBufferEntry = (trackingId: string): boolean => {
+  const info = getDb().prepare(`DELETE FROM live_buffer WHERE tracking_id = ?`).run(trackingId);
+  return (info.changes ?? 0) > 0;
+};
+
+export const clearLiveBuffer = (): number => {
+  const info = getDb().prepare(`DELETE FROM live_buffer`).run();
+  return info.changes ?? 0;
+};
+
 export const listBookings = (): BookingRecord[] => {
   const rows = getDb().prepare(`SELECT * FROM bookings ORDER BY created_at DESC`).all();
   return rows.map(mapBookingRow);

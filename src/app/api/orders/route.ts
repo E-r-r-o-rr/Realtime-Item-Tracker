@@ -5,6 +5,8 @@ import {
   getLiveBufferByTrackingId,
   syncLiveBufferWithStorage,
   updateStorageRecord,
+  deleteLiveBufferEntry,
+  clearLiveBuffer,
 } from '@/lib/db';
 
 const REQUIRED_FIELDS = [
@@ -77,6 +79,26 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     console.error('Unexpected error ingesting live buffer entry', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const trackingId = searchParams.get('trackingId') ?? searchParams.get('code');
+    if (trackingId) {
+      const removed = deleteLiveBufferEntry(trackingId);
+      if (!removed) {
+        return NextResponse.json({ error: 'Live buffer entry not found' }, { status: 404 });
+      }
+    } else {
+      clearLiveBuffer();
+    }
+    const records = listLiveBuffer();
+    return NextResponse.json({ liveBuffer: records });
+  } catch (error) {
+    console.error('Failed to clear live buffer', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
