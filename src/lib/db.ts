@@ -4,9 +4,30 @@ import fs from 'fs';
 
 export interface FloorMapRecord {
   id: number;
-  destination: string;
-  latitude: number;
-  longitude: number;
+  name: string;
+  floor: string | null;
+  imagePath: string;
+  width: number;
+  height: number;
+  georefOriginLat: number | null;
+  georefOriginLon: number | null;
+  georefRotationDeg: number;
+  georefScaleMPx: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MapPointRecord {
+  id: number;
+  mapId: number;
+  label: string;
+  synonyms: string[];
+  xPx: number;
+  yPx: number;
+  lat: number;
+  lon: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface LogisticsFields {
@@ -118,13 +139,8 @@ function initDb() {
   const dbPath = path.join(dataDir, 'app.db');
   db = new Database(dbPath);
   db.pragma('foreign_keys = ON');
+  ensureFloorMapSchema(db);
   db.exec(`
-    CREATE TABLE IF NOT EXISTS floor_maps (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      destination TEXT NOT NULL,
-      latitude REAL NOT NULL,
-      longitude REAL NOT NULL
-    );
     CREATE TABLE IF NOT EXISTS live_buffer (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       destination TEXT NOT NULL,
@@ -173,6 +189,120 @@ function initDb() {
   `);
 }
 
+function ensureFloorMapSchema(database: Database.Database) {
+  const existingColumns = database.prepare(`PRAGMA table_info(floor_maps)`).all() as Array<{ name: string }>;
+  const hasLegacySchema = existingColumns.length > 0 && existingColumns.every((col) => [
+      'id',
+      'destination',
+      'latitude',
+      'longitude',
+    ].includes(col.name));
+
+  if (hasLegacySchema) {
+    database.exec(`DROP TABLE IF EXISTS floor_maps`);
+  }
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS floor_maps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      floor TEXT,
+      image_path TEXT NOT NULL,
+      width INTEGER NOT NULL,
+      height INTEGER NOT NULL,
+      georef_origin_lat REAL,
+      georef_origin_lon REAL,
+      georef_rotation_deg REAL NOT NULL DEFAULT 0,
+      georef_scale_m_per_px REAL NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS map_points (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      map_id INTEGER NOT NULL REFERENCES floor_maps(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,
+      synonyms TEXT NOT NULL DEFAULT '[]',
+      x_px REAL NOT NULL,
+      y_px REAL NOT NULL,
+      lat REAL NOT NULL,
+      lon REAL NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_map_points_label ON map_points(label);
+    CREATE INDEX IF NOT EXISTS idx_map_points_map_label ON map_points(map_id, label);
+  `);
+}
+
+const EARTH_RADIUS_M = 6_378_137;
+const RAD_TO_DEG = 180 / Math.PI;
+
+const parseSynonyms = (raw: any): string[] => {
+  if (typeof raw !== 'string') return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map((entry) => String(entry)).filter((entry) => entry.trim().length > 0);
+    }
+  } catch (error) {
+    console.warn('Failed to parse synonyms JSON', error);
+  }
+  return [];
+};
+
+const serializeSynonyms = (synonyms: string[] | undefined): string => {
+  const list = Array.isArray(synonyms)
+    ? synonyms.map((value) => value.trim()).filter((value) => value.length > 0)
+    : [];
+  return JSON.stringify(list);
+};
+
+const mapFloorMapRow = (row: any): FloorMapRecord => ({
+  id: row.id,
+  name: row.name,
+  floor: row.floor ?? null,
+  imagePath: row.image_path,
+  width: row.width,
+  height: row.height,
+  georefOriginLat: row.georef_origin_lat ?? null,
+  georefOriginLon: row.georef_origin_lon ?? null,
+  georefRotationDeg: row.georef_rotation_deg ?? 0,
+  georefScaleMPx: row.georef_scale_m_per_px ?? 1,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+const mapPointRow = (row: any): MapPointRecord => ({
+  id: row.id,
+  mapId: row.map_id,
+  label: row.label,
+  synonyms: parseSynonyms(row.synonyms),
+  xPx: row.x_px,
+  yPx: row.y_px,
+  lat: row.lat,
+  lon: row.lon,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+const computeLatLonForPoint = (map: FloorMapRecord, xPx: number, yPx: number) => {
+  const originLat = map.georefOriginLat ?? 0;
+  const originLon = map.georefOriginLon ?? 0;
+  const scale = map.georefScaleMPx || 1;
+  const rotationRad = ((map.georefRotationDeg ?? 0) * Math.PI) / 180;
+
+  const eastMetersUnrotated = xPx * scale;
+  const northMetersUnrotated = -yPx * scale;
+
+  const eastMeters = eastMetersUnrotated * Math.cos(rotationRad) - northMetersUnrotated * Math.sin(rotationRad);
+  const northMeters = eastMetersUnrotated * Math.sin(rotationRad) + northMetersUnrotated * Math.cos(rotationRad);
+
+  const lat = originLat + (northMeters / EARTH_RADIUS_M) * RAD_TO_DEG;
+  const lonDenominator = Math.cos((originLat * Math.PI) / 180);
+  const lon = originLon + (eastMeters / (EARTH_RADIUS_M * (lonDenominator === 0 ? 1e-9 : lonDenominator))) * RAD_TO_DEG;
+  return { lat, lon };
+};
+
 export function getDb(): Database.Database {
   initDb();
   if (!db) throw new Error('Failed to initialize database');
@@ -180,58 +310,226 @@ export function getDb(): Database.Database {
 }
 
 export const listFloorMaps = (): FloorMapRecord[] => {
-  const rows = getDb()
-    .prepare(`SELECT * FROM floor_maps ORDER BY destination COLLATE NOCASE`)
-    .all();
-  return rows.map((row: any) => ({
-    id: row.id,
-    destination: row.destination,
-    latitude: row.latitude,
-    longitude: row.longitude,
-  }));
+  const rows = getDb().prepare(`SELECT * FROM floor_maps ORDER BY name COLLATE NOCASE`).all();
+  return rows.map(mapFloorMapRow);
 };
 
-export const createFloorMap = (payload: { destination: string; latitude: number; longitude: number }): FloorMapRecord => {
+export const listFloorMapsWithPoints = (): Array<FloorMapRecord & { points: MapPointRecord[] }> => {
+  const maps = listFloorMaps();
+  return maps.map((map) => ({ ...map, points: listMapPoints(map.id) }));
+};
+
+export const getFloorMapById = (id: number): FloorMapRecord | undefined => {
+  const row = getDb().prepare(`SELECT * FROM floor_maps WHERE id = ?`).get(id);
+  return row ? mapFloorMapRow(row) : undefined;
+};
+
+export const getFloorMapWithPoints = (id: number): (FloorMapRecord & { points: MapPointRecord[] }) | undefined => {
+  const map = getFloorMapById(id);
+  if (!map) return undefined;
+  return { ...map, points: listMapPoints(id) };
+};
+
+export const createFloorMap = (payload: {
+  name: string;
+  floor?: string | null;
+  imagePath: string;
+  width: number;
+  height: number;
+  georefOriginLat?: number | null;
+  georefOriginLon?: number | null;
+  georefRotationDeg?: number;
+  georefScaleMPx?: number;
+}): FloorMapRecord => {
   const stmt = getDb().prepare(
-    `INSERT INTO floor_maps (destination, latitude, longitude) VALUES (?, ?, ?)`
+    `INSERT INTO floor_maps (name, floor, image_path, width, height, georef_origin_lat, georef_origin_lon, georef_rotation_deg, georef_scale_m_per_px)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
-  const info = stmt.run(payload.destination, payload.latitude, payload.longitude);
-  return {
-    id: Number(info.lastInsertRowid),
-    destination: payload.destination,
-    latitude: payload.latitude,
-    longitude: payload.longitude,
-  };
+  const info = stmt.run(
+    payload.name,
+    payload.floor ?? null,
+    payload.imagePath,
+    payload.width,
+    payload.height,
+    payload.georefOriginLat ?? null,
+    payload.georefOriginLon ?? null,
+    payload.georefRotationDeg ?? 0,
+    payload.georefScaleMPx ?? 1,
+  );
+  const map = getFloorMapById(Number(info.lastInsertRowid));
+  if (!map) throw new Error('Failed to create floor map');
+  return map;
 };
 
 export const updateFloorMap = (
   id: number,
-  updates: Partial<{ destination: string; latitude: number; longitude: number }>,
+  updates: Partial<{
+    name: string;
+    floor: string | null;
+    imagePath: string;
+    width: number;
+    height: number;
+    georefOriginLat: number | null;
+    georefOriginLon: number | null;
+    georefRotationDeg: number;
+    georefScaleMPx: number;
+  }>,
 ): FloorMapRecord | undefined => {
-  const existing = getDb().prepare(`SELECT * FROM floor_maps WHERE id = ?`).get(id) as any;
+  const existing = getFloorMapById(id);
   if (!existing) return undefined;
+
   const next = {
-    destination: updates.destination ?? existing.destination,
-    latitude: updates.latitude ?? existing.latitude,
-    longitude: updates.longitude ?? existing.longitude,
+    name: updates.name ?? existing.name,
+    floor: updates.floor === undefined ? existing.floor : updates.floor,
+    imagePath: updates.imagePath ?? existing.imagePath,
+    width: updates.width ?? existing.width,
+    height: updates.height ?? existing.height,
+    georefOriginLat: updates.georefOriginLat === undefined ? existing.georefOriginLat : updates.georefOriginLat,
+    georefOriginLon: updates.georefOriginLon === undefined ? existing.georefOriginLon : updates.georefOriginLon,
+    georefRotationDeg: updates.georefRotationDeg ?? existing.georefRotationDeg,
+    georefScaleMPx: updates.georefScaleMPx ?? existing.georefScaleMPx,
   };
+
   getDb()
     .prepare(
-      `UPDATE floor_maps SET destination = ?, latitude = ?, longitude = ? WHERE id = ?`
+      `UPDATE floor_maps
+         SET name = ?,
+             floor = ?,
+             image_path = ?,
+             width = ?,
+             height = ?,
+             georef_origin_lat = ?,
+             georef_origin_lon = ?,
+             georef_rotation_deg = ?,
+             georef_scale_m_per_px = ?,
+             updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`
     )
-    .run(next.destination, next.latitude, next.longitude, id);
-  return { id, ...next };
+    .run(
+      next.name,
+      next.floor ?? null,
+      next.imagePath,
+      next.width,
+      next.height,
+      next.georefOriginLat ?? null,
+      next.georefOriginLon ?? null,
+      next.georefRotationDeg,
+      next.georefScaleMPx,
+      id,
+    );
+
+  const map = getFloorMapById(id);
+  if (!map) return undefined;
+
+  if (
+    next.georefOriginLat !== existing.georefOriginLat ||
+    next.georefOriginLon !== existing.georefOriginLon ||
+    next.georefRotationDeg !== existing.georefRotationDeg ||
+    next.georefScaleMPx !== existing.georefScaleMPx
+  ) {
+    recomputeMapPointsForMap(map);
+  }
+
+  return map;
 };
 
-export const getFloorMapById = (id: number): FloorMapRecord | undefined => {
-  const row = getDb().prepare(`SELECT * FROM floor_maps WHERE id = ?`).get(id) as any;
+export const listMapPoints = (mapId: number): MapPointRecord[] => {
+  const rows = getDb()
+    .prepare(`SELECT * FROM map_points WHERE map_id = ? ORDER BY label COLLATE NOCASE`)
+    .all(mapId);
+  return rows.map(mapPointRow);
+};
+
+export const createMapPoint = (payload: {
+  mapId: number;
+  label: string;
+  synonyms?: string[];
+  xPx: number;
+  yPx: number;
+}): MapPointRecord => {
+  const map = getFloorMapById(payload.mapId);
+  if (!map) {
+    throw new Error(`Map ${payload.mapId} not found`);
+  }
+  const { lat, lon } = computeLatLonForPoint(map, payload.xPx, payload.yPx);
+  const stmt = getDb().prepare(
+    `INSERT INTO map_points (map_id, label, synonyms, x_px, y_px, lat, lon) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  const info = stmt.run(
+    payload.mapId,
+    payload.label,
+    serializeSynonyms(payload.synonyms),
+    payload.xPx,
+    payload.yPx,
+    lat,
+    lon,
+  );
+  const row = getDb()
+    .prepare(`SELECT * FROM map_points WHERE id = ?`)
+    .get(Number(info.lastInsertRowid));
+  if (!row) throw new Error('Failed to create point');
+  return mapPointRow(row);
+};
+
+export const updateMapPoint = (
+  id: number,
+  updates: Partial<{ label: string; synonyms: string[]; xPx: number; yPx: number }>,
+): MapPointRecord | undefined => {
+  const row = getDb().prepare(`SELECT * FROM map_points WHERE id = ?`).get(id);
   if (!row) return undefined;
-  return {
-    id: row.id,
-    destination: row.destination,
-    latitude: row.latitude,
-    longitude: row.longitude,
-  };
+  const existing = mapPointRow(row);
+  const map = getFloorMapById(existing.mapId);
+  if (!map) {
+    throw new Error(`Map ${existing.mapId} missing while updating point`);
+  }
+  const nextXPx = updates.xPx ?? existing.xPx;
+  const nextYPx = updates.yPx ?? existing.yPx;
+  const { lat, lon } = computeLatLonForPoint(map, nextXPx, nextYPx);
+
+  getDb()
+    .prepare(
+      `UPDATE map_points
+         SET label = ?,
+             synonyms = ?,
+             x_px = ?,
+             y_px = ?,
+             lat = ?,
+             lon = ?,
+             updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`
+    )
+    .run(
+      updates.label ?? existing.label,
+      serializeSynonyms(updates.synonyms ?? existing.synonyms),
+      nextXPx,
+      nextYPx,
+      lat,
+      lon,
+      id,
+    );
+
+  const refreshed = getDb().prepare(`SELECT * FROM map_points WHERE id = ?`).get(id);
+  return refreshed ? mapPointRow(refreshed) : undefined;
+};
+
+export const deleteMapPoint = (id: number): boolean => {
+  const stmt = getDb().prepare(`DELETE FROM map_points WHERE id = ?`);
+  const result = stmt.run(id);
+  return result.changes > 0;
+};
+
+const recomputeMapPointsForMap = (map: FloorMapRecord) => {
+  const points = listMapPoints(map.id);
+  const updateStmt = getDb().prepare(
+    `UPDATE map_points SET lat = ?, lon = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+  );
+  const tx = getDb().transaction((entries: MapPointRecord[]) => {
+    for (const point of entries) {
+      const { lat, lon } = computeLatLonForPoint(map, point.xPx, point.yPx);
+      updateStmt.run(lat, lon, point.id);
+    }
+  });
+  tx(points);
 };
 
 export const listLiveBuffer = (): LiveBufferRecord[] => {

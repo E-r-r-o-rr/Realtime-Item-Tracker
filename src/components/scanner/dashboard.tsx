@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+import { FloorMapViewer } from "@/components/scanner/floor-map-viewer";
+import { FloorMapAdmin } from "@/components/scanner/floor-map-admin";
 import {
   LiveRecord,
   loadLiveRecord,
@@ -669,6 +671,14 @@ export default function ScannerDashboard() {
     return "";
   };
 
+  const bufferDestination = LIVE_BUFFER_FIELDS[0]
+    ? getBufferValue(LIVE_BUFFER_FIELDS[0].keys)
+    : "";
+  const activeDestination =
+    (liveRecord?.destination && liveRecord.destination.trim()) ||
+    (bufferDestination && bufferDestination.trim()) ||
+    "";
+
   useEffect(() => {
     if (!kv) return;
     const record = buildLiveRecord(getBufferValue);
@@ -1039,13 +1049,8 @@ export default function ScannerDashboard() {
         </Card>
       )}
 
-      <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-sm text-slate-200">
-        <p className="font-semibold text-slate-100">Need dock routing?</p>
-        <p className="mt-2 text-slate-300/80">
-          The map module is temporarily unavailable while the database transition to the new logistics tables
-          completes. Live buffer entries now sync directly from bookings and storage records.
-        </p>
-      </div>
+      <FloorMapViewer activeDestination={activeDestination || undefined} />
+      <FloorMapAdmin />
     </div>
   );
 }
