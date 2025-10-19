@@ -68,6 +68,8 @@ interface ApiHistoryEntry {
   recordedAt: string;
 }
 
+const PERSISTED_STATE_KEY = "scanner.dashboard.ui_state.v1";
+
 const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
   if (!v) return null;
   return {
@@ -639,6 +641,76 @@ export default function ScannerDashboard() {
   const [validation, setValidation] = useState<BarcodeValidation | null>(null);
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
   const [bookingWarning, setBookingWarning] = useState<string | null>(null);
+  const [hasHydrated, setHasHydrated] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(PERSISTED_STATE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        const maybeStatus = (parsed as { status?: unknown }).status;
+        setStatus(typeof maybeStatus === "string" ? maybeStatus : null);
+
+        const maybeWarning = (parsed as { bookingWarning?: unknown }).bookingWarning;
+        setBookingWarning(typeof maybeWarning === "string" ? maybeWarning : null);
+
+        const maybeKv = (parsed as { kv?: unknown }).kv;
+        if (maybeKv && typeof maybeKv === "object" && !Array.isArray(maybeKv)) {
+          setKv(maybeKv as KvPairs);
+        }
+
+        const maybeBarcodes = (parsed as { barcodes?: unknown }).barcodes;
+        setBarcodes(Array.isArray(maybeBarcodes) ? maybeBarcodes.filter((v) => typeof v === "string") : []);
+
+        const maybeBarcodeWarnings = (parsed as { barcodeWarnings?: unknown }).barcodeWarnings;
+        setBarcodeWarnings(
+          Array.isArray(maybeBarcodeWarnings)
+            ? maybeBarcodeWarnings.filter((v) => typeof v === "string")
+            : [],
+        );
+
+        const maybeValidation = (parsed as { validation?: unknown }).validation;
+        if (maybeValidation && typeof maybeValidation === "object") {
+          const val = maybeValidation as Partial<BarcodeValidation>;
+          const status = val.status;
+          const message = val.message;
+          const matches = val.matches;
+          const comparedValue = val.comparedValue;
+          if (typeof status === "string" && typeof message === "string") {
+            setValidation({
+              status,
+              message,
+              matches: typeof matches === "boolean" ? matches : null,
+              comparedValue: typeof comparedValue === "string" ? comparedValue : undefined,
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Failed to load persisted scanner state", error);
+    } finally {
+      setHasHydrated(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydrated || typeof window === "undefined") return;
+    try {
+      const payload = {
+        status,
+        bookingWarning,
+        kv,
+        barcodes,
+        barcodeWarnings,
+        validation,
+      };
+      window.localStorage.setItem(PERSISTED_STATE_KEY, JSON.stringify(payload));
+    } catch (error) {
+      console.error("Failed to persist scanner state", error);
+    }
+  }, [status, bookingWarning, kv, barcodes, barcodeWarnings, validation, hasHydrated]);
 
   const mapApiRecordToLive = useCallback((record: ApiLiveBufferRecord): LiveRecord => ({
     destination: record.destination,
@@ -666,13 +738,10 @@ export default function ScannerDashboard() {
       const records = Array.isArray(payload.liveBuffer) ? payload.liveBuffer : [];
       if (records.length > 0) {
         updateLiveRecord(mapApiRecordToLive(records[0]));
-        setBookingWarning(null);
       } else if (payload.record) {
         updateLiveRecord(mapApiRecordToLive(payload.record));
-        setBookingWarning(null);
       } else {
         updateLiveRecord(null);
-        setBookingWarning(null);
       }
     } catch (error) {
       console.error("Failed to load live buffer", error);
