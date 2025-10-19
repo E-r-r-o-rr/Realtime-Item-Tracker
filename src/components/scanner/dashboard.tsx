@@ -1020,6 +1020,10 @@ export default function ScannerDashboard() {
       } else {
         updateLiveRecord(null);
       }
+      setKv(null);
+      setBarcodes([]);
+      setBarcodeWarnings([]);
+      setValidation(null);
       setStatus("Live buffer cleared.");
       setBookingWarning(null);
     } catch (error) {
