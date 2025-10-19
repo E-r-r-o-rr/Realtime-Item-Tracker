@@ -1132,32 +1132,6 @@ export default function ScannerDashboard() {
         </Card>
       )}
 
-      {kv && (
-        <Card header={<span className="text-lg font-semibold text-slate-100">Live buffer fields</span>}>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-white/5 text-left text-xs font-medium uppercase tracking-wide text-slate-300/80">
-                <tr>
-                  <th className="px-4 py-3">Field</th>
-                  <th className="px-4 py-3">Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {LIVE_BUFFER_FIELDS.map(({ label, keys }) => {
-                  const v = getBufferValue(keys);
-                  const has = Boolean(v && v.trim());
-                  return (
-                    <tr key={label} className="border-b border-white/10 last:border-0">
-                      <td className="px-4 py-3 font-medium text-slate-100">{label}</td>
-                      <td className={`px-4 py-3 ${has ? "text-slate-200" : "text-slate-500"}`}>{has ? v : "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
 
       <FloorMapViewer activeDestination={activeDestination || undefined} />
       <FloorMapAdmin />
