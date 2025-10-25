@@ -1,16 +1,34 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  StorageRecord,
-  loadStorageRecords,
-  persistStorageRecords,
-  seedStorageRecords,
-  clearStorageRecords,
-} from "@/lib/localStorage";
+
+interface StorageRow {
+  id: number;
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  originLocation: string;
+  booked: boolean;
+  lastUpdated: string;
+}
+
+interface BookingRow {
+  id: number;
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  originLocation: string;
+  createdAt: string;
+}
 
 const formatDateTime = (value: string) => {
   try {
@@ -22,57 +40,139 @@ const formatDateTime = (value: string) => {
 
 type EditableField = "destination" | "trackingId" | "expectedDepartureTime";
 
+const fieldToPayloadKey: Record<EditableField, string> = {
+  destination: "destination",
+  trackingId: "newTrackingId",
+  expectedDepartureTime: "expectedDepartureTime",
+};
+
 export default function StoragePage() {
-  const [storage, setStorage] = useState<StorageRecord[]>([]);
+  const [storage, setStorage] = useState<StorageRow[]>([]);
+  const [bookings, setBookings] = useState<BookingRow[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const applyPayload = useCallback(
+    (payload: any, previousTrackingId?: string) => {
+      if (!payload) return;
+      if (Array.isArray(payload.storage)) {
+        setStorage(payload.storage as StorageRow[]);
+      } else if (payload.storage) {
+        const updated = payload.storage as StorageRow;
+        setStorage((prev) => {
+          const base = previousTrackingId
+            ? prev.filter((item) => item.trackingId !== previousTrackingId)
+            : [...prev];
+          const existingIndex = base.findIndex((item) => item.trackingId === updated.trackingId);
+          if (existingIndex >= 0) {
+            base[existingIndex] = updated;
+          } else {
+            base.unshift(updated);
+          }
+          return [...base];
+        });
+      }
+      if (Array.isArray(payload.bookings)) {
+        setBookings(payload.bookings as BookingRow[]);
+      }
+    },
+    []
+  );
+
+  const fetchStorage = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/storage", { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+      applyPayload(payload);
+      setError(null);
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : "Failed to load storage data.");
+    } finally {
+      setLoading(false);
+    }
+  }, [applyPayload]);
 
   useEffect(() => {
-    const current = loadStorageRecords();
-    if (current.length === 0) {
-      setStorage(seedStorageRecords(15));
-    } else {
-      setStorage(current);
+    fetchStorage();
+  }, [fetchStorage]);
+
+  const bookingsSubset = useMemo(() => bookings, [bookings]);
+
+  const mutate = useCallback(
+    async (input: RequestInfo, init?: RequestInit, previousTrackingId?: string) => {
+      setLoading(true);
+      try {
+        const response = await fetch(input, init);
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+        }
+        applyPayload(payload, previousTrackingId);
+        setError(null);
+      } catch (err) {
+        console.error(err);
+        setError(err instanceof Error ? err.message : "Storage update failed.");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applyPayload]
+  );
+
+  const toggleBooked = (record: StorageRow, value: boolean) => {
+    mutate(
+      `/api/storage/${encodeURIComponent(record.trackingId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ booked: value }),
+      },
+      record.trackingId
+    );
+  };
+
+  const commitField = (record: StorageRow, field: EditableField, value: string) => {
+    const trimmed = value.trim();
+    let currentValue = record.destination;
+    if (field === "trackingId") {
+      currentValue = record.trackingId;
+    } else if (field === "expectedDepartureTime") {
+      currentValue = record.expectedDepartureTime;
     }
-  }, []);
-
-  const bookings = useMemo(() => storage.filter((item) => item.booked), [storage]);
-
-  const updateStorage = (updater: (records: StorageRecord[]) => StorageRecord[]) => {
-    setStorage((prev) => {
-      const next = updater([...prev.map((item) => ({ ...item }))]);
-      persistStorageRecords(next);
-      return next;
-    });
+    if (trimmed === currentValue) return;
+    mutate(
+      `/api/storage/${encodeURIComponent(record.trackingId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [fieldToPayloadKey[field]]: trimmed }),
+      },
+      record.trackingId
+    );
   };
 
-  const toggleBooked = (index: number, value: boolean) => {
-    updateStorage((records) => {
-      if (!records[index]) return records;
-      records[index].booked = value;
-      records[index].lastUpdated = new Date().toISOString();
-      return records;
-    });
-  };
-
-  const updateField = (index: number, field: EditableField, value: string) => {
-    updateStorage((records) => {
-      if (!records[index]) return records;
-      records[index][field] = value;
-      records[index].lastUpdated = new Date().toISOString();
-      return records;
-    });
-  };
-
-  const removeRow = (index: number) => {
-    updateStorage((records) => records.filter((_, i) => i !== index));
+  const removeRow = (record: StorageRow) => {
+    mutate(`/api/storage/${encodeURIComponent(record.trackingId)}`, { method: "DELETE" }, record.trackingId);
   };
 
   const handleSeed = () => {
-    setStorage(seedStorageRecords(15));
+    mutate(
+      "/api/storage",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "seed", count: 15 }),
+      }
+    );
   };
 
   const handleClear = () => {
-    clearStorageRecords();
-    setStorage([]);
+    mutate("/api/storage", { method: "DELETE" });
   };
 
   return (
@@ -85,6 +185,7 @@ export default function StoragePage() {
           Manage booking states, rack assignments, and departure timings in a glassy workspace that keeps staging and
           loading crews aligned.
         </p>
+        {error && <p className="text-sm text-rose-300">{error}</p>}
       </div>
 
       <Card
@@ -93,13 +194,13 @@ export default function StoragePage() {
         footer={
           <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-slate-300/80">
             <span>
-              {storage.length} rows in storage • {bookings.length} booked
+              {storage.length} rows in storage • {bookingsSubset.length} booked
             </span>
             <div className="flex gap-2">
-              <Button variant="outline" onClick={handleSeed}>
+              <Button variant="outline" onClick={handleSeed} disabled={loading}>
                 Seed 15 sample rows
               </Button>
-              <Button variant="outline" onClick={handleClear} disabled={storage.length === 0}>
+              <Button variant="outline" onClick={handleClear} disabled={storage.length === 0 || loading}>
                 Clear storage
               </Button>
             </div>
@@ -128,14 +229,14 @@ export default function StoragePage() {
                 </tr>
               </thead>
               <tbody>
-                {storage.map((record, index) => (
-                  <tr key={`${record.trackingId}-${index}`} className="border-b border-white/10 last:border-0">
+                {storage.map((record) => (
+                  <tr key={record.id} className="border-b border-white/10 last:border-0">
                     <td className="px-4 py-3 text-slate-200">
                       <label className="inline-flex items-center gap-2">
                         <input
                           type="checkbox"
                           checked={record.booked}
-                          onChange={(e) => toggleBooked(index, e.target.checked)}
+                          onChange={(e) => toggleBooked(record, e.target.checked)}
                           className="h-4 w-4 rounded border-white/20 bg-transparent text-indigo-400 focus:ring-indigo-400/70"
                         />
                         <span className={`text-xs font-semibold ${record.booked ? "text-emerald-400" : "text-slate-400"}`}>
@@ -145,26 +246,32 @@ export default function StoragePage() {
                     </td>
                     <td className="px-4 py-3 text-slate-200">
                       <Input
-                        value={record.destination}
-                        onChange={(e) => updateField(index, "destination", e.target.value)}
+                        key={`${record.id}-destination-${record.lastUpdated}`}
+                        defaultValue={record.destination}
+                        onBlur={(e) => commitField(record, "destination", e.target.value)}
                       />
                     </td>
                     <td className="px-4 py-3 text-slate-200">{record.itemName}</td>
                     <td className="px-4 py-3 text-slate-200">
-                      <Input value={record.trackingId} onChange={(e) => updateField(index, "trackingId", e.target.value)} />
+                      <Input
+                        key={`${record.id}-tracking-${record.lastUpdated}`}
+                        defaultValue={record.trackingId}
+                        onBlur={(e) => commitField(record, "trackingId", e.target.value)}
+                      />
                     </td>
                     <td className="px-4 py-3 text-slate-200">{record.truckNumber}</td>
                     <td className="px-4 py-3 text-slate-200">{record.shipDate}</td>
                     <td className="px-4 py-3 text-slate-200">
                       <Input
-                        value={record.expectedDepartureTime}
-                        onChange={(e) => updateField(index, "expectedDepartureTime", e.target.value)}
+                        key={`${record.id}-departure-${record.lastUpdated}`}
+                        defaultValue={record.expectedDepartureTime}
+                        onBlur={(e) => commitField(record, "expectedDepartureTime", e.target.value)}
                       />
                     </td>
-                    <td className="px-4 py-3 text-slate-200">{record.origin}</td>
+                    <td className="px-4 py-3 text-slate-200">{record.originLocation}</td>
                     <td className="px-4 py-3 text-xs text-slate-400">{formatDateTime(record.lastUpdated)}</td>
                     <td className="px-4 py-3 text-right">
-                      <Button variant="outline" onClick={() => removeRow(index)}>
+                      <Button variant="outline" onClick={() => removeRow(record)} disabled={loading}>
                         Remove
                       </Button>
                     </td>
@@ -177,7 +284,7 @@ export default function StoragePage() {
       </Card>
 
       <Card header={<span className="text-lg font-semibold text-slate-100">Bookings</span>}>
-        {bookings.length === 0 ? (
+        {bookingsSubset.length === 0 ? (
           <p className="text-sm text-slate-300/80">No bookings yet. Mark storage rows as booked to populate this table.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -194,15 +301,15 @@ export default function StoragePage() {
                 </tr>
               </thead>
               <tbody>
-                {bookings.map((record) => (
-                  <tr key={`${record.trackingId}-${record.lastUpdated}`} className="border-b border-white/10 last:border-0">
+                {bookingsSubset.map((record) => (
+                  <tr key={`${record.trackingId}-${record.createdAt}`} className="border-b border-white/10 last:border-0">
                     <td className="px-4 py-3 text-slate-200">{record.destination}</td>
                     <td className="px-4 py-3 text-slate-200">{record.itemName}</td>
                     <td className="px-4 py-3 text-slate-200">{record.trackingId}</td>
                     <td className="px-4 py-3 text-slate-200">{record.truckNumber}</td>
                     <td className="px-4 py-3 text-slate-200">{record.shipDate}</td>
                     <td className="px-4 py-3 text-slate-200">{record.expectedDepartureTime}</td>
-                    <td className="px-4 py-3 text-slate-200">{record.origin}</td>
+                    <td className="px-4 py-3 text-slate-200">{record.originLocation}</td>
                   </tr>
                 ))}
               </tbody>
@@ -213,4 +320,3 @@ export default function StoragePage() {
     </div>
   );
 }
-

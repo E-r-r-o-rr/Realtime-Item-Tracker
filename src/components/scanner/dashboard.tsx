@@ -4,13 +4,29 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
-import {
-  LiveRecord,
-  loadLiveRecord,
-  persistLiveRecord,
-  pushHistoryRecord,
-  writeRecordToStorage,
-} from "@/lib/localStorage";
+import { FloorMapViewer } from "@/components/scanner/floor-map-viewer";
+
+interface LiveRecord {
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  origin: string;
+}
+
+interface ApiLiveBufferRecord {
+  id: number;
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  originLocation: string;
+  lastSyncedAt: string;
+}
 
 interface KvPairs {
   [key: string]: any;
@@ -37,6 +53,27 @@ interface ApiOcrResponse {
   barcodeWarnings?: string[];
   validation?: ApiValidation;
 }
+
+interface ApiHistoryEntry {
+  id: number;
+  scanId: string;
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  originLocation: string;
+  recordedAt: string;
+}
+
+const PERSISTED_STATE_KEY = "scanner.dashboard.ui_state.v1";
+const DEFAULT_REFRESH_MS = 300_000;
+const REFRESH_INTERVAL_OPTIONS: { label: string; value: number }[] = [
+  { label: "Every 30 seconds", value: 30_000 },
+  { label: "Every 1 minute", value: 60_000 },
+  { label: "Every 5 minutes", value: 300_000 },
+];
 
 const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
   if (!v) return null;
@@ -608,15 +645,149 @@ export default function ScannerDashboard() {
   const [barcodeWarnings, setBarcodeWarnings] = useState<string[]>([]);
   const [validation, setValidation] = useState<BarcodeValidation | null>(null);
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
+  const [bookingWarning, setBookingWarning] = useState<string | null>(null);
+  const [bookingSuccess, setBookingSuccess] = useState<string | null>(null);
+  const [checkingBooking, setCheckingBooking] = useState(false);
+  const [refreshIntervalMs, setRefreshIntervalMs] = useState<number>(DEFAULT_REFRESH_MS);
+  const [hasHydrated, setHasHydrated] = useState(false);
 
   useEffect(() => {
-    setLiveRecordState(loadLiveRecord());
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(PERSISTED_STATE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        const maybeStatus = (parsed as { status?: unknown }).status;
+        setStatus(typeof maybeStatus === "string" ? maybeStatus : null);
+
+        const maybeWarning = (parsed as { bookingWarning?: unknown }).bookingWarning;
+        setBookingWarning(typeof maybeWarning === "string" ? maybeWarning : null);
+
+        const maybeSuccess = (parsed as { bookingSuccess?: unknown }).bookingSuccess;
+        setBookingSuccess(typeof maybeSuccess === "string" ? maybeSuccess : null);
+
+        const maybeKv = (parsed as { kv?: unknown }).kv;
+        if (maybeKv && typeof maybeKv === "object" && !Array.isArray(maybeKv)) {
+          setKv(maybeKv as KvPairs);
+        }
+
+        const maybeBarcodes = (parsed as { barcodes?: unknown }).barcodes;
+        setBarcodes(Array.isArray(maybeBarcodes) ? maybeBarcodes.filter((v) => typeof v === "string") : []);
+
+        const maybeBarcodeWarnings = (parsed as { barcodeWarnings?: unknown }).barcodeWarnings;
+        setBarcodeWarnings(
+          Array.isArray(maybeBarcodeWarnings)
+            ? maybeBarcodeWarnings.filter((v) => typeof v === "string")
+            : [],
+        );
+
+        const maybeValidation = (parsed as { validation?: unknown }).validation;
+        if (maybeValidation && typeof maybeValidation === "object") {
+          const val = maybeValidation as Partial<BarcodeValidation>;
+          const status = val.status;
+          const message = val.message;
+          const matches = val.matches;
+          const comparedValue = val.comparedValue;
+          if (typeof status === "string" && typeof message === "string") {
+            setValidation({
+              status,
+              message,
+              matches: typeof matches === "boolean" ? matches : null,
+              comparedValue: typeof comparedValue === "string" ? comparedValue : undefined,
+            });
+          }
+        }
+
+        const maybeRefresh = (parsed as { refreshIntervalMs?: unknown }).refreshIntervalMs;
+        if (typeof maybeRefresh === "number" && Number.isFinite(maybeRefresh) && maybeRefresh > 0) {
+          setRefreshIntervalMs(maybeRefresh);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to load persisted scanner state", error);
+    } finally {
+      setHasHydrated(true);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!hasHydrated || typeof window === "undefined") return;
+    try {
+      const payload = {
+        status,
+        bookingWarning,
+        bookingSuccess,
+        kv,
+        barcodes,
+        barcodeWarnings,
+        validation,
+        refreshIntervalMs,
+      };
+      window.localStorage.setItem(PERSISTED_STATE_KEY, JSON.stringify(payload));
+    } catch (error) {
+      console.error("Failed to persist scanner state", error);
+    }
+  }, [
+    status,
+    bookingWarning,
+    bookingSuccess,
+    kv,
+    barcodes,
+    barcodeWarnings,
+    validation,
+    refreshIntervalMs,
+    hasHydrated,
+  ]);
+
+  const mapApiRecordToLive = useCallback((record: ApiLiveBufferRecord): LiveRecord => ({
+    destination: record.destination,
+    itemName: record.itemName,
+    trackingId: record.trackingId,
+    truckNumber: record.truckNumber,
+    shipDate: record.shipDate,
+    expectedDepartureTime: record.expectedDepartureTime,
+    origin: record.originLocation,
+  }), []);
 
   const updateLiveRecord = useCallback((record: LiveRecord | null) => {
     setLiveRecordState(record);
-    persistLiveRecord(record);
   }, []);
+
+  const fetchLiveBuffer = useCallback(async (options?: { sync?: boolean }) => {
+    try {
+      const query = options?.sync ? "?sync=true" : "";
+      const response = await fetch(`/api/orders${query}`, { cache: "no-store" });
+      const payload: { liveBuffer?: ApiLiveBufferRecord[]; record?: ApiLiveBufferRecord; error?: string } = await response
+        .json()
+        .catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+      const records = Array.isArray(payload.liveBuffer) ? payload.liveBuffer : [];
+      if (records.length > 0) {
+        updateLiveRecord(mapApiRecordToLive(records[0]));
+      } else if (payload.record) {
+        updateLiveRecord(mapApiRecordToLive(payload.record));
+      } else {
+        updateLiveRecord(null);
+      }
+    } catch (error) {
+      console.error("Failed to load live buffer", error);
+    }
+  }, [mapApiRecordToLive, updateLiveRecord]);
+
+  useEffect(() => {
+    fetchLiveBuffer({ sync: true });
+  }, [fetchLiveBuffer]);
+
+  useEffect(() => {
+    if (!refreshIntervalMs || typeof window === "undefined") return;
+    const id = window.setInterval(() => {
+      fetchLiveBuffer({ sync: true });
+    }, refreshIntervalMs);
+    return () => window.clearInterval(id);
+  }, [refreshIntervalMs, fetchLiveBuffer]);
 
   const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "my-secret-api-key";
 
@@ -669,6 +840,14 @@ export default function ScannerDashboard() {
     return "";
   };
 
+  const bufferDestination = LIVE_BUFFER_FIELDS[0]
+    ? getBufferValue(LIVE_BUFFER_FIELDS[0].keys)
+    : "";
+  const activeDestination =
+    (liveRecord?.destination && liveRecord.destination.trim()) ||
+    (bufferDestination && bufferDestination.trim()) ||
+    "";
+
   useEffect(() => {
     if (!kv) return;
     const record = buildLiveRecord(getBufferValue);
@@ -685,6 +864,7 @@ export default function ScannerDashboard() {
     setBarcodes([]);
     setBarcodeWarnings([]);
     setValidation(null);
+    setBookingWarning(null);
   };
 
   const scanDocument = async () => {
@@ -749,10 +929,15 @@ export default function ScannerDashboard() {
         );
         if (missingField) {
           setStatus(
-            `Live buffer updated locally but missing "${missingField[0]}" to sync with bookings and storage.`,
+            `Live buffer updated locally but missing "${missingField[0]}" to sync with the history log.`,
           );
+          setBookingWarning(null);
+          setBookingSuccess(null);
         } else {
-          setStatus(`Validating booking for ${recordCandidate.trackingId}…`);
+          const trackingIdForStatus = recordCandidate.trackingId;
+          setStatus(`Logging scan for ${trackingIdForStatus}…`);
+          setBookingWarning(null);
+          setBookingSuccess(null);
           const response = await fetch(`/api/orders`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
@@ -766,12 +951,38 @@ export default function ScannerDashboard() {
               originLocation: recordCandidate.origin,
             }),
           });
-          const payload = await response.json().catch(() => ({ error: "" }));
+          const payload: {
+            record?: {
+              destination: string;
+              itemName: string;
+              trackingId: string;
+              truckNumber: string;
+              shipDate: string;
+              expectedDepartureTime: string;
+              originLocation: string;
+            };
+            historyEntry?: ApiHistoryEntry;
+            warning?: string;
+            error?: string;
+          } = await response.json().catch(() => ({ error: "" }));
           if (!response.ok) {
             const reason = typeof payload.error === "string" && payload.error ? payload.error : response.statusText;
-            setStatus(reason || "Failed to validate booking.");
+            setStatus(reason || "Failed to log scan.");
+            setBookingWarning(null);
+            setBookingSuccess(null);
           } else {
             const record = payload.record;
+            const warningRaw = typeof payload.warning === "string" ? payload.warning.trim() : "";
+            const warning = warningRaw.length > 0 ? warningRaw : null;
+            setBookingWarning(warning);
+            const trackedId = record?.trackingId || recordCandidate.trackingId;
+            if (warning) {
+              setBookingSuccess(null);
+            } else if (trackedId) {
+              setBookingSuccess(`Booked item found for ${trackedId}`);
+            } else {
+              setBookingSuccess("Booked item found");
+            }
             if (record) {
               const nextRecord: LiveRecord = {
                 destination: record.destination,
@@ -783,16 +994,28 @@ export default function ScannerDashboard() {
                 origin: record.originLocation,
               };
               updateLiveRecord(nextRecord);
-              setStatus(`Live buffer synchronized for ${nextRecord.trackingId}.`);
-            } else {
-              setStatus("Live buffer synchronized.");
             }
+            const displayTrackingId = record?.trackingId || recordCandidate.trackingId;
+            const statusSegments: string[] = [];
+            if (displayTrackingId) {
+              statusSegments.push(`Order ${displayTrackingId} -`);
+            }
+            statusSegments.push("Saved to history.");
+            const trailingMessage = warning
+              ? warning.endsWith(".")
+                ? warning
+                : `${warning}.`
+              : "Booked item found.";
+            statusSegments.push(trailingMessage);
+            setStatus(statusSegments.join(" ").replace(/\s+/g, " ").trim());
           }
         }
       }
     } catch (err) {
       console.error(err);
       setStatus("Error scanning document.");
+      setBookingWarning(null);
+      setBookingSuccess(null);
     } finally {
       setLoading(false);
     }
@@ -806,23 +1029,136 @@ export default function ScannerDashboard() {
     setBarcodes([]);
     setBarcodeWarnings([]);
     setValidation(null);
+    setBookingWarning(null);
+    setBookingSuccess(null);
   };
 
-  const handleSaveHistory = () => {
+  const handleRecheckBooking = useCallback(async () => {
+    const activeTrackingId = liveRecord?.trackingId?.trim();
+    if (!activeTrackingId) {
+      setStatus("No tracking ID available to recheck.");
+      return;
+    }
+
+    setCheckingBooking(true);
+    try {
+      const params = new URLSearchParams({
+        trackingId: activeTrackingId,
+        verifyBooking: "true",
+      });
+      const response = await fetch(`/api/orders?${params.toString()}`, { cache: "no-store" });
+      const payload: {
+        record?: ApiLiveBufferRecord;
+        bookingFound?: boolean;
+        warning?: string;
+        message?: string;
+        error?: string;
+      } = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+
+      if (payload.record) {
+        updateLiveRecord(mapApiRecordToLive(payload.record));
+      }
+
+      const refreshedTrackingId = payload.record?.trackingId?.trim() || activeTrackingId;
+      const warningMessage = typeof payload.warning === "string" ? payload.warning.trim() : "";
+      const message = typeof payload.message === "string" ? payload.message.trim() : "";
+
+      if (payload.bookingFound) {
+        const successCopy = message || `Booked item found for ${refreshedTrackingId}`;
+        setBookingWarning(null);
+        setBookingSuccess(successCopy);
+        const statusSegments: string[] = [];
+        if (refreshedTrackingId) {
+          statusSegments.push(`Order ${refreshedTrackingId} -`);
+        }
+        statusSegments.push("Booked item found.");
+        setStatus(statusSegments.join(" ").replace(/\s+/g, " ").trim());
+      } else {
+        const warningCopy = warningMessage || message || "Booked item not found";
+        setBookingWarning(warningCopy);
+        setBookingSuccess(null);
+        const statusSegments: string[] = [];
+        if (refreshedTrackingId) {
+          statusSegments.push(`Order ${refreshedTrackingId} -`);
+        }
+        statusSegments.push("Booked item not found.");
+        setStatus(statusSegments.join(" ").replace(/\s+/g, " ").trim());
+      }
+    } catch (error) {
+      console.error("Failed to recheck booking status", error);
+      setStatus("Failed to recheck booking status.");
+    } finally {
+      setCheckingBooking(false);
+    }
+  }, [liveRecord, mapApiRecordToLive, updateLiveRecord]);
+
+  const handleRefreshIntervalChange = useCallback(
+    (event: React.ChangeEvent<HTMLSelectElement>) => {
+      const rawValue = Number(event.target.value);
+      if (Number.isFinite(rawValue) && rawValue > 0) {
+        setRefreshIntervalMs(rawValue);
+        fetchLiveBuffer({ sync: true });
+      }
+    },
+    [fetchLiveBuffer],
+  );
+
+  const handleWriteStorage = async () => {
     if (!liveRecord) return;
-    pushHistoryRecord(liveRecord);
-    setStatus("Saved to history.");
+    try {
+      const response = await fetch("/api/storage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          destination: liveRecord.destination,
+          itemName: liveRecord.itemName,
+          trackingId: liveRecord.trackingId,
+          truckNumber: liveRecord.truckNumber,
+          shipDate: liveRecord.shipDate,
+          expectedDepartureTime: liveRecord.expectedDepartureTime,
+          originLocation: liveRecord.origin,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+      setStatus(`Storage updated for ${liveRecord.trackingId}.`);
+    } catch (err) {
+      console.error(err);
+      setStatus(err instanceof Error ? err.message : "Failed to write storage.");
+    }
   };
 
-  const handleWriteStorage = () => {
-    if (!liveRecord) return;
-    writeRecordToStorage(liveRecord);
-    setStatus("Written to storage.");
-  };
-
-  const handleClearLive = () => {
-    updateLiveRecord(null);
-    setStatus("Live buffer cleared.");
+  const handleClearLive = async () => {
+    try {
+      const response = await fetch("/api/orders", { method: "DELETE" });
+      const payload: { liveBuffer?: ApiLiveBufferRecord[]; error?: string } = await response
+        .json()
+        .catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+      const records = Array.isArray(payload.liveBuffer) ? payload.liveBuffer : [];
+      if (records.length > 0) {
+        updateLiveRecord(mapApiRecordToLive(records[0]));
+      } else {
+        updateLiveRecord(null);
+      }
+      setKv(null);
+      setBarcodes([]);
+      setBarcodeWarnings([]);
+      setValidation(null);
+      setStatus("Live buffer cleared.");
+      setBookingWarning(null);
+      setBookingSuccess(null);
+    } catch (error) {
+      console.error(error);
+      setStatus(error instanceof Error ? error.message : "Failed to clear live buffer.");
+    }
   };
 
   return (
@@ -902,6 +1238,62 @@ export default function ScannerDashboard() {
         </div>
       )}
 
+      {bookingWarning && (
+        <div className="glassy-panel flex items-start gap-3 rounded-2xl border border-rose-400/40 bg-rose-500/10 px-5 py-4 text-sm text-rose-100">
+          <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-rose-400/15">
+            <svg
+              className="h-5 w-5 text-rose-300"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v5m0 4h.01" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 3.75a8.25 8.25 0 110 16.5 8.25 8.25 0 010-16.5z"
+              />
+            </svg>
+          </span>
+          <div className="flex w-full flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <span className="font-semibold uppercase tracking-[0.3em] text-rose-200/80">Booking alert</span>
+              <p className="mt-2 text-base text-rose-100/90">{bookingWarning}</p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleRecheckBooking}
+              disabled={checkingBooking}
+              className="shrink-0 border-rose-400/60 px-4 py-2 text-xs text-rose-100 hover:bg-rose-500/10 hover:text-rose-50"
+            >
+              {checkingBooking ? "Checking…" : "Check again"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {bookingSuccess && (
+        <div className="glassy-panel flex items-start gap-3 rounded-2xl border border-emerald-400/40 bg-emerald-500/10 px-5 py-4 text-sm text-emerald-100">
+          <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-400/15">
+            <svg
+              className="h-5 w-5 text-emerald-300"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+            </svg>
+          </span>
+          <div>
+            <span className="font-semibold uppercase tracking-[0.3em] text-emerald-200/80">Booking status</span>
+            <p className="mt-2 text-base text-emerald-100/90">{bookingSuccess}</p>
+          </div>
+        </div>
+      )}
+
       {kv && (
         <Card header={<span className="text-lg font-semibold text-slate-100">Extracted OCR &amp; barcode data</span>}>
           <div className="overflow-x-auto">
@@ -970,13 +1362,66 @@ export default function ScannerDashboard() {
 
       {liveRecord && (
         <Card
-          header={<span className="text-lg font-semibold text-slate-100">Live buffer (latest scan)</span>}
+          header={
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-lg font-semibold text-slate-100">Live buffer (latest scan)</span>
+                {(bookingWarning || bookingSuccess) && (
+                  <span
+                    className={`inline-flex h-6 w-6 items-center justify-center rounded-full ${
+                      bookingWarning ? "bg-rose-500/15" : "bg-emerald-500/15"
+                    }`}
+                    title={bookingWarning ?? bookingSuccess ?? undefined}
+                  >
+                    {bookingWarning ? (
+                      <svg
+                        className="h-4 w-4 text-rose-400"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v5m0 4h.01" />
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M12 3.75a8.25 8.25 0 110 16.5 8.25 8.25 0 010-16.5z"
+                        />
+                      </svg>
+                    ) : (
+                      <svg
+                        className="h-4 w-4 text-emerald-400"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                      </svg>
+                    )}
+                    <span className="sr-only">{bookingWarning ?? bookingSuccess}</span>
+                  </span>
+                )}
+              </div>
+              <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-slate-300/70 sm:flex-row sm:items-center sm:gap-3">
+                <span className="font-semibold text-slate-300/80">Auto refresh</span>
+                <select
+                  value={refreshIntervalMs}
+                  onChange={handleRefreshIntervalChange}
+                  className="rounded-full border border-white/15 bg-slate-900/70 px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-slate-100 shadow-sm transition focus:border-indigo-400 focus:outline-none focus:ring-0"
+                >
+                  {REFRESH_INTERVAL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value} className="text-slate-900">
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          }
           footer={
             <div className="flex flex-wrap justify-end gap-3">
               <Button onClick={handleWriteStorage}>Write to storage</Button>
-              <Button onClick={handleSaveHistory} variant="secondary">
-                Save to history
-              </Button>
               <Button onClick={handleClearLive} variant="outline">
                 Clear live buffer
               </Button>
@@ -1012,40 +1457,8 @@ export default function ScannerDashboard() {
         </Card>
       )}
 
-      {kv && (
-        <Card header={<span className="text-lg font-semibold text-slate-100">Live buffer fields</span>}>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-white/5 text-left text-xs font-medium uppercase tracking-wide text-slate-300/80">
-                <tr>
-                  <th className="px-4 py-3">Field</th>
-                  <th className="px-4 py-3">Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {LIVE_BUFFER_FIELDS.map(({ label, keys }) => {
-                  const v = getBufferValue(keys);
-                  const has = Boolean(v && v.trim());
-                  return (
-                    <tr key={label} className="border-b border-white/10 last:border-0">
-                      <td className="px-4 py-3 font-medium text-slate-100">{label}</td>
-                      <td className={`px-4 py-3 ${has ? "text-slate-200" : "text-slate-500"}`}>{has ? v : "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
 
-      <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-sm text-slate-200">
-        <p className="font-semibold text-slate-100">Need dock routing?</p>
-        <p className="mt-2 text-slate-300/80">
-          The map module is temporarily unavailable while the database transition to the new logistics tables
-          completes. Live buffer entries now sync directly from bookings and storage records.
-        </p>
-      </div>
+      <FloorMapViewer activeDestination={activeDestination || undefined} />
     </div>
   );
 }
