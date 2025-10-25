@@ -280,7 +280,7 @@ export function FloorMapViewer({ activeDestination }: FloorMapViewerProps) {
                   No maps uploaded
                 </span>
                 <p className="max-w-sm text-slate-400/80">
-                  Upload a dock layout in the administration panel below to light up the navigation preview.
+                  Upload a dock layout in the map administration page to light up the navigation preview.
                 </p>
               </div>
             )}

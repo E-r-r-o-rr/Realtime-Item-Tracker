@@ -65,6 +65,35 @@ export interface HistoryRecord extends LogisticsFields {
 
 let db: Database.Database | null = null;
 
+const MELBOURNE_TIME_ZONE = 'Australia/Melbourne';
+
+const formatDateTimeInTimeZone = (date: Date, timeZone: string) => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const lookup = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? '';
+  const isoDate = `${lookup('year')}-${lookup('month')}-${lookup('day')}T${lookup('hour')}:${lookup('minute')}:${lookup(
+    'second',
+  )}`;
+  const zonedDate = new Date(date.toLocaleString('en-US', { timeZone }));
+  const offsetMinutes = Math.round((zonedDate.getTime() - date.getTime()) / 60000);
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const absoluteMinutes = Math.abs(offsetMinutes);
+  const offsetHours = String(Math.floor(absoluteMinutes / 60)).padStart(2, '0');
+  const offsetMins = String(absoluteMinutes % 60).padStart(2, '0');
+  return `${isoDate}${sign}${offsetHours}:${offsetMins}`;
+};
+
+const getMelbourneTimestamp = () => formatDateTimeInTimeZone(new Date(), MELBOURNE_TIME_ZONE);
+
 const TABLE_COLUMNS = `
   destination,
   item_name,
@@ -482,7 +511,7 @@ export const updateFloorMap = (
              georef_origin_lon = ?,
              georef_rotation_deg = ?,
              georef_scale_m_per_px = ?,
-             updated_at = CURRENT_TIMESTAMP
+             updated_at = ?
        WHERE id = ?`
     )
     .run(
@@ -496,6 +525,7 @@ export const updateFloorMap = (
       next.georefOriginLon ?? null,
       next.georefRotationDeg,
       next.georefScaleMPx,
+      getMelbourneTimestamp(),
       id,
     );
 
@@ -576,7 +606,7 @@ export const updateMapPoint = (
              y_px = ?,
              lat = ?,
              lon = ?,
-             updated_at = CURRENT_TIMESTAMP
+             updated_at = ?
        WHERE id = ?`
     )
     .run(
@@ -586,6 +616,7 @@ export const updateMapPoint = (
       nextYPx,
       lat,
       lon,
+      getMelbourneTimestamp(),
       id,
     );
 
@@ -602,12 +633,12 @@ export const deleteMapPoint = (id: number): boolean => {
 const recomputeMapPointsForMap = (map: FloorMapRecord) => {
   const points = listMapPoints(map.id);
   const updateStmt = getDb().prepare(
-    `UPDATE map_points SET lat = ?, lon = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+    `UPDATE map_points SET lat = ?, lon = ?, updated_at = ? WHERE id = ?`
   );
   const tx = getDb().transaction((entries: MapPointRecord[]) => {
     for (const point of entries) {
       const { lat, lon } = computeLatLonForPoint(map, point.xPx, point.yPx);
-      updateStmt.run(lat, lon, point.id);
+      updateStmt.run(lat, lon, getMelbourneTimestamp(), point.id);
     }
   });
   tx(points);
@@ -678,16 +709,17 @@ const synchronizeBookingForStorage = (storage: StorageRecord) => {
   if (storage.booked) {
     database
       .prepare(
-        `INSERT INTO bookings (${TABLE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO bookings (${TABLE_COLUMNS}, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(tracking_id) DO UPDATE SET
            destination = excluded.destination,
            item_name = excluded.item_name,
            truck_number = excluded.truck_number,
            ship_date = excluded.ship_date,
            expected_departure_time = excluded.expected_departure_time,
-           origin_location = excluded.origin_location`
+           origin_location = excluded.origin_location,
+           created_at = excluded.created_at`
       )
-      .run(...toLogisticsArray(storage));
+      .run(...toLogisticsArray(storage), getMelbourneTimestamp());
   } else {
     database.prepare(`DELETE FROM bookings WHERE tracking_id = ?`).run(storage.trackingId);
   }
@@ -698,9 +730,10 @@ export const upsertStorageRecord = (
 ): StorageRecord => {
   const database = getDb();
   const bookedFlag = payload.booked ? 1 : 0;
+  const timestamp = getMelbourneTimestamp();
   database
     .prepare(
-      `INSERT INTO storage (${TABLE_COLUMNS}, booked) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO storage (${TABLE_COLUMNS}, booked, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(tracking_id) DO UPDATE SET
          destination = excluded.destination,
          item_name = excluded.item_name,
@@ -709,9 +742,9 @@ export const upsertStorageRecord = (
          expected_departure_time = excluded.expected_departure_time,
          origin_location = excluded.origin_location,
          booked = excluded.booked,
-         last_updated = CURRENT_TIMESTAMP`
+         last_updated = excluded.last_updated`
     )
-    .run(...toLogisticsArray(payload), bookedFlag);
+    .run(...toLogisticsArray(payload), bookedFlag, timestamp);
   const row = database
     .prepare(`SELECT * FROM storage WHERE tracking_id = ?`)
     .get(payload.trackingId);
@@ -741,7 +774,7 @@ export const updateStorageRecord = (
          tracking_id = ?,
          expected_departure_time = ?,
          booked = ?,
-         last_updated = CURRENT_TIMESTAMP
+         last_updated = ?
        WHERE id = ?`
     )
     .run(
@@ -749,6 +782,7 @@ export const updateStorageRecord = (
       nextTrackingId,
       updates.expectedDepartureTime ?? existing.expectedDepartureTime,
       updates.booked !== undefined ? (updates.booked ? 1 : 0) : existing.booked,
+      getMelbourneTimestamp(),
       existing.id,
     );
   if (trackingChanged) {
@@ -791,10 +825,11 @@ export const seedStorageSamples = (count = 15): StorageRecord[] => {
 
 export const appendHistoryRecord = (payload: LogisticsFields): HistoryRecord => {
   const scanId = generateScanId();
+  const recordedAt = getMelbourneTimestamp();
   const stmt = getDb().prepare(
-    `INSERT INTO history (${TABLE_COLUMNS}, scan_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO history (${TABLE_COLUMNS}, scan_id, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
-  const info = stmt.run(...toLogisticsArray(payload), scanId);
+  const info = stmt.run(...toLogisticsArray(payload), scanId, recordedAt);
   const row = getDb()
     .prepare(`SELECT * FROM history WHERE id = ?`)
     .get(Number(info.lastInsertRowid));
@@ -840,7 +875,7 @@ export const ingestLiveBufferEntry = (
 
   database
     .prepare(
-      `INSERT INTO live_buffer (${TABLE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO live_buffer (${TABLE_COLUMNS}, last_synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(tracking_id) DO UPDATE SET
          destination = excluded.destination,
          item_name = excluded.item_name,
@@ -848,9 +883,9 @@ export const ingestLiveBufferEntry = (
          ship_date = excluded.ship_date,
          expected_departure_time = excluded.expected_departure_time,
          origin_location = excluded.origin_location,
-         last_synced_at = CURRENT_TIMESTAMP`
+         last_synced_at = excluded.last_synced_at`
     )
-    .run(...toLogisticsArray(persistPayload));
+    .run(...toLogisticsArray(persistPayload), getMelbourneTimestamp());
   const historyEntry = appendHistoryRecord(persistPayload);
   const row = database
     .prepare(`SELECT * FROM live_buffer WHERE tracking_id = ?`)
@@ -898,7 +933,7 @@ export const recheckBookingForLiveBuffer = (
            ship_date = ?,
            expected_departure_time = ?,
            origin_location = ?,
-           last_synced_at = CURRENT_TIMESTAMP
+           last_synced_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -909,6 +944,7 @@ export const recheckBookingForLiveBuffer = (
         storageMatch.shipDate,
         storageMatch.expectedDepartureTime,
         storageMatch.originLocation,
+        getMelbourneTimestamp(),
         currentRecord.id,
       );
 
@@ -944,7 +980,7 @@ export const syncLiveBufferWithStorage = (): LiveBufferRecord[] => {
        ship_date = ?,
        expected_departure_time = ?,
        origin_location = ?,
-       last_synced_at = CURRENT_TIMESTAMP
+       last_synced_at = ?
      WHERE id = ?`
   );
   for (const row of rows) {
@@ -961,6 +997,7 @@ export const syncLiveBufferWithStorage = (): LiveBufferRecord[] => {
         storage.shipDate,
         storage.expectedDepartureTime,
         storage.originLocation,
+        getMelbourneTimestamp(),
         row.id,
       );
     }
