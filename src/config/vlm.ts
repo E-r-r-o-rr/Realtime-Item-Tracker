@@ -7,6 +7,7 @@ export const DEFAULT_VLM_SETTINGS: VlmSettings = {
     baseUrl: "https://api.example.com/v1/chat/completions",
     modelId: "gpt-4o-mini",
     apiVersion: "",
+    hfProvider: "",
     authScheme: "bearer",
     authHeaderName: "Authorization",
     apiKey: "",

@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import os, re, sys, json, argparse, base64, mimetypes, statistics
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 from collections import OrderedDict
+from urllib import request as urllib_request, error as urllib_error
 
 if TYPE_CHECKING:
     from huggingface_hub import InferenceClient
@@ -24,7 +25,7 @@ try:
     from huggingface_hub import InferenceClient as HFInferenceClient
 except Exception:
     HFInferenceClient = None
-    print("[FATAL] Install huggingface_hub", file=sys.stderr)
+    print("[warn] huggingface_hub not installed; Hugging Face provider unavailable.", file=sys.stderr)
 try:
     from paddleocr import PaddleOCR as PaddleOCRRuntime
 except Exception:
@@ -59,6 +60,217 @@ def encode_image_to_base64(image_path: str) -> str:
     with open(image_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
     return f"data:{guess_mime(image_path)};base64,{b64}"
+
+def parse_path_tokens(path: str) -> List[Union[str, int]]:
+    tokens: List[Union[str, int]] = []
+    buf = ""
+    i = 0
+    while i < len(path):
+        ch = path[i]
+        if ch == ".":
+            if buf:
+                tokens.append(buf)
+                buf = ""
+            i += 1
+            continue
+        if ch == "[":
+            if buf:
+                tokens.append(buf)
+                buf = ""
+            j = path.find("]", i)
+            if j == -1:
+                break
+            idx_str = path[i + 1 : j].strip()
+            if idx_str.isdigit():
+                tokens.append(int(idx_str))
+            i = j + 1
+            continue
+        buf += ch
+        i += 1
+    if buf:
+        tokens.append(buf)
+    return tokens
+
+def extract_json_path(data: Any, path: str) -> Any:
+    if not path:
+        return data
+    current = data
+    for token in parse_path_tokens(path):
+        if isinstance(token, int):
+            if isinstance(current, (list, tuple)) and 0 <= token < len(current):
+                current = current[token]
+            else:
+                return None
+        else:
+            if isinstance(current, dict):
+                current = current.get(token)
+            else:
+                return None
+        if current is None:
+            return None
+    return current
+
+def build_http_headers(remote_cfg: Dict[str, Any]) -> Dict[str, str]:
+    headers: Dict[str, str] = {}
+    scheme = str(remote_cfg.get("authScheme") or "bearer").lower()
+    header_name = str(remote_cfg.get("authHeaderName") or "Authorization")
+    api_key = remote_cfg.get("apiKey")
+    if isinstance(api_key, str) and api_key:
+        if scheme == "bearer":
+            headers[header_name] = api_key if api_key.lower().startswith("bearer ") else f"Bearer {api_key}"
+        elif scheme == "api-key-header":
+            headers[header_name] = api_key
+        elif scheme == "basic":
+            encoded = base64.b64encode(api_key.encode("utf-8")).decode("ascii")
+            headers[header_name] = f"Basic {encoded}"
+    extra_headers = remote_cfg.get("extraHeaders")
+    if isinstance(extra_headers, list):
+        for entry in extra_headers:
+            if not isinstance(entry, dict):
+                continue
+            key = str(entry.get("key") or "").strip()
+            val = str(entry.get("value") or "").strip()
+            if key and val:
+                headers[key] = val
+    headers.setdefault("Content-Type", "application/json")
+    headers.setdefault("Accept", "application/json")
+    return headers
+
+def build_vlm_messages(image_path: str, ocr_txt: str, system_prompt: Optional[str] = None) -> List[Dict[str, Any]]:
+    img_b64 = encode_image_to_base64(image_path)
+    instruction = (
+        "You are given a shipping/order IMAGE and its OCR transcript.\n"
+        "Extract all visible header key/value pairs (ignore item rows). "
+        "Return a single flat JSON object. Do not wrap in code fences."
+    )
+    user_content = [
+        {"type": "text", "text": instruction},
+        {"type": "image_url", "image_url": {"url": img_b64}},
+        {"type": "text", "text": "OCR_TEXT_BEGIN\n" + ocr_txt + "\nOCR_TEXT_END"},
+        {"type": "text", "text": "OUTPUT: JSON only."},
+    ]
+    messages: List[Dict[str, Any]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": user_content})
+    return messages
+
+def call_huggingface_vlm(
+    client: "InferenceClient",
+    model: str,
+    messages: List[Dict[str, Any]],
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    kwargs: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if max_tokens > 0:
+        kwargs["max_tokens"] = max_tokens
+    resp = client.chat.completions.create(**kwargs)
+    choice = resp.choices[0]
+    msg = getattr(choice, "message", choice.get("message"))
+    return to_str_content(msg)
+
+def call_http_vlm(
+    remote_cfg: Dict[str, Any],
+    base_url: str,
+    model: str,
+    messages: List[Dict[str, Any]],
+    defaults: Dict[str, Any],
+) -> str:
+    request_url = base_url.strip()
+    api_version = str(remote_cfg.get("apiVersion") or "").strip()
+    if api_version:
+        separator = "&" if "?" in request_url else "?"
+        request_url = f"{request_url}{separator}api-version={api_version}"
+
+    headers = build_http_headers(remote_cfg)
+
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+    }
+
+    temperature = defaults.get("temperature")
+    if isinstance(temperature, (int, float)):
+        payload["temperature"] = float(temperature)
+
+    max_tokens = defaults.get("maxOutputTokens")
+    if isinstance(max_tokens, (int, float)) and max_tokens > 0:
+        payload["max_tokens"] = int(max_tokens)
+
+    payload["stream"] = False
+
+    stop_sequences = defaults.get("stopSequences")
+    if isinstance(stop_sequences, list) and stop_sequences:
+        payload["stop"] = stop_sequences
+
+    seed = defaults.get("seed")
+    if isinstance(seed, (int, float)):
+        payload["seed"] = int(seed)
+
+    top_p = defaults.get("topP")
+    if isinstance(top_p, (int, float)):
+        payload["top_p"] = float(top_p)
+
+    top_k = defaults.get("topK")
+    if isinstance(top_k, (int, float)):
+        payload["top_k"] = int(top_k)
+
+    repetition_penalty = defaults.get("repetitionPenalty")
+    if isinstance(repetition_penalty, (int, float)):
+        payload["repetition_penalty"] = float(repetition_penalty)
+
+    if defaults.get("jsonMode"):
+        payload["response_format"] = {"type": "json_object"}
+        schema_raw = defaults.get("jsonSchema")
+        if isinstance(schema_raw, str) and schema_raw.strip():
+            try:
+                payload["response_format"]["schema"] = json.loads(schema_raw)
+            except Exception:
+                pass
+
+    timeout_ms = remote_cfg.get("requestTimeoutMs")
+    timeout_s = max(1.0, float(timeout_ms) / 1000.0) if isinstance(timeout_ms, (int, float)) else 30.0
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib_request.Request(request_url, data=data, headers=headers, method="POST")
+
+    try:
+        with urllib_request.urlopen(req, timeout=timeout_s) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+    except urllib_error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="ignore")
+        except Exception:
+            detail = str(exc)
+        raise RuntimeError(f"HTTP {exc.code}: {detail[:200]}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Request failed: {exc}") from exc
+
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return raw
+
+    if isinstance(parsed, dict) and parsed.get("error"):
+        err = parsed.get("error")
+        if isinstance(err, dict):
+            message = err.get("message") or err.get("detail") or str(err)
+        else:
+            message = str(err)
+        raise RuntimeError(f"Remote error: {message}")
+
+    mapping = remote_cfg.get("parameterMapping") if isinstance(remote_cfg.get("parameterMapping"), dict) else {}
+    text_path = mapping.get("responseTextPath") or "choices[0].message.content"
+    message = extract_json_path(parsed, text_path)
+    if message is None:
+        return raw if isinstance(raw, str) else json.dumps(parsed)
+    return to_str_content(message)
 
 # --------------------------
 # OCR wrappers
@@ -159,33 +371,6 @@ def to_str_content(msg: Any) -> str:
                 parts.append(str(ch))
         return "".join(parts)
     return str(content) if content is not None else str(msg)
-
-def call_qwen_image_plus_ocr(
-    client: "InferenceClient",
-    model: str,
-    image_path: str,
-    ocr_txt: str,
-    temperature: float = 0.0
-) -> str:
-    img_b64 = encode_image_to_base64(image_path)
-    instruction = (
-        "You are given a shipping/order IMAGE and its OCR transcript.\n"
-        "Extract all visible header key/value pairs (ignore item rows). "
-        "Return a single flat JSON object. Do not wrap in code fences."
-    )
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type":"text", "text": instruction},
-            {"type":"image_url", "image_url":{"url": img_b64}},
-            {"type":"text", "text": "OCR_TEXT_BEGIN\n"+ocr_txt+"\nOCR_TEXT_END"},
-            {"type":"text", "text": "OUTPUT: JSON only."},
-        ],
-    }]
-    resp = client.chat.completions.create(model=model, messages=messages, temperature=temperature)
-    choice = resp.choices[0]
-    msg = getattr(choice, "message", choice.get("message"))
-    return to_str_content(msg)
 
 # --------------------------
 # Universal KV parser
@@ -348,15 +533,16 @@ def write_json_array(recs: List[dict], path: str):
 # Pipeline
 # --------------------------
 def process_one(
-    client: "InferenceClient",
-    model: str,
+    vlm_call: Callable[[str, str], str],
     ocr: "PaddleOCR",
     image_path: str,
-    normalize_dates: bool
+    normalize_dates: bool,
+    ocr_char_limit: int,
 ) -> Dict[str, Any]:
     entries, _ = run_paddle_ocr(ocr, image_path)
+    txt = ocr_text(entries, max_chars=ocr_char_limit)
 
-    raw = call_qwen_image_plus_ocr(client, model, image_path, ocr_text(entries))
+    raw = vlm_call(image_path, txt)
     parsed = parse_universal_kv(raw, normalize_dates=normalize_dates)
     return {
         "image": Path(image_path).name,
@@ -365,12 +551,12 @@ def process_one(
     }
 
 def process_folder(
-    client: "InferenceClient",
-    model: str,
+    vlm_call: Callable[[str, str], str],
     ocr: "PaddleOCR",
     data_dir: str,
     out_dir: str,
-    normalize_dates: bool
+    normalize_dates: bool,
+    ocr_char_limit: int,
 ):
     structured_json = str(Path(out_dir)/"structured.json")
 
@@ -382,7 +568,7 @@ def process_folder(
 
     for p in paths:
         print(f"[proc] {p.name}")
-        rec = process_one(client, model, ocr, str(p), normalize_dates=normalize_dates)
+        rec = process_one(vlm_call, ocr, str(p), normalize_dates=normalize_dates, ocr_char_limit=ocr_char_limit)
         structured.append(rec)
 
     write_json_array(structured, structured_json)
@@ -404,22 +590,40 @@ def main():
     ap.add_argument("--no_normalize_dates", action="store_true", help="Disable date zero-padding normalization")
     args = ap.parse_args()
 
-    if HFInferenceClient is None or PaddleOCRRuntime is None:
+    if PaddleOCRRuntime is None:
         sys.exit(2)
 
     remote_cfg = load_remote_config()
+    remote_cfg = remote_cfg if isinstance(remote_cfg, dict) else {}
+
+    provider_type = str(remote_cfg.get("providerType") or "").lower()
+    if provider_type not in {"openai-compatible", "huggingface", "generic-http"}:
+        provider_type = "huggingface"
+    remote_cfg["providerType"] = provider_type
 
     token = args.hf_token or os.environ.get("HF_TOKEN")
+
+    defaults = remote_cfg.get("defaults") if isinstance(remote_cfg.get("defaults"), dict) else {}
+    ocr_cfg = remote_cfg.get("ocr") if isinstance(remote_cfg.get("ocr"), dict) else {}
+    try:
+        ocr_char_limit = int(ocr_cfg.get("inputLimitChars") or 12000)
+    except Exception:
+        ocr_char_limit = 12000
+
     if remote_cfg:
         model_override = remote_cfg.get("modelId")
         if isinstance(model_override, str) and model_override.strip():
             args.model = model_override.strip()
 
+        api_key = remote_cfg.get("apiKey")
         auth_scheme = str(remote_cfg.get("authScheme") or "").lower()
         header_name = str(remote_cfg.get("authHeaderName") or "authorization").lower()
-        api_key = remote_cfg.get("apiKey")
         if isinstance(api_key, str) and api_key:
-            if auth_scheme == "bearer" or (auth_scheme == "api-key-header" and header_name == "authorization"):
+            if (
+                provider_type == "huggingface"
+                or auth_scheme == "bearer"
+                or (auth_scheme == "api-key-header" and header_name == "authorization")
+            ):
                 token = api_key
 
         proxy_url = remote_cfg.get("proxyUrl")
@@ -427,27 +631,45 @@ def main():
             os.environ.setdefault("HTTPS_PROXY", proxy_url.strip())
             os.environ.setdefault("HTTP_PROXY", proxy_url.strip())
 
-        base_url = remote_cfg.get("baseUrl")
-        if isinstance(base_url, str) and base_url.strip():
-            os.environ.setdefault("HF_ENDPOINT", base_url.strip())
-
         timeout_override = remote_cfg.get("requestTimeoutMs")
         if isinstance(timeout_override, (int, float)) and timeout_override > 0:
             os.environ["HF_TIMEOUT"] = str(float(timeout_override) / 1000.0)
 
-        defaults = remote_cfg.get("defaults") if isinstance(remote_cfg, dict) else None
-        system_prompt = defaults.get("systemPrompt") if isinstance(defaults, dict) else None
-        if isinstance(system_prompt, str):
-            os.environ["OCR_SYSTEM_PROMPT"] = system_prompt
+    system_prompt = defaults.get("systemPrompt") if isinstance(defaults.get("systemPrompt"), str) else None
+    if isinstance(system_prompt, str):
+        os.environ["OCR_SYSTEM_PROMPT"] = system_prompt
 
-    if not token:
-        print("[warn] HF_TOKEN missing; gated/provider models may fail.", file=sys.stderr)
+    if provider_type == "huggingface":
+        if HFInferenceClient is None:
+            sys.exit("[FATAL] Install huggingface_hub to use the Hugging Face provider")
+        base_url = remote_cfg.get("baseUrl")
+        if isinstance(base_url, str) and base_url.strip():
+            os.environ.setdefault("HF_ENDPOINT", base_url.strip())
+        hf_provider = remote_cfg.get("hfProvider") if isinstance(remote_cfg.get("hfProvider"), str) else ""
+        provider_hint = hf_provider or args.provider or None
+        if not token:
+            print("[warn] HF token missing; gated/provider models may fail.", file=sys.stderr)
+        client_kwargs: Dict[str, Any] = {}
+        if provider_hint:
+            client_kwargs["provider"] = provider_hint
+        if token:
+            client_kwargs["api_key"] = token
+        client = HFInferenceClient(**client_kwargs)
+        temperature = float(defaults.get("temperature") or 0.0)
+        max_tokens = int(defaults.get("maxOutputTokens") or 1024)
 
-    if args.provider:
-        client = HFInferenceClient(provider=args.provider, api_key=token)
+        def vlm_call(image_path: str, ocr_txt: str) -> str:
+            messages = build_vlm_messages(image_path, ocr_txt, system_prompt)
+            return call_huggingface_vlm(client, args.model, messages, temperature, max_tokens)
+
     else:
-        client = HFInferenceClient(api_key=token)  # default HF endpoints
+        base_url = remote_cfg.get("baseUrl")
+        if not isinstance(base_url, str) or not base_url.strip():
+            sys.exit("[FATAL] Base URL is required for remote HTTP providers")
 
+        def vlm_call(image_path: str, ocr_txt: str) -> str:
+            messages = build_vlm_messages(image_path, ocr_txt, system_prompt)
+            return call_http_vlm(remote_cfg, base_url, args.model, messages, defaults)
 
     ocr = PaddleOCRRuntime(
         lang=args.lang,
@@ -466,8 +688,11 @@ def main():
 
         print(f"[proc] {p.name}")
         rec = process_one(
-            client, args.model, ocr, str(p),
-            normalize_dates=normalize_dates
+            vlm_call,
+            ocr,
+            str(p),
+            normalize_dates=normalize_dates,
+            ocr_char_limit=ocr_char_limit,
         )
 
         # write artifacts
@@ -479,7 +704,14 @@ def main():
     if args.data_dir:
         if not Path(args.data_dir).exists():
             sys.exit(f"[FATAL] Folder not found: {args.data_dir}")
-        process_folder(client, args.model, ocr, args.data_dir, args.out_dir, normalize_dates)
+        process_folder(
+            vlm_call,
+            ocr,
+            args.data_dir,
+            args.out_dir,
+            normalize_dates,
+            ocr_char_limit,
+        )
         return
 
     print("Provide --image or --data_dir")

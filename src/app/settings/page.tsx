@@ -11,8 +11,6 @@ import { VlmMode, VlmProviderType, VlmSettings } from "@/types/vlm";
 const providerOptions: Array<{ value: VlmProviderType; label: string }> = [
   { value: "openai-compatible", label: "OpenAI-compatible" },
   { value: "huggingface", label: "Hugging Face Inference" },
-  { value: "anthropic-compatible", label: "Anthropic-compatible" },
-  { value: "azure-openai", label: "Azure OpenAI" },
   { value: "generic-http", label: "Generic HTTP (Custom)" },
 ];
 
@@ -86,6 +84,46 @@ export default function SettingsPage() {
   const handleModeChange = (mode: VlmMode) => {
     updateSettings((draft) => {
       draft.mode = mode;
+    });
+  };
+
+  const handleProviderTypeChange = (providerType: VlmProviderType) => {
+    updateSettings((draft) => {
+      const remote = draft.remote;
+      if (remote.providerType === providerType) return;
+      remote.providerType = providerType;
+
+      switch (providerType) {
+        case "openai-compatible": {
+          if (!remote.baseUrl) {
+            remote.baseUrl = "https://api.openai.com/v1/chat/completions";
+          }
+          remote.authScheme = "bearer";
+          remote.authHeaderName = "Authorization";
+          break;
+        }
+        case "huggingface": {
+          remote.baseUrl = "";
+          remote.authScheme = "bearer";
+          remote.authHeaderName = "Authorization";
+          if (!remote.hfProvider) {
+            remote.hfProvider = "";
+          }
+          break;
+        }
+        case "generic-http": {
+          if (!remote.baseUrl) {
+            remote.baseUrl = "";
+          }
+          remote.authScheme = "api-key-header";
+          if (!remote.authHeaderName || remote.authHeaderName.toLowerCase() === "authorization") {
+            remote.authHeaderName = "X-API-Key";
+          }
+          break;
+        }
+        default:
+          break;
+      }
     });
   };
 
@@ -194,6 +232,20 @@ export default function SettingsPage() {
   }, []);
 
   const remote = settings.remote;
+  const providerType = remote.providerType;
+  const baseUrlDisabled = providerType === "huggingface";
+  const baseUrlPlaceholder =
+    providerType === "openai-compatible"
+      ? "https://api.openai.com/v1/chat/completions"
+      : providerType === "generic-http"
+      ? "https://your-service.example.com/v1/ocr"
+      : "Hugging Face uses managed endpoints";
+  const baseUrlHelperCopy =
+    providerType === "huggingface"
+      ? "Hugging Face Inference selects the endpoint automatically when you provide a model and API token."
+      : providerType === "generic-http"
+      ? "Provide the full URL your custom inference service expects requests on."
+      : "The OpenAI-compatible chat/completions endpoint to post OCR prompts to.";
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-8 px-4 py-10 sm:px-6 lg:px-8">
@@ -302,7 +354,7 @@ export default function SettingsPage() {
                     id="provider-type"
                     className={selectClass}
                     value={remote.providerType}
-                    onChange={(event) => handleRemoteChange("providerType", event.target.value as VlmProviderType)}
+                    onChange={(event) => handleProviderTypeChange(event.target.value as VlmProviderType)}
                   >
                     {providerOptions.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -313,18 +365,17 @@ export default function SettingsPage() {
                 </div>
                 <div className="space-y-2">
                   <label className={fieldLabelClass} htmlFor="remote-base-url">
-                    Base URL / Endpoint
+                    {providerType === "huggingface" ? "Endpoint override (optional)" : "Base URL / Endpoint"}
                   </label>
                   <Input
                     id="remote-base-url"
-                    placeholder="https://api.example.com/v1/chat/completions"
+                    placeholder={baseUrlPlaceholder}
                     value={remote.baseUrl}
                     onChange={(event) => handleRemoteChange("baseUrl", event.target.value)}
                     spellCheck={false}
+                    disabled={baseUrlDisabled}
                   />
-                  <p className={fieldDescriptionClass}>
-                    The URL your requests will be sent to. Use the provider’s chat or vision endpoint.
-                  </p>
+                  <p className={fieldDescriptionClass}>{baseUrlHelperCopy}</p>
                 </div>
                 <div className="space-y-2">
                   <label className={fieldLabelClass} htmlFor="remote-model-id">
@@ -337,6 +388,22 @@ export default function SettingsPage() {
                     onChange={(event) => handleRemoteChange("modelId", event.target.value)}
                   />
                 </div>
+                {providerType === "huggingface" && (
+                  <div className="space-y-2">
+                    <label className={fieldLabelClass} htmlFor="remote-hf-provider">
+                      Provider (optional)
+                    </label>
+                    <Input
+                      id="remote-hf-provider"
+                      placeholder="mistralai"
+                      value={remote.hfProvider}
+                      onChange={(event) => handleRemoteChange("hfProvider", event.target.value)}
+                    />
+                    <p className={fieldDescriptionClass}>
+                      Use this when routing through a dedicated Hugging Face Inference provider endpoint.
+                    </p>
+                  </div>
+                )}
                 <div className="space-y-2">
                   <label className={fieldLabelClass} htmlFor="remote-api-key">
                     API key / Token
@@ -350,6 +417,22 @@ export default function SettingsPage() {
                   />
                   <p className={fieldDescriptionClass}>Stored securely on the server and injected only at runtime.</p>
                 </div>
+                {providerType === "generic-http" && (
+                  <div className="space-y-2">
+                    <label className={fieldLabelClass} htmlFor="remote-api-header">
+                      API key header
+                    </label>
+                    <Input
+                      id="remote-api-header"
+                      placeholder="X-API-Key"
+                      value={remote.authHeaderName}
+                      onChange={(event) => handleRemoteChange("authHeaderName", event.target.value)}
+                    />
+                    <p className={fieldDescriptionClass}>
+                      The header name your custom endpoint expects for authentication.
+                    </p>
+                  </div>
+                )}
               </div>
               <div className="grid gap-5 md:grid-cols-3">
                 <div className="space-y-2">

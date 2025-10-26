@@ -78,12 +78,13 @@ const normalizeRemoteSettings = (value: unknown): VlmRemoteSettings => {
 
   base.providerType = normalizeEnum<VlmProviderType>(
     incoming.providerType,
-    ["openai-compatible", "anthropic-compatible", "huggingface", "azure-openai", "generic-http"] as const,
+    ["openai-compatible", "huggingface", "generic-http"] as const,
     base.providerType,
   );
   base.baseUrl = toString(incoming.baseUrl, base.baseUrl).trim();
   base.modelId = toString(incoming.modelId, base.modelId).trim();
   base.apiVersion = toString(incoming.apiVersion, base.apiVersion).trim();
+  base.hfProvider = toString(incoming.hfProvider, base.hfProvider).trim();
   base.authScheme = normalizeEnum<VlmAuthScheme>(
     incoming.authScheme,
     ["bearer", "basic", "api-key-header", "none"] as const,

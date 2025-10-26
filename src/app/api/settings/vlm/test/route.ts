@@ -66,6 +66,63 @@ export async function POST(request: Request) {
     );
   }
 
+  if (settings.remote.providerType === "huggingface") {
+    if (!settings.remote.modelId) {
+      return NextResponse.json(
+        { ok: false, message: "Model ID is required for Hugging Face Inference." },
+        { status: 400, headers: noStoreHeaders },
+      );
+    }
+    if (!settings.remote.apiKey) {
+      return NextResponse.json(
+        { ok: false, message: "API token is required to contact Hugging Face Inference." },
+        { status: 400, headers: noStoreHeaders },
+      );
+    }
+
+    const modelSlug = encodeURIComponent(settings.remote.modelId);
+    const target = new URL(`https://api-inference.huggingface.co/status/${modelSlug}`);
+    if (settings.remote.hfProvider) {
+      target.searchParams.set("provider", settings.remote.hfProvider);
+    }
+
+    const headers = new Headers();
+    const token = settings.remote.apiKey.startsWith("Bearer ")
+      ? settings.remote.apiKey
+      : `Bearer ${settings.remote.apiKey}`;
+    headers.set("Authorization", token);
+    for (const extra of settings.remote.extraHeaders) {
+      if (extra.key && extra.value) {
+        headers.set(extra.key, extra.value);
+      }
+    }
+
+    const timeoutMs = Math.max(1000, settings.remote.requestTimeoutMs || 1000);
+    try {
+      const response = await fetchWithTimeout(target, { method: "GET", headers }, timeoutMs);
+      const ok = response.ok;
+      const message = ok
+        ? `Hugging Face responded (${response.status})`
+        : `Endpoint responded with status ${response.status}`;
+      return NextResponse.json(
+        {
+          ok,
+          status: response.status,
+          statusText: response.statusText,
+          url: target.toString(),
+          message,
+        },
+        { headers: noStoreHeaders },
+      );
+    } catch (error: any) {
+      const message = error?.name === "AbortError" ? "Request timed out" : "Network error";
+      return NextResponse.json(
+        { ok: false, message, url: target.toString() },
+        { status: 502, headers: noStoreHeaders },
+      );
+    }
+  }
+
   if (!settings.remote.baseUrl) {
     return NextResponse.json(
       { ok: false, message: "Base URL is required to test the remote connection." },

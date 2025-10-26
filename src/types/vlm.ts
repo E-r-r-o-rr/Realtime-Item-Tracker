@@ -1,11 +1,6 @@
 export type VlmMode = "local" | "remote";
 
-export type VlmProviderType =
-  | "openai-compatible"
-  | "anthropic-compatible"
-  | "huggingface"
-  | "azure-openai"
-  | "generic-http";
+export type VlmProviderType = "openai-compatible" | "huggingface" | "generic-http";
 
 export type VlmAuthScheme = "bearer" | "basic" | "api-key-header" | "none";
 
@@ -115,6 +110,7 @@ export interface VlmRemoteSettings {
   baseUrl: string;
   modelId: string;
   apiVersion: string;
+  hfProvider: string;
   authScheme: VlmAuthScheme;
   authHeaderName: string;
   apiKey: string;
