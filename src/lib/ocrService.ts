@@ -6,6 +6,18 @@ import { randomUUID } from 'crypto';
 
 import { loadPersistedVlmSettings } from './settingsStore';
 
+export type VlmProviderInfo = {
+  mode: 'remote' | 'local';
+  providerType?: string;
+  modelId?: string;
+  baseUrl?: string;
+};
+
+export type OcrExtractionResult = {
+  kv: Record<string, string>;
+  providerInfo: VlmProviderInfo;
+};
+
 const DEFAULT_MODEL = process.env.OCR_MODEL || 'Qwen/Qwen2-VL-2B-Instruct';
 
 // Prefer explicit venv python; fall back to system python
@@ -32,18 +44,41 @@ function rmrf(p: string) {
  * Extract key/value pairs using the Python OCR pipeline.
  * Falls back to a stub if the script fails or is missing.
  */
-export async function extractKvPairs(filePath: string): Promise<Record<string, string>> {
-  if (!fs.existsSync(OCR_SCRIPT)) {
-    console.warn('[ocrService] Python script not found, returning stub.');
-    return stubFromFilename(filePath);
-  }
-
-  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-out-'));
+export async function extractKvPairs(filePath: string): Promise<OcrExtractionResult> {
   const vlmSettings = loadPersistedVlmSettings();
   const configuredModel =
     vlmSettings.mode === 'remote' && vlmSettings.remote.modelId
       ? vlmSettings.remote.modelId
       : DEFAULT_MODEL;
+
+  const providerInfo: VlmProviderInfo = {
+    mode: vlmSettings.mode,
+  };
+
+  if (vlmSettings.mode === 'remote') {
+    const providerType = vlmSettings.remote.providerType;
+    const normalizedType = typeof providerType === 'string' ? providerType : undefined;
+    const baseUrlRaw = vlmSettings.remote.baseUrl?.trim() ?? '';
+    let effectiveBase = baseUrlRaw;
+    if (!effectiveBase && normalizedType === 'huggingface') {
+      effectiveBase = 'https://router.huggingface.co';
+    }
+
+    providerInfo.providerType = normalizedType;
+    providerInfo.modelId = vlmSettings.remote.modelId?.trim() || configuredModel;
+    providerInfo.baseUrl = effectiveBase;
+  } else {
+    providerInfo.providerType = 'local';
+    providerInfo.modelId = configuredModel;
+    providerInfo.baseUrl = '';
+  }
+
+  if (!fs.existsSync(OCR_SCRIPT)) {
+    console.warn('[ocrService] Python script not found, returning stub.');
+    return { kv: stubFromFilename(filePath), providerInfo };
+  }
+
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-out-'));
 
   const args = [
     OCR_SCRIPT,
@@ -104,7 +139,7 @@ export async function extractKvPairs(filePath: string): Promise<Record<string, s
     if (code !== 0) {
       console.warn('[ocrService] OCR script non-zero exit', { code, signal });
       if (stderr) console.warn('[ocrService] stderr:\n' + stderr);
-      return stubFromFilename(filePath);
+      return { kv: stubFromFilename(filePath), providerInfo };
     }
 
     const structuredPath = path.join(outDir, 'structured.json');
@@ -112,16 +147,19 @@ export async function extractKvPairs(filePath: string): Promise<Record<string, s
       const payload = JSON.parse(fs.readFileSync(structuredPath, 'utf-8'));
       // Python writes an array with a single record: { image, llm_raw, llm_parsed }
       if (Array.isArray(payload) && payload.length > 0 && payload[0]?.llm_parsed) {
-        return payload[0].llm_parsed as Record<string, string>;
+        return {
+          kv: payload[0].llm_parsed as Record<string, string>,
+          providerInfo,
+        };
       }
     }
 
     console.warn('[ocrService] structured.json missing or invalid. stderr:\n' + (stderr || '(empty)'));
-    return stubFromFilename(filePath);
+    return { kv: stubFromFilename(filePath), providerInfo };
   } catch (err) {
     if (timer) { clearTimeout(timer); }
     console.warn('[ocrService] Error running OCR script:', err);
-    return stubFromFilename(filePath);
+    return { kv: stubFromFilename(filePath), providerInfo };
   } finally {
     if (!KEEP_TMP) rmrf(outDir);
     else console.log('[ocrService] Keeping temp OCR output at:', outDir);

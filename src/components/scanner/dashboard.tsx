@@ -52,6 +52,7 @@ interface ApiOcrResponse {
   barcodes?: string[];
   barcodeWarnings?: string[];
   validation?: ApiValidation;
+  providerInfo?: ProviderInfo;
 }
 
 interface ApiHistoryEntry {
@@ -67,6 +68,22 @@ interface ApiHistoryEntry {
   recordedAt: string;
 }
 
+type ProviderMode = "remote" | "local";
+
+interface ProviderInfo {
+  mode: ProviderMode;
+  providerType?: string;
+  modelId?: string;
+  baseUrl?: string;
+}
+
+const PROVIDER_TYPE_LABELS: Record<string, string> = {
+  "openai-compatible": "OpenAI-compatible",
+  huggingface: "Hugging Face Inference",
+  "generic-http": "Generic HTTP",
+  local: "Local OCR pipeline",
+};
+
 const PERSISTED_STATE_KEY = "scanner.dashboard.ui_state.v1";
 const DEFAULT_REFRESH_MS = 300_000;
 const REFRESH_INTERVAL_OPTIONS: { label: string; value: number }[] = [
@@ -74,6 +91,52 @@ const REFRESH_INTERVAL_OPTIONS: { label: string; value: number }[] = [
   { label: "Every 1 minute", value: 60_000 },
   { label: "Every 5 minutes", value: 300_000 },
 ];
+
+const trimString = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const sanitizeProviderInfo = (value: unknown): ProviderInfo | null => {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const rawMode = trimString(raw.mode);
+  const normalizedMode = rawMode === "remote" || rawMode === "local" ? (rawMode as ProviderMode) : null;
+  if (!normalizedMode) return null;
+
+  return {
+    mode: normalizedMode,
+    providerType: trimString(raw.providerType),
+    modelId: trimString(raw.modelId),
+    baseUrl: trimString(raw.baseUrl),
+  };
+};
+
+const describeProviderType = (info: ProviderInfo): string => {
+  if (info.mode === "local") {
+    return PROVIDER_TYPE_LABELS.local;
+  }
+  if (info.providerType && PROVIDER_TYPE_LABELS[info.providerType]) {
+    return PROVIDER_TYPE_LABELS[info.providerType];
+  }
+  return info.providerType ? info.providerType : "Remote provider";
+};
+
+const describeProviderLink = (info: ProviderInfo): { label: string; href?: string } => {
+  if (info.mode === "local") {
+    return { label: "Local pipeline" };
+  }
+  const base = info.baseUrl?.trim();
+  if (!base) {
+    if (info.providerType === "huggingface") {
+      return { label: "https://router.huggingface.co", href: "https://router.huggingface.co" };
+    }
+    return { label: "No endpoint configured" };
+  }
+  const href = /^https?:\/\//i.test(base) ? base : undefined;
+  return { label: base, href };
+};
 
 const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
   if (!v) return null;
@@ -647,6 +710,7 @@ export default function ScannerDashboard() {
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
   const [bookingWarning, setBookingWarning] = useState<string | null>(null);
   const [bookingSuccess, setBookingSuccess] = useState<string | null>(null);
+  const [vlmInfo, setVlmInfo] = useState<ProviderInfo | null>(null);
   const [checkingBooking, setCheckingBooking] = useState(false);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState<number>(DEFAULT_REFRESH_MS);
   const [hasHydrated, setHasHydrated] = useState(false);
@@ -666,6 +730,9 @@ export default function ScannerDashboard() {
 
         const maybeSuccess = (parsed as { bookingSuccess?: unknown }).bookingSuccess;
         setBookingSuccess(typeof maybeSuccess === "string" ? maybeSuccess : null);
+
+        const maybeProviderInfo = (parsed as { providerInfo?: unknown }).providerInfo;
+        setVlmInfo(sanitizeProviderInfo(maybeProviderInfo));
 
         const maybeKv = (parsed as { kv?: unknown }).kv;
         if (maybeKv && typeof maybeKv === "object" && !Array.isArray(maybeKv)) {
@@ -718,6 +785,7 @@ export default function ScannerDashboard() {
         status,
         bookingWarning,
         bookingSuccess,
+        providerInfo: vlmInfo,
         kv,
         barcodes,
         barcodeWarnings,
@@ -736,6 +804,7 @@ export default function ScannerDashboard() {
     barcodes,
     barcodeWarnings,
     validation,
+    vlmInfo,
     refreshIntervalMs,
     hasHydrated,
   ]);
@@ -871,6 +940,7 @@ export default function ScannerDashboard() {
     if (!file) return;
     setLoading(true);
     setStatus("Uploading file and scanning…");
+    setVlmInfo(null);
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -883,6 +953,7 @@ export default function ScannerDashboard() {
       if (!res.ok) throw new Error(await res.text());
 
       const data: ApiOcrResponse = await res.json();
+      const nextProviderInfo = sanitizeProviderInfo(data.providerInfo);
 
       setKv(data.kv || {});
       setBarcodes(Array.isArray(data.barcodes) ? data.barcodes : []);
@@ -933,6 +1004,7 @@ export default function ScannerDashboard() {
           );
           setBookingWarning(null);
           setBookingSuccess(null);
+          setVlmInfo(null);
         } else {
           const trackingIdForStatus = recordCandidate.trackingId;
           setStatus(`Logging scan for ${trackingIdForStatus}…`);
@@ -970,6 +1042,7 @@ export default function ScannerDashboard() {
             setStatus(reason || "Failed to log scan.");
             setBookingWarning(null);
             setBookingSuccess(null);
+            setVlmInfo(null);
           } else {
             const record = payload.record;
             const warningRaw = typeof payload.warning === "string" ? payload.warning.trim() : "";
@@ -1008,6 +1081,7 @@ export default function ScannerDashboard() {
               : "Booked item found.";
             statusSegments.push(trailingMessage);
             setStatus(statusSegments.join(" ").replace(/\s+/g, " ").trim());
+            setVlmInfo(nextProviderInfo ?? null);
           }
         }
       }
@@ -1016,6 +1090,7 @@ export default function ScannerDashboard() {
       setStatus("Error scanning document.");
       setBookingWarning(null);
       setBookingSuccess(null);
+      setVlmInfo(null);
     } finally {
       setLoading(false);
     }
@@ -1031,6 +1106,7 @@ export default function ScannerDashboard() {
     setValidation(null);
     setBookingWarning(null);
     setBookingSuccess(null);
+    setVlmInfo(null);
   };
 
   const handleRecheckBooking = useCallback(async () => {
@@ -1155,6 +1231,7 @@ export default function ScannerDashboard() {
       setStatus("Live buffer cleared.");
       setBookingWarning(null);
       setBookingSuccess(null);
+      setVlmInfo(null);
     } catch (error) {
       console.error(error);
       setStatus(error instanceof Error ? error.message : "Failed to clear live buffer.");
@@ -1235,6 +1312,43 @@ export default function ScannerDashboard() {
         <div className="glassy-panel rounded-2xl border border-indigo-400/30 bg-indigo-500/10 px-5 py-4 text-sm text-indigo-100">
           <span className="font-semibold uppercase tracking-[0.3em] text-indigo-200/90">Status</span>
           <p className="mt-2 text-base text-slate-100/90">{status}</p>
+        </div>
+      )}
+
+      {vlmInfo && (
+        <div className="glassy-panel rounded-2xl border border-white/10 bg-white/5 px-5 py-4 text-sm text-slate-100">
+          <span className="font-semibold uppercase tracking-[0.3em] text-slate-300/80">VLM configuration</span>
+          <dl className="mt-3 grid gap-4 sm:grid-cols-3">
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-300/70">Provider type</dt>
+              <dd className="mt-1 text-base text-slate-100/90">{describeProviderType(vlmInfo)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-300/70">Model ID / deployment</dt>
+              <dd className="mt-1 break-words text-base text-slate-100/90">{vlmInfo.modelId || "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-300/70">Endpoint</dt>
+              <dd className="mt-1 break-words text-base text-indigo-100/90">
+                {(() => {
+                  const endpoint = describeProviderLink(vlmInfo);
+                  if (endpoint.href) {
+                    return (
+                      <a
+                        href={endpoint.href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-indigo-200 hover:text-indigo-100 hover:underline"
+                      >
+                        {endpoint.label}
+                      </a>
+                    );
+                  }
+                  return <span className="text-slate-100/90">{endpoint.label || "—"}</span>;
+                })()}
+              </dd>
+            </div>
+          </dl>
         </div>
       )}
 

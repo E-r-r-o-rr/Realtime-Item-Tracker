@@ -23,11 +23,11 @@ export async function POST(req: Request) {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'upload-'));
     const tmpPath = path.join(tmpDir, file.name);
     await fs.writeFile(tmpPath, buffer);
-    const kv = await extractKvPairs(tmpPath);
+    const { kv, providerInfo } = await extractKvPairs(tmpPath);
     const { barcodes, warnings: barcodeWarnings } = await extractBarcodes(tmpPath);
     const validation = buildBarcodeValidation(kv, barcodes);
     await fs.unlink(tmpPath);
-    return NextResponse.json({ kv, barcodes, barcodeWarnings, validation });
+    return NextResponse.json({ kv, barcodes, barcodeWarnings, validation, providerInfo });
   } catch (err: any) {
     console.error('OCR endpoint error', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
