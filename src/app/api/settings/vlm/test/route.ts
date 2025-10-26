@@ -67,6 +67,12 @@ export async function POST(request: Request) {
   }
 
   if (settings.remote.providerType === "huggingface") {
+    if (!settings.remote.hfProvider.trim()) {
+      return NextResponse.json(
+        { ok: false, message: "Hugging Face provider is required. Enter the provider slug in settings." },
+        { status: 400, headers: noStoreHeaders },
+      );
+    }
     if (!settings.remote.modelId) {
       return NextResponse.json(
         { ok: false, message: "Model ID is required for Hugging Face Inference." },
@@ -121,6 +127,17 @@ export async function POST(request: Request) {
         { status: 502, headers: noStoreHeaders },
       );
     }
+  }
+
+  const baseUrlHasHfDomain = (settings.remote.baseUrl || "").toLowerCase().includes("huggingface.co");
+  if (baseUrlHasHfDomain && !settings.remote.hfProvider.trim()) {
+    return NextResponse.json(
+      {
+        ok: false,
+        message: "Hugging Face router endpoints require a provider slug. Update the settings before testing.",
+      },
+      { status: 400, headers: noStoreHeaders },
+    );
   }
 
   if (!settings.remote.baseUrl) {

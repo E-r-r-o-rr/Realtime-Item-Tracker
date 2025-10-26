@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 from collections import OrderedDict
 from urllib import request as urllib_request, error as urllib_error
-from urllib.parse import quote as url_quote
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 if TYPE_CHECKING:
     from huggingface_hub import InferenceClient
@@ -58,10 +58,54 @@ def normalize_hf_base_url(value: Optional[str]) -> str:
     deprecated_prefix = "https://api-inference.huggingface.co"
     if trimmed.startswith(deprecated_prefix):
         suffix = trimmed[len(deprecated_prefix) :].lstrip("/")
-        base = HF_ROUTER_BASE.rstrip("/")
-        return f"{base}/{suffix}" if suffix else HF_ROUTER_BASE
+        return f"{HF_ROUTER_BASE}/{suffix}" if suffix else HF_ROUTER_BASE
 
-    return trimmed
+    return trimmed.rstrip("/")
+
+
+def ensure_chat_completions_url(base_url: str) -> str:
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise ValueError("Base URL is required for remote VLM calls")
+
+    parts = urlsplit(base_url.strip())
+    if not parts.scheme or not parts.netloc:
+        raise ValueError("Base URL must include a scheme and host")
+
+    path = parts.path or ""
+    trimmed = path.rstrip("/")
+    if trimmed.endswith("/chat/completions"):
+        final_path = trimmed
+    elif trimmed.endswith("/v1"):
+        final_path = trimmed + "/chat/completions"
+    else:
+        final_path = (trimmed + "/v1/chat/completions") if trimmed else "/v1/chat/completions"
+
+    if not final_path.startswith("/"):
+        final_path = "/" + final_path
+
+    return urlunsplit((parts.scheme, parts.netloc, final_path, parts.query, parts.fragment))
+
+
+def append_query_params(url: str, params: Dict[str, Optional[str]]) -> str:
+    if not params:
+        return url
+
+    parts = urlsplit(url)
+    query_pairs = parse_qsl(parts.query, keep_blank_values=True)
+    query_map: Dict[str, str] = {key: val for key, val in query_pairs}
+    changed = False
+
+    for key, value in params.items():
+        if value is None or value == "":
+            continue
+        query_map[key] = value
+        changed = True
+
+    if not changed:
+        return url
+
+    new_query = urlencode(query_map)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
 
 
 
@@ -199,29 +243,37 @@ def call_http_vlm(
     defaults: Dict[str, Any],
 ) -> str:
     provider_type = str(remote_cfg.get("providerType") or "").lower()
+    provider_hint = str(remote_cfg.get("hfProvider") or "").strip()
     request_url = base_url.strip()
+
     if provider_type != "huggingface" and "huggingface.co" in request_url.lower():
         provider_type = "huggingface"
+
     if provider_type == "huggingface":
         request_url = normalize_hf_base_url(request_url)
-        if "/v1/" not in request_url:
-            request_url = request_url.rstrip("/") + "/v1/chat/completions"
-        provider_hint = remote_cfg.get("hfProvider")
-        if isinstance(provider_hint, str) and provider_hint.strip():
-            clean_provider = provider_hint.strip()
-            sep = "&" if "?" in request_url else "?"
-            request_url = f"{request_url}{sep}provider={url_quote(clean_provider)}"
+        if not provider_hint:
+            raise RuntimeError(
+                "Hugging Face Inference requires a provider. Configure one in the settings before scanning."
+            )
+
+    try:
+        request_url = ensure_chat_completions_url(request_url)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
 
     api_version = str(remote_cfg.get("apiVersion") or "").strip()
-    if api_version:
-        separator = "&" if "?" in request_url else "?"
-        request_url = f"{request_url}{separator}api-version={api_version}"
+    request_url = append_query_params(
+        request_url,
+        {
+            "provider": provider_hint if provider_type == "huggingface" else None,
+            "api-version": api_version or None,
+        },
+    )
 
     headers = build_http_headers(remote_cfg)
     if provider_type == "huggingface":
-        provider_hint = remote_cfg.get("hfProvider")
-        if isinstance(provider_hint, str) and provider_hint.strip():
-            headers.setdefault("X-Inference-Provider", provider_hint.strip())
+        if provider_hint:
+            headers.setdefault("X-Inference-Provider", provider_hint)
 
     payload: Dict[str, Any] = {
         "model": model,
@@ -677,17 +729,24 @@ def main():
         if HFInferenceClient is None:
             sys.exit("[FATAL] Install huggingface_hub to use the Hugging Face provider")
         base_url = normalize_hf_base_url(remote_cfg.get("baseUrl"))
-        os.environ.setdefault("HF_ENDPOINT", base_url.rstrip("/"))
         remote_cfg["baseUrl"] = base_url
-        hf_provider = remote_cfg.get("hfProvider") if isinstance(remote_cfg.get("hfProvider"), str) else ""
-        provider_hint = hf_provider or args.provider or None
+        os.environ.setdefault("HF_ENDPOINT", base_url.rstrip("/"))
+
+        hf_provider_raw = remote_cfg.get("hfProvider") if isinstance(remote_cfg.get("hfProvider"), str) else ""
+        cli_provider = args.provider.strip() if isinstance(args.provider, str) else ""
+        provider_hint = (hf_provider_raw or cli_provider).strip()
+
+        if not provider_hint:
+            sys.exit(
+                "[FATAL] Configure a Hugging Face provider (e.g. mistralai, hyperbolic) in the settings before scanning."
+            )
+
         if not token:
             print("[warn] HF token missing; gated/provider models may fail.", file=sys.stderr)
-        client_kwargs: Dict[str, Any] = {}
+
+        client_kwargs: Dict[str, Any] = {"provider": provider_hint}
         if base_url:
             client_kwargs["base_url"] = base_url
-        if provider_hint:
-            client_kwargs["provider"] = provider_hint
         if token:
             client_kwargs["api_key"] = token
         client = HFInferenceClient(**client_kwargs)

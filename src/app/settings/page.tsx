@@ -233,6 +233,7 @@ export default function SettingsPage() {
 
   const remote = settings.remote;
   const providerType = remote.providerType;
+  const baseUrlContainsHuggingFace = (remote.baseUrl || "").toLowerCase().includes("huggingface.co");
   const baseUrlDisabled = providerType === "huggingface";
   const baseUrlPlaceholder =
     providerType === "openai-compatible"
@@ -246,6 +247,10 @@ export default function SettingsPage() {
       : providerType === "generic-http"
       ? "Provide the full URL your custom inference service expects requests on."
       : "The OpenAI-compatible chat/completions endpoint to post OCR prompts to.";
+  const showProviderField = providerType === "huggingface" || baseUrlContainsHuggingFace;
+  const providerFieldDescription = showProviderField
+    ? "Required when routing through Hugging Face Inference. Use the slug from your provider (e.g. mistralai, hyperbolic)."
+    : "";
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-8 px-4 py-10 sm:px-6 lg:px-8">
@@ -388,20 +393,22 @@ export default function SettingsPage() {
                     onChange={(event) => handleRemoteChange("modelId", event.target.value)}
                   />
                 </div>
-                {providerType === "huggingface" && (
+                {showProviderField && (
                   <div className="space-y-2">
                     <label className={fieldLabelClass} htmlFor="remote-hf-provider">
-                      Provider (optional)
+                      Hugging Face provider <span className="text-rose-300">*</span>
                     </label>
                     <Input
                       id="remote-hf-provider"
                       placeholder="mistralai"
                       value={remote.hfProvider}
                       onChange={(event) => handleRemoteChange("hfProvider", event.target.value)}
+                      required
                     />
-                    <p className={fieldDescriptionClass}>
-                      Use this when routing through a dedicated Hugging Face Inference provider endpoint.
-                    </p>
+                    <p className={fieldDescriptionClass}>{providerFieldDescription}</p>
+                    {!remote.hfProvider.trim() && (
+                      <p className="text-xs text-rose-300">This field is required for Hugging Face integrations.</p>
+                    )}
                   </div>
                 )}
                 <div className="space-y-2">
