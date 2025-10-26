@@ -8,6 +8,12 @@ model response, and normalizes the returned key/value pairs into
 `structured.json` so the Next.js layer can persist the parsed fields. Previous
 iterations depended on PaddleOCR for local text extraction; that dependency has
 been removed so the workflow now relies entirely on the configured VLM.
+
+Provider routing:
+- providerType == "huggingface"    -> huggingface_hub.InferenceClient
+- providerType == "openai"         -> openai.OpenAI
+- providerType == "azure-openai"   -> openai.AzureOpenAI
+- otherwise                        -> raw urllib (OpenAI-compatible / generic HTTP)
 """
 
 from __future__ import annotations
@@ -19,11 +25,16 @@ from collections import OrderedDict
 from urllib import request as urllib_request, error as urllib_error
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
+# --------------------------
+# Constants
+# --------------------------
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
-HF_ROUTER_BASE = "https://router.huggingface.co"
+HF_ROUTER_BASE = "https://router.huggingface.co"  # kept for generic HTTP path if you ever need it
 
-
+# --------------------------
+# Config helpers
+# --------------------------
 def load_remote_config() -> Optional[Dict[str, Any]]:
     raw = os.environ.get("VLM_REMOTE_CONFIG")
     if not raw:
@@ -34,38 +45,30 @@ def load_remote_config() -> Optional[Dict[str, Any]]:
         print("[warn] Failed to parse VLM_REMOTE_CONFIG", file=sys.stderr)
         return None
 
-
-
 def normalize_hf_base_url(value: Optional[str]) -> str:
+    # Kept for generic HTTP mode; not used by the HF SDK path.
     if not isinstance(value, str):
         return ""
-
     trimmed = value.strip()
     if not trimmed:
         return ""
-
     trimmed = trimmed.rstrip("/")
     deprecated_prefix = "https://api-inference.huggingface.co"
     if trimmed.startswith(deprecated_prefix):
-        suffix = trimmed[len(deprecated_prefix) :].lstrip("/")
+        suffix = trimmed[len(deprecated_prefix):].lstrip("/")
         return f"{HF_ROUTER_BASE}/{suffix}" if suffix else HF_ROUTER_BASE
-
     router_deprecated = f"{HF_ROUTER_BASE}/hf-inference"
     if trimmed.startswith(router_deprecated):
-        suffix = trimmed[len(router_deprecated) :].lstrip("/")
+        suffix = trimmed[len(router_deprecated):].lstrip("/")
         return f"{HF_ROUTER_BASE}/{suffix}" if suffix else HF_ROUTER_BASE
-
     return trimmed
-
 
 def ensure_chat_completions_url(base_url: str) -> str:
     if not isinstance(base_url, str) or not base_url.strip():
         raise ValueError("Base URL is required for remote VLM calls")
-
     parts = urlsplit(base_url.strip())
     if not parts.scheme or not parts.netloc:
         raise ValueError("Base URL must include a scheme and host")
-
     path = parts.path or ""
     trimmed = path.rstrip("/")
     if trimmed.endswith("/chat/completions"):
@@ -74,36 +77,30 @@ def ensure_chat_completions_url(base_url: str) -> str:
         final_path = trimmed + "/chat/completions"
     else:
         final_path = (trimmed + "/v1/chat/completions") if trimmed else "/v1/chat/completions"
-
     if not final_path.startswith("/"):
         final_path = "/" + final_path
-
     return urlunsplit((parts.scheme, parts.netloc, final_path, parts.query, parts.fragment))
-
 
 def append_query_params(url: str, params: Dict[str, Optional[str]]) -> str:
     if not params:
         return url
-
     parts = urlsplit(url)
     query_pairs = parse_qsl(parts.query, keep_blank_values=True)
     query_map: Dict[str, str] = {key: val for key, val in query_pairs}
     changed = False
-
     for key, value in params.items():
         if value is None or value == "":
             continue
         query_map[key] = value
         changed = True
-
     if not changed:
         return url
-
     new_query = urlencode(query_map)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
 
-
-
+# --------------------------
+# I/O utils
+# --------------------------
 def safe_mkdir(d: str):
     if d:
         Path(d).mkdir(parents=True, exist_ok=True)
@@ -113,10 +110,14 @@ def guess_mime(p: str) -> str:
     return mime or "image/jpeg"
 
 def encode_image_to_base64(image_path: str) -> str:
+    # Keeping base64 data URI for compatibility — HF SDK handles large payloads via multipart/stream.
     with open(image_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
     return f"data:{guess_mime(image_path)};base64,{b64}"
 
+# --------------------------
+# JSON path helpers
+# --------------------------
 def parse_path_tokens(path: str) -> List[Union[str, int]]:
     tokens: List[Union[str, int]] = []
     buf = ""
@@ -125,24 +126,18 @@ def parse_path_tokens(path: str) -> List[Union[str, int]]:
         ch = path[i]
         if ch == ".":
             if buf:
-                tokens.append(buf)
-                buf = ""
-            i += 1
-            continue
+                tokens.append(buf); buf = ""
+            i += 1; continue
         if ch == "[":
             if buf:
-                tokens.append(buf)
-                buf = ""
+                tokens.append(buf); buf = ""
             j = path.find("]", i)
-            if j == -1:
-                break
-            idx_str = path[i + 1 : j].strip()
+            if j == -1: break
+            idx_str = path[i+1:j].strip()
             if idx_str.isdigit():
                 tokens.append(int(idx_str))
-            i = j + 1
-            continue
-        buf += ch
-        i += 1
+            i = j + 1; continue
+        buf += ch; i += 1
     if buf:
         tokens.append(buf)
     return tokens
@@ -166,6 +161,9 @@ def extract_json_path(data: Any, path: str) -> Any:
             return None
     return current
 
+# --------------------------
+# HTTP header builder
+# --------------------------
 def build_http_headers(remote_cfg: Dict[str, Any]) -> Dict[str, str]:
     headers: Dict[str, str] = {}
     scheme = str(remote_cfg.get("authScheme") or "bearer").lower()
@@ -192,6 +190,9 @@ def build_http_headers(remote_cfg: Dict[str, Any]) -> Dict[str, str]:
     headers.setdefault("Accept", "application/json")
     return headers
 
+# --------------------------
+# Message builder
+# --------------------------
 def build_vlm_messages(
     image_path: str,
     ocr_txt: Optional[str] = None,
@@ -211,15 +212,13 @@ def build_vlm_messages(
     if cleaned_txt:
         user_content.append({"type": "text", "text": "OCR_TEXT_BEGIN\n" + cleaned_txt + "\nOCR_TEXT_END"})
     else:
-        user_content.append(
-            {
-                "type": "text",
-                "text": (
-                    "No OCR transcript is available. Use the visual content of the image to"
-                    " extract header key/value pairs."
-                ),
-            }
-        )
+        user_content.append({
+            "type": "text",
+            "text": (
+                "No OCR transcript is available. Use the visual content of the image to"
+                " extract header key/value pairs."
+            ),
+        })
     user_content.append({"type": "text", "text": "OUTPUT: JSON only."})
     messages: List[Dict[str, Any]] = []
     if system_prompt:
@@ -227,6 +226,9 @@ def build_vlm_messages(
     messages.append({"role": "user", "content": user_content})
     return messages
 
+# --------------------------
+# Provider-dispatched VLM call
+# --------------------------
 def call_http_vlm(
     remote_cfg: Dict[str, Any],
     base_url: str,
@@ -234,17 +236,165 @@ def call_http_vlm(
     messages: List[Dict[str, Any]],
     defaults: Dict[str, Any],
 ) -> str:
+    """
+    Dispatch to:
+      - Hugging Face -> huggingface_hub.InferenceClient
+      - OpenAI / Azure OpenAI -> openai SDK
+      - Else -> raw urllib POST to OpenAI-compatible / generic HTTP
+    """
     provider_type = str(remote_cfg.get("providerType") or "").lower()
     provider_hint = str(remote_cfg.get("hfProvider") or "").strip()
-    request_url = base_url.strip()
+    request_url = (base_url or "").strip()
 
+    # ------------------ Hugging Face via SDK ------------------
     if provider_type == "huggingface":
-        request_url = normalize_hf_base_url(request_url)
-        if not provider_hint:
+        try:
+            from huggingface_hub import InferenceClient
+        except ImportError as ie:
             raise RuntimeError(
-                "Hugging Face Inference requires a provider. Configure one in the settings before scanning."
-            )
+                "huggingface_hub is required for providerType=huggingface. "
+                "Install with: pip install --upgrade huggingface_hub"
+            ) from ie
 
+        client = InferenceClient(
+            provider=provider_hint or None,
+            api_key=(remote_cfg.get("apiKey") or os.environ.get("HF_TOKEN")),
+        )
+
+        # Standard OpenAI-compatible kwargs
+        std_kwargs: Dict[str, Any] = {}
+        if isinstance(defaults.get("temperature"), (int, float)):
+            std_kwargs["temperature"] = float(defaults["temperature"])
+        if isinstance(defaults.get("maxOutputTokens"), (int, float)):
+            std_kwargs["max_tokens"] = int(defaults["maxOutputTokens"])
+        if isinstance(defaults.get("topP"), (int, float)):
+            std_kwargs["top_p"] = float(defaults["topP"])
+        if isinstance(defaults.get("seed"), (int, float)):
+            std_kwargs["seed"] = int(defaults["seed"])
+        if defaults.get("jsonMode"):
+            std_kwargs["response_format"] = {"type": "json_object"}
+            schema_raw = defaults.get("jsonSchema")
+            if isinstance(schema_raw, str) and schema_raw.strip():
+                try:
+                    std_kwargs["response_format"]["schema"] = json.loads(schema_raw)
+                except Exception:
+                    pass
+        stop_sequences = defaults.get("stopSequences")
+        if isinstance(stop_sequences, list) and stop_sequences:
+            std_kwargs["stop"] = stop_sequences
+
+        # Provider-specific via extra_body
+        extra_body: Dict[str, Any] = {}
+        if isinstance(defaults.get("topK"), (int, float)):
+            extra_body["top_k"] = int(defaults["topK"])
+        if isinstance(defaults.get("repetitionPenalty"), (int, float)):
+            extra_body["repetition_penalty"] = float(defaults["repetitionPenalty"])
+
+        try:
+            completion = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                stream=False,
+                **std_kwargs,
+                **({"extra_body": extra_body} if extra_body else {}),
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Hugging Face call failed: {exc}") from exc
+
+        return to_str_content(completion.choices[0].message)
+
+    # ------------------ OpenAI (official SDK) ------------------
+    if provider_type == "openai":
+        try:
+            from openai import OpenAI
+        except ImportError as ie:
+            raise RuntimeError(
+                "openai is required for providerType=openai. Install with: pip install --upgrade openai"
+            ) from ie
+
+        api_key = remote_cfg.get("apiKey") or os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OpenAI API key missing (set remote_cfg.apiKey or OPENAI_API_KEY).")
+
+        client = OpenAI(api_key=api_key, base_url=request_url or None)
+
+        std_kwargs: Dict[str, Any] = {}
+        if isinstance(defaults.get("temperature"), (int, float)):
+            std_kwargs["temperature"] = float(defaults["temperature"])
+        if isinstance(defaults.get("maxOutputTokens"), (int, float)):
+            std_kwargs["max_tokens"] = int(defaults["maxOutputTokens"])
+        if isinstance(defaults.get("topP"), (int, float)):
+            std_kwargs["top_p"] = float(defaults["topP"])
+        if defaults.get("jsonMode"):
+            std_kwargs["response_format"] = {"type": "json_object"}
+        stop_sequences = defaults.get("stopSequences")
+        if isinstance(stop_sequences, list) and stop_sequences:
+            std_kwargs["stop"] = stop_sequences
+
+        try:
+            completion = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                stream=False,
+                **std_kwargs,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"OpenAI call failed: {exc}") from exc
+
+        return to_str_content(completion.choices[0].message)
+
+    # ------------------ Azure OpenAI (official SDK) ------------------
+    if provider_type == "azure-openai":
+        try:
+            from openai import AzureOpenAI
+        except ImportError as ie:
+            raise RuntimeError(
+                "openai is required for providerType=azure-openai. Install with: pip install --upgrade openai"
+            ) from ie
+
+        api_key = (
+            remote_cfg.get("apiKey")
+            or os.environ.get("AZURE_OPENAI_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+        )
+        if not api_key:
+            raise RuntimeError("Azure OpenAI API key missing (set remote_cfg.apiKey or AZURE_OPENAI_API_KEY).")
+
+        azure_endpoint = request_url or remote_cfg.get("azureEndpoint") or remote_cfg.get("baseUrl")
+        if not azure_endpoint:
+            raise RuntimeError("Azure endpoint missing (set remote_cfg.baseUrl or remote_cfg.azureEndpoint).")
+
+        api_version = str(remote_cfg.get("apiVersion") or "2024-02-15-preview")
+
+        # For Azure, `model` is the deployment name.
+        client = AzureOpenAI(api_key=api_key, azure_endpoint=azure_endpoint, api_version=api_version)
+
+        std_kwargs: Dict[str, Any] = {}
+        if isinstance(defaults.get("temperature"), (int, float)):
+            std_kwargs["temperature"] = float(defaults["temperature"])
+        if isinstance(defaults.get("maxOutputTokens"), (int, float)):
+            std_kwargs["max_tokens"] = int(defaults["maxOutputTokens"])
+        if isinstance(defaults.get("topP"), (int, float)):
+            std_kwargs["top_p"] = float(defaults["topP"])
+        if defaults.get("jsonMode"):
+            std_kwargs["response_format"] = {"type": "json_object"}
+        stop_sequences = defaults.get("stopSequences")
+        if isinstance(stop_sequences, list) and stop_sequences:
+            std_kwargs["stop"] = stop_sequences
+
+        try:
+            completion = client.chat.completions.create(
+                model=model,   # deployment name
+                messages=messages,
+                stream=False,
+                **std_kwargs,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Azure OpenAI call failed: {exc}") from exc
+
+        return to_str_content(completion.choices[0].message)
+
+    # ------------------ Fallback: raw HTTP (OpenAI-compatible / generic HTTP) ------------------
     try:
         request_url = ensure_chat_completions_url(request_url)
     except ValueError as exc:
@@ -260,45 +410,32 @@ def call_http_vlm(
     )
 
     headers = build_http_headers(remote_cfg)
-    if provider_type == "huggingface":
-        if provider_hint:
-            headers.setdefault("X-Inference-Provider", provider_hint)
+    if provider_type == "huggingface" and provider_hint:
+        headers.setdefault("X-Inference-Provider", provider_hint)
 
-    payload: Dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-    }
-
+    payload: Dict[str, Any] = {"model": model, "messages": messages}
     temperature = defaults.get("temperature")
     if isinstance(temperature, (int, float)):
         payload["temperature"] = float(temperature)
-
     max_tokens = defaults.get("maxOutputTokens")
     if isinstance(max_tokens, (int, float)) and max_tokens > 0:
         payload["max_tokens"] = int(max_tokens)
-
     payload["stream"] = False
-
     stop_sequences = defaults.get("stopSequences")
     if isinstance(stop_sequences, list) and stop_sequences:
         payload["stop"] = stop_sequences
-
     seed = defaults.get("seed")
     if isinstance(seed, (int, float)):
         payload["seed"] = int(seed)
-
     top_p = defaults.get("topP")
     if isinstance(top_p, (int, float)):
         payload["top_p"] = float(top_p)
-
     top_k = defaults.get("topK")
     if isinstance(top_k, (int, float)):
         payload["top_k"] = int(top_k)
-
     repetition_penalty = defaults.get("repetitionPenalty")
     if isinstance(repetition_penalty, (int, float)):
         payload["repetition_penalty"] = float(repetition_penalty)
-
     if defaults.get("jsonMode"):
         payload["response_format"] = {"type": "json_object"}
         schema_raw = defaults.get("jsonSchema")
@@ -348,19 +485,24 @@ def call_http_vlm(
     return to_str_content(message)
 
 # --------------------------
-# LLM call
+# LLM output helpers
 # --------------------------
 def to_str_content(msg: Any) -> str:
-    if msg is None: return ""
+    if msg is None:
+        return ""
     content = getattr(msg, "content", None)
-    if content is None and isinstance(msg, dict): content = msg.get("content")
-    if isinstance(content, str): return content
+    if content is None and isinstance(msg, dict):
+        content = msg.get("content")
+    if isinstance(content, str):
+        return content
     if isinstance(content, list):
         parts: List[str] = []
         for ch in content:
             if isinstance(ch, dict):
-                if ch.get("type") == "text": parts.append(ch.get("text",""))
-                elif "text" in ch: parts.append(str(ch["text"]))
+                if ch.get("type") == "text":
+                    parts.append(ch.get("text", ""))
+                elif "text" in ch:
+                    parts.append(str(ch["text"]))
             else:
                 parts.append(str(ch))
         return "".join(parts)
@@ -370,7 +512,7 @@ def to_str_content(msg: Any) -> str:
 # Universal KV parser
 # --------------------------
 CODE_FENCE_RE = re.compile(r"^```(?:json|JSON)?\s*|\s*```$", re.S)
-SMART_QUOTES_RE = str.maketrans({"“":'"',"”":'"',"‘":"'", "’":"'"})
+SMART_QUOTES_RE = str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'"})
 
 def _preclean(text: str) -> str:
     t = text.strip()
@@ -389,27 +531,33 @@ def _find_object_span(t: str) -> Optional[Tuple[int,int]]:
     return None
 
 def try_json_load(text: str) -> Optional[dict]:
+    # Be tolerant: sometimes upstream hands non-strings
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+
     t = _preclean(text)
     span = _find_object_span(t)
     if span:
-        frag = t[span[0]:span[1]]
+        s, e = span
+        # s,e are already proper slice bounds (end is exclusive)
+        frag = t[s:e]
         try:
             return json.loads(frag)
         except Exception:
             pass
-    # fallback: raw text might already be valid JSON without extra chatter
+
+    # fallback: attempt to parse the whole thing
     try:
         return json.loads(t)
     except Exception:
         return None
 
+
 # Regex patterns for JSON-ish pairs
-# 1) "key": "value"
 PAIR_STR_STR = re.compile(r'''
     ["']\s*([^"']+?)\s*["']\s*:\s*["'](.*?)["']\s*(?=,|\n|\r|})
 ''', re.S|re.X)
 
-# 2) "key": number/word/date without quotes
 PAIR_STR_BARE = re.compile(r'''
     ["']\s*([^"']+?)\s*["']\s*:\s*
     (?:
@@ -419,7 +567,6 @@ PAIR_STR_BARE = re.compile(r'''
     )
 ''', re.X)
 
-# 3) key: "value"  (unquoted key)
 PAIR_BARE_STR = re.compile(r'''
     (?<!["'])                  # not preceded by a quote
     \b([A-Za-z0-9 _./#-]+?)\b
@@ -427,7 +574,6 @@ PAIR_BARE_STR = re.compile(r'''
     ["'](.*?)["']\s*(?=,|\n|\r|})
 ''', re.S|re.X)
 
-# 4) key: value (both bare, terminate on , or } or newline)
 PAIR_BARE_BARE = re.compile(r'''
     (?<!["'])
     \b([A-Za-z0-9 _./#-]+?)\b
@@ -496,10 +642,6 @@ def parse_universal_kv(llm_raw: str, normalize_dates: bool=True) -> Dict[str, st
     # 2) "key": bare
     for m in PAIR_STR_BARE.finditer(region):
         k = m.group(1)
-        # value is the whole match's tail after colon; recapture precisely
-        tail = region[m.end():]  # not perfect; refine by re-searching from start
-        # Better: get the exact matched value from the overall match
-        # Re-run a small regex on the matched substring:
         mm = re.search(r':\s*([^\s,}\n\r]+)', m.group(0))
         v = mm.group(1) if mm else ""
         out[_trim(k)] = maybe_zero_pad_dates(v, normalize_dates)
@@ -512,7 +654,6 @@ def parse_universal_kv(llm_raw: str, normalize_dates: bool=True) -> Dict[str, st
     # 4) bare key: bare value
     for m in PAIR_BARE_BARE.finditer(region):
         k, v = m.group(1), m.group(2)
-        # avoid capturing JSON block delimiters or trailing comments
         v = re.sub(r"[}\]]\s*$", "", v).strip()
         out[_trim(k)] = maybe_zero_pad_dates(v, normalize_dates)
 
@@ -548,7 +689,6 @@ def process_folder(
     ocr_hint: Optional[str] = None,
 ):
     structured_json = str(Path(out_dir)/"structured.json")
-
     structured: List[dict] = []
 
     paths = sorted([p for p in Path(data_dir).rglob("*") if p.suffix.lower() in IMAGE_EXTS])
@@ -566,7 +706,6 @@ def process_folder(
         structured.append(rec)
 
     write_json_array(structured, structured_json)
-
     print(f"[done] Array JSON -> {structured_json}")
 
 # --------------------------
@@ -578,16 +717,18 @@ def main():
     ap.add_argument("--data_dir", help="Folder of images (recursive)")
     ap.add_argument("--out_dir", default="./output")
     ap.add_argument("--hf_token", default=None, help="HF token (else env HF_TOKEN)")
-    ap.add_argument("--provider", default="", help="Inference provider id")
-    ap.add_argument("--model", default=DEFAULT_MODEL, help="Model id on provider")
+    ap.add_argument("--provider", default="", help="Inference provider id (HF router provider name)")
+    ap.add_argument("--model", default=DEFAULT_MODEL, help="Model id or deployment (provider-specific)")
     ap.add_argument("--no_normalize_dates", action="store_true", help="Disable date zero-padding normalization")
     args = ap.parse_args()
 
     remote_cfg = load_remote_config()
     remote_cfg = remote_cfg if isinstance(remote_cfg, dict) else {}
 
+    # Accept a wider set of provider types
     provider_type = str(remote_cfg.get("providerType") or "").lower()
-    if provider_type not in {"openai-compatible", "huggingface", "generic-http"}:
+    allowed = {"openai-compatible", "huggingface", "generic-http", "openai", "azure-openai"}
+    if provider_type not in allowed:
         provider_type = "huggingface"
     remote_cfg["providerType"] = provider_type
 
@@ -633,21 +774,17 @@ def main():
     if isinstance(system_prompt, str):
         os.environ["OCR_SYSTEM_PROMPT"] = system_prompt
 
+    # Provider-specific bootstrapping
     if provider_type == "huggingface":
-        base_override = normalize_hf_base_url(remote_cfg.get("baseUrl"))
-        request_base = base_override or HF_ROUTER_BASE
-        remote_cfg["baseUrl"] = base_override
-        if request_base:
-            os.environ.setdefault("HF_ENDPOINT", request_base.rstrip("/"))
+        # IMPORTANT: Do NOT set HF_ENDPOINT/HF_HUB_ENDPOINT to the router.
+        # The HF SDK needs the hub (https://huggingface.co) for metadata calls.
+        request_base = ""  # not used by the HF SDK path
 
         hf_provider_raw = remote_cfg.get("hfProvider") if isinstance(remote_cfg.get("hfProvider"), str) else ""
         cli_provider = args.provider.strip() if isinstance(args.provider, str) else ""
         provider_hint = (hf_provider_raw or cli_provider).strip()
-
         if not provider_hint:
-            sys.exit(
-                "[FATAL] Configure a Hugging Face provider (e.g. mistralai, hyperbolic) in the settings before scanning."
-            )
+            sys.exit("[FATAL] Configure a Hugging Face provider (e.g. mistralai, hyperbolic) before scanning.")
 
         remote_cfg["hfProvider"] = provider_hint
 
@@ -658,11 +795,17 @@ def main():
             messages = build_vlm_messages(image_path, ocr_txt, system_prompt)
             return call_http_vlm(remote_cfg, request_base, args.model, messages, defaults)
 
+    elif provider_type in {"openai", "azure-openai"}:
+        base_url = remote_cfg.get("baseUrl") or ""
+        def vlm_call(image_path: str, ocr_txt: Optional[str]) -> str:
+            messages = build_vlm_messages(image_path, ocr_txt, system_prompt)
+            return call_http_vlm(remote_cfg, base_url, args.model, messages, defaults)
+
     else:
+        # openai-compatible / generic-http
         base_url = remote_cfg.get("baseUrl")
         if not isinstance(base_url, str) or not base_url.strip():
             sys.exit("[FATAL] Base URL is required for remote HTTP providers")
-
         def vlm_call(image_path: str, ocr_txt: Optional[str]) -> str:
             messages = build_vlm_messages(image_path, ocr_txt, system_prompt)
             return call_http_vlm(remote_cfg, base_url, args.model, messages, defaults)
@@ -674,31 +817,16 @@ def main():
         p = Path(args.image)
         if not p.exists():
             sys.exit(f"[FATAL] Image not found: {p}")
-
         print(f"[proc] {p.name}")
-        rec = process_one(
-            vlm_call,
-            str(p),
-            normalize_dates=normalize_dates,
-            ocr_hint=ocr_hint,
-        )
-
-        # write artifacts
-        write_json_array([rec], str(Path(args.out_dir)/"structured.json"))
-
+        rec = process_one(vlm_call, str(p), normalize_dates=normalize_dates, ocr_hint=ocr_hint)
+        write_json_array([rec], str(Path(args.out_dir) / "structured.json"))
         print(json.dumps(rec, ensure_ascii=False, indent=2))
         return
 
     if args.data_dir:
         if not Path(args.data_dir).exists():
             sys.exit(f"[FATAL] Folder not found: {args.data_dir}")
-        process_folder(
-            vlm_call,
-            args.data_dir,
-            args.out_dir,
-            normalize_dates,
-            ocr_hint,
-        )
+        process_folder(vlm_call, args.data_dir, args.out_dir, normalize_dates, ocr_hint)
         return
 
     print("Provide --image or --data_dir")
