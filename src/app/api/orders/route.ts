@@ -5,6 +5,9 @@ import {
   getLiveBufferByTrackingId,
   syncLiveBufferWithStorage,
   updateStorageRecord,
+  deleteLiveBufferEntry,
+  clearLiveBuffer,
+  recheckBookingForLiveBuffer,
 } from '@/lib/db';
 
 const REQUIRED_FIELDS = [
@@ -46,6 +49,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const trackingId = searchParams.get('trackingId') ?? searchParams.get('code');
   const shouldSync = searchParams.get('sync') === 'true';
+  const verifyBooking = searchParams.get('verifyBooking') === 'true';
 
   if (shouldSync) {
     syncLiveBufferWithStorage();
@@ -60,6 +64,22 @@ export async function GET(req: Request) {
   if (!record) {
     return NextResponse.json({ error: 'Live buffer entry not found' }, { status: 404 });
   }
+
+  if (verifyBooking) {
+    const result = recheckBookingForLiveBuffer(trackingId);
+    const responseRecord = result.record ?? record;
+    const payload: Record<string, unknown> = {
+      record: responseRecord,
+      bookingFound: result.bookingFound,
+    };
+    if (result.message) {
+      payload.message = result.message;
+    }
+    if (!result.bookingFound && result.message) {
+      payload.warning = result.message;
+    }
+    return NextResponse.json(payload);
+  }
   return NextResponse.json({ record });
 }
 
@@ -68,15 +88,39 @@ export async function POST(req: Request) {
     const body = await req.json();
     const payload = normalizePayload(body ?? {});
     const result = ingestLiveBufferEntry(payload);
-    if (result.message) {
-      return NextResponse.json({ error: result.message }, { status: 404 });
-    }
-    return NextResponse.json({ record: result.record }, { status: 201 });
+    return NextResponse.json(
+      {
+        record: result.record,
+        historyEntry: result.historyEntry,
+        warning: result.message,
+      },
+      { status: 201 },
+    );
   } catch (error: any) {
     if (error instanceof Error) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
     console.error('Unexpected error ingesting live buffer entry', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const trackingId = searchParams.get('trackingId') ?? searchParams.get('code');
+    if (trackingId) {
+      const removed = deleteLiveBufferEntry(trackingId);
+      if (!removed) {
+        return NextResponse.json({ error: 'Live buffer entry not found' }, { status: 404 });
+      }
+    } else {
+      clearLiveBuffer();
+    }
+    const records = listLiveBuffer();
+    return NextResponse.json({ liveBuffer: records });
+  } catch (error) {
+    console.error('Failed to clear live buffer', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
