@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 from collections import OrderedDict
 from urllib import request as urllib_request, error as urllib_error
+from urllib.parse import quote as url_quote
 
 if TYPE_CHECKING:
     from huggingface_hub import InferenceClient
@@ -34,7 +35,7 @@ except Exception:
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
-HF_ROUTER_BASE = "https://router.huggingface.co/hf-inference/"
+HF_ROUTER_BASE = "https://router.huggingface.co/hf-inference"
 
 
 def load_remote_config() -> Optional[Dict[str, Any]]:
@@ -197,13 +198,30 @@ def call_http_vlm(
     messages: List[Dict[str, Any]],
     defaults: Dict[str, Any],
 ) -> str:
+    provider_type = str(remote_cfg.get("providerType") or "").lower()
     request_url = base_url.strip()
+    if provider_type != "huggingface" and "huggingface.co" in request_url.lower():
+        provider_type = "huggingface"
+    if provider_type == "huggingface":
+        request_url = normalize_hf_base_url(request_url)
+        if "/v1/" not in request_url:
+            request_url = request_url.rstrip("/") + "/v1/chat/completions"
+        provider_hint = remote_cfg.get("hfProvider")
+        if isinstance(provider_hint, str) and provider_hint.strip():
+            clean_provider = provider_hint.strip()
+            sep = "&" if "?" in request_url else "?"
+            request_url = f"{request_url}{sep}provider={url_quote(clean_provider)}"
+
     api_version = str(remote_cfg.get("apiVersion") or "").strip()
     if api_version:
         separator = "&" if "?" in request_url else "?"
         request_url = f"{request_url}{separator}api-version={api_version}"
 
     headers = build_http_headers(remote_cfg)
+    if provider_type == "huggingface":
+        provider_hint = remote_cfg.get("hfProvider")
+        if isinstance(provider_hint, str) and provider_hint.strip():
+            headers.setdefault("X-Inference-Provider", provider_hint.strip())
 
     payload: Dict[str, Any] = {
         "model": model,
@@ -659,7 +677,7 @@ def main():
         if HFInferenceClient is None:
             sys.exit("[FATAL] Install huggingface_hub to use the Hugging Face provider")
         base_url = normalize_hf_base_url(remote_cfg.get("baseUrl"))
-        os.environ.setdefault("HF_ENDPOINT", base_url)
+        os.environ.setdefault("HF_ENDPOINT", base_url.rstrip("/"))
         remote_cfg["baseUrl"] = base_url
         hf_provider = remote_cfg.get("hfProvider") if isinstance(remote_cfg.get("hfProvider"), str) else ""
         provider_hint = hf_provider or args.provider or None
