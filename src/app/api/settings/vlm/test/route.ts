@@ -81,7 +81,7 @@ export async function POST(request: Request) {
     }
 
     const modelSlug = encodeURIComponent(settings.remote.modelId);
-    const target = new URL(`https://api-inference.huggingface.co/status/${modelSlug}`);
+    const target = new URL(`https://router.huggingface.co/hf-inference/status/${modelSlug}`);
     if (settings.remote.hfProvider) {
       target.searchParams.set("provider", settings.remote.hfProvider);
     }

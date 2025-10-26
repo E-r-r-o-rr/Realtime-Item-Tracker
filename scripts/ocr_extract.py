@@ -34,6 +34,7 @@ except Exception:
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
+HF_ROUTER_BASE = "https://router.huggingface.co/hf-inference/"
 
 
 def load_remote_config() -> Optional[Dict[str, Any]]:
@@ -45,6 +46,21 @@ def load_remote_config() -> Optional[Dict[str, Any]]:
     except Exception:
         print("[warn] Failed to parse VLM_REMOTE_CONFIG", file=sys.stderr)
         return None
+
+
+
+def normalize_hf_base_url(value: Optional[str]) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return HF_ROUTER_BASE
+
+    trimmed = value.strip()
+    deprecated_prefix = "https://api-inference.huggingface.co"
+    if trimmed.startswith(deprecated_prefix):
+        suffix = trimmed[len(deprecated_prefix) :].lstrip("/")
+        base = HF_ROUTER_BASE.rstrip("/")
+        return f"{base}/{suffix}" if suffix else HF_ROUTER_BASE
+
+    return trimmed
 
 
 
@@ -642,14 +658,16 @@ def main():
     if provider_type == "huggingface":
         if HFInferenceClient is None:
             sys.exit("[FATAL] Install huggingface_hub to use the Hugging Face provider")
-        base_url = remote_cfg.get("baseUrl")
-        if isinstance(base_url, str) and base_url.strip():
-            os.environ.setdefault("HF_ENDPOINT", base_url.strip())
+        base_url = normalize_hf_base_url(remote_cfg.get("baseUrl"))
+        os.environ.setdefault("HF_ENDPOINT", base_url)
+        remote_cfg["baseUrl"] = base_url
         hf_provider = remote_cfg.get("hfProvider") if isinstance(remote_cfg.get("hfProvider"), str) else ""
         provider_hint = hf_provider or args.provider or None
         if not token:
             print("[warn] HF token missing; gated/provider models may fail.", file=sys.stderr)
         client_kwargs: Dict[str, Any] = {}
+        if base_url:
+            client_kwargs["base_url"] = base_url
         if provider_hint:
             client_kwargs["provider"] = provider_hint
         if token:

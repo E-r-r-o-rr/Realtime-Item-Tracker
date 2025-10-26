@@ -18,6 +18,9 @@ import {
   VlmImageHandlingMode,
 } from "@/types/vlm";
 
+const HF_ROUTER_BASE = "https://router.huggingface.co/hf-inference/";
+const HF_DEPRECATED_PREFIX = "https://api-inference.huggingface.co";
+
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const toNumber = (value: unknown, fallback: number): number => {
   const numeric = typeof value === "string" ? Number(value) : value;
@@ -81,7 +84,17 @@ const normalizeRemoteSettings = (value: unknown): VlmRemoteSettings => {
     ["openai-compatible", "huggingface", "generic-http"] as const,
     base.providerType,
   );
-  base.baseUrl = toString(incoming.baseUrl, base.baseUrl).trim();
+  const incomingBaseUrl = toString(incoming.baseUrl, base.baseUrl).trim();
+  if (base.providerType === "huggingface") {
+    if (incomingBaseUrl.startsWith(HF_DEPRECATED_PREFIX)) {
+      const suffix = incomingBaseUrl.slice(HF_DEPRECATED_PREFIX.length).replace(/^\/+/, "");
+      base.baseUrl = suffix ? `${HF_ROUTER_BASE}${suffix}` : HF_ROUTER_BASE;
+    } else {
+      base.baseUrl = incomingBaseUrl;
+    }
+  } else {
+    base.baseUrl = incomingBaseUrl;
+  }
   base.modelId = toString(incoming.modelId, base.modelId).trim();
   base.apiVersion = toString(incoming.apiVersion, base.apiVersion).trim();
   base.hfProvider = toString(incoming.hfProvider, base.hfProvider).trim();
