@@ -33,6 +33,27 @@ const toString = (value: unknown, fallback = ""): string => {
   return fallback;
 };
 
+const normalizeHfBaseUrl = (value: unknown): string => {
+  const raw = toString(value).trim();
+  if (!raw) {
+    return "";
+  }
+
+  let normalized = raw.replace(/\/+$/, "");
+  if (normalized.startsWith(HF_DEPRECATED_PREFIX)) {
+    const suffix = normalized.slice(HF_DEPRECATED_PREFIX.length).replace(/^\/+/, "");
+    normalized = suffix ? `${HF_ROUTER_BASE}/${suffix}` : HF_ROUTER_BASE;
+  }
+
+  const routerDeprecated = `${HF_ROUTER_BASE}/hf-inference`;
+  if (normalized.startsWith(routerDeprecated)) {
+    const suffix = normalized.slice(routerDeprecated.length).replace(/^\/+/, "");
+    normalized = suffix ? `${HF_ROUTER_BASE}/${suffix}` : HF_ROUTER_BASE;
+  }
+
+  return normalized;
+};
+
 const normalizeArray = (value: unknown): string[] => {
   if (Array.isArray(value)) {
     return value
@@ -84,26 +105,11 @@ const normalizeRemoteSettings = (value: unknown): VlmRemoteSettings => {
     ["openai-compatible", "huggingface", "generic-http"] as const,
     base.providerType,
   );
-  const incomingBaseUrlRaw = typeof incoming.baseUrl === "string" ? incoming.baseUrl : "";
-  const incomingBaseUrl = incomingBaseUrlRaw.trim();
   if (base.providerType === "huggingface") {
-    if (!incomingBaseUrl) {
-      base.baseUrl = HF_ROUTER_BASE;
-    } else if (incomingBaseUrl.startsWith(HF_DEPRECATED_PREFIX)) {
-      const suffix = incomingBaseUrl.slice(HF_DEPRECATED_PREFIX.length).replace(/^\/+/, "");
-      base.baseUrl = suffix ? `${HF_ROUTER_BASE}/${suffix}` : HF_ROUTER_BASE;
-    } else if (incomingBaseUrl.startsWith(HF_ROUTER_BASE)) {
-      const suffix = incomingBaseUrl.slice(HF_ROUTER_BASE.length).replace(/^\/+/, "");
-      if (suffix.startsWith("hf-inference")) {
-        const remainder = suffix.slice("hf-inference".length).replace(/^\/+/, "");
-        base.baseUrl = remainder ? `${HF_ROUTER_BASE}/${remainder}` : HF_ROUTER_BASE;
-      } else {
-        base.baseUrl = incomingBaseUrl.replace(/\/+$/, "");
-      }
-    } else {
-      base.baseUrl = incomingBaseUrl.replace(/\/+$/, "");
-    }
+    const normalizedBase = normalizeHfBaseUrl(incoming.baseUrl);
+    base.baseUrl = normalizedBase && normalizedBase !== HF_ROUTER_BASE ? normalizedBase : "";
   } else {
+    const incomingBaseUrl = toString(incoming.baseUrl, "").trim();
     base.baseUrl = incomingBaseUrl || base.baseUrl;
   }
   base.modelId = toString(incoming.modelId, base.modelId).trim();

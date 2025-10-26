@@ -87,16 +87,15 @@ export async function POST(request: Request) {
     }
 
     const modelSlug = encodeURIComponent(settings.remote.modelId);
-    const target = new URL(`https://router.huggingface.co/hf-inference/status/${modelSlug}`);
-    if (settings.remote.hfProvider) {
-      target.searchParams.set("provider", settings.remote.hfProvider);
-    }
-
+    const provider = settings.remote.hfProvider.trim();
     const headers = new Headers();
     const token = settings.remote.apiKey.startsWith("Bearer ")
       ? settings.remote.apiKey
       : `Bearer ${settings.remote.apiKey}`;
     headers.set("Authorization", token);
+    if (provider) {
+      headers.set("X-Inference-Provider", provider);
+    }
     for (const extra of settings.remote.extraHeaders) {
       if (extra.key && extra.value) {
         headers.set(extra.key, extra.value);
@@ -104,29 +103,58 @@ export async function POST(request: Request) {
     }
 
     const timeoutMs = Math.max(1000, settings.remote.requestTimeoutMs || 1000);
-    try {
-      const response = await fetchWithTimeout(target, { method: "GET", headers }, timeoutMs);
-      const ok = response.ok;
-      const message = ok
-        ? `Hugging Face responded (${response.status})`
-        : `Endpoint responded with status ${response.status}`;
-      return NextResponse.json(
-        {
+    const probeTargets = [
+      new URL(`https://router.huggingface.co/status/${modelSlug}`),
+      new URL(`https://router.huggingface.co/hf-inference/status/${modelSlug}`),
+    ];
+    let lastError: { status: number; statusText: string; ok: boolean; url: string } | null = null;
+    for (const target of probeTargets) {
+      if (provider) {
+        target.searchParams.set("provider", provider);
+      }
+      try {
+        const response = await fetchWithTimeout(target, { method: "GET", headers }, timeoutMs);
+        const ok = response.ok;
+        const message = ok
+          ? `Hugging Face responded (${response.status})`
+          : `Endpoint responded with status ${response.status}`;
+        if (ok || target.pathname.includes("hf-inference")) {
+          return NextResponse.json(
+            {
+              ok,
+              status: response.status,
+              statusText: response.statusText,
+              url: target.toString(),
+              message,
+            },
+            { headers: noStoreHeaders },
+          );
+        }
+        lastError = {
           ok,
           status: response.status,
           statusText: response.statusText,
           url: target.toString(),
-          message,
-        },
-        { headers: noStoreHeaders },
-      );
-    } catch (error: any) {
-      const message = error?.name === "AbortError" ? "Request timed out" : "Network error";
-      return NextResponse.json(
-        { ok: false, message, url: target.toString() },
-        { status: 502, headers: noStoreHeaders },
-      );
+        };
+      } catch (error: any) {
+        const message = error?.name === "AbortError" ? "Request timed out" : "Network error";
+        return NextResponse.json(
+          { ok: false, message, url: target.toString() },
+          { status: 502, headers: noStoreHeaders },
+        );
+      }
     }
+
+    return NextResponse.json(
+      {
+        ok: false,
+        status: lastError?.status ?? 404,
+        statusText: lastError?.statusText ?? "Not Found",
+        url: lastError?.url ?? probeTargets[0].toString(),
+        message: "Endpoint responded with status 404",
+      },
+      { status: lastError?.status ?? 404, headers: noStoreHeaders },
+    );
   }
 
   if (!settings.remote.baseUrl) {

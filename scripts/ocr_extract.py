@@ -13,20 +13,11 @@ from __future__ import annotations
 
 import os, re, sys, json, argparse, base64, mimetypes, statistics
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from collections import OrderedDict
 from urllib import request as urllib_request, error as urllib_error
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
-if TYPE_CHECKING:
-    from huggingface_hub import InferenceClient
-    from paddleocr import PaddleOCR
-
-try:
-    from huggingface_hub import InferenceClient as HFInferenceClient
-except Exception:
-    HFInferenceClient = None
-    print("[warn] huggingface_hub not installed; Hugging Face provider unavailable.", file=sys.stderr)
 try:
     from paddleocr import PaddleOCR as PaddleOCRRuntime
 except Exception:
@@ -51,23 +42,25 @@ def load_remote_config() -> Optional[Dict[str, Any]]:
 
 
 def normalize_hf_base_url(value: Optional[str]) -> str:
-    if not isinstance(value, str) or not value.strip():
-        return HF_ROUTER_BASE
+    if not isinstance(value, str):
+        return ""
 
     trimmed = value.strip()
+    if not trimmed:
+        return ""
+
+    trimmed = trimmed.rstrip("/")
     deprecated_prefix = "https://api-inference.huggingface.co"
     if trimmed.startswith(deprecated_prefix):
         suffix = trimmed[len(deprecated_prefix) :].lstrip("/")
         return f"{HF_ROUTER_BASE}/{suffix}" if suffix else HF_ROUTER_BASE
 
-    router_prefix = "https://router.huggingface.co"
-    if trimmed.startswith(router_prefix):
-        suffix = trimmed[len(router_prefix) :].lstrip("/")
-        if suffix.startswith("hf-inference"):
-            suffix = suffix[len("hf-inference") :].lstrip("/")
-        return f"{router_prefix}/{suffix}".rstrip("/") if suffix else router_prefix
+    router_deprecated = f"{HF_ROUTER_BASE}/hf-inference"
+    if trimmed.startswith(router_deprecated):
+        suffix = trimmed[len(router_deprecated) :].lstrip("/")
+        return f"{HF_ROUTER_BASE}/{suffix}" if suffix else HF_ROUTER_BASE
 
-    return trimmed.rstrip("/")
+    return trimmed
 
 
 def ensure_chat_completions_url(base_url: str) -> str:
@@ -222,25 +215,6 @@ def build_vlm_messages(image_path: str, ocr_txt: str, system_prompt: Optional[st
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_content})
     return messages
-
-def call_huggingface_vlm(
-    client: "InferenceClient",
-    model: str,
-    messages: List[Dict[str, Any]],
-    temperature: float,
-    max_tokens: int,
-) -> str:
-    kwargs: Dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-    }
-    if max_tokens > 0:
-        kwargs["max_tokens"] = max_tokens
-    resp = client.chat.completions.create(**kwargs)
-    choice = resp.choices[0]
-    msg = getattr(choice, "message", choice.get("message"))
-    return to_str_content(msg)
 
 def call_http_vlm(
     remote_cfg: Dict[str, Any],
@@ -730,11 +704,11 @@ def main():
         os.environ["OCR_SYSTEM_PROMPT"] = system_prompt
 
     if provider_type == "huggingface":
-        if HFInferenceClient is None:
-            sys.exit("[FATAL] Install huggingface_hub to use the Hugging Face provider")
-        base_url = normalize_hf_base_url(remote_cfg.get("baseUrl"))
-        remote_cfg["baseUrl"] = base_url
-        os.environ.setdefault("HF_ENDPOINT", base_url.rstrip("/"))
+        base_override = normalize_hf_base_url(remote_cfg.get("baseUrl"))
+        request_base = base_override or HF_ROUTER_BASE
+        remote_cfg["baseUrl"] = base_override
+        if request_base:
+            os.environ.setdefault("HF_ENDPOINT", request_base.rstrip("/"))
 
         hf_provider_raw = remote_cfg.get("hfProvider") if isinstance(remote_cfg.get("hfProvider"), str) else ""
         cli_provider = args.provider.strip() if isinstance(args.provider, str) else ""
@@ -745,21 +719,14 @@ def main():
                 "[FATAL] Configure a Hugging Face provider (e.g. mistralai, hyperbolic) in the settings before scanning."
             )
 
+        remote_cfg["hfProvider"] = provider_hint
+
         if not token:
             print("[warn] HF token missing; gated/provider models may fail.", file=sys.stderr)
 
-        client_kwargs: Dict[str, Any] = {"provider": provider_hint}
-        if base_url:
-            client_kwargs["base_url"] = base_url
-        if token:
-            client_kwargs["api_key"] = token
-        client = HFInferenceClient(**client_kwargs)
-        temperature = float(defaults.get("temperature") or 0.0)
-        max_tokens = int(defaults.get("maxOutputTokens") or 1024)
-
         def vlm_call(image_path: str, ocr_txt: str) -> str:
             messages = build_vlm_messages(image_path, ocr_txt, system_prompt)
-            return call_huggingface_vlm(client, args.model, messages, temperature, max_tokens)
+            return call_http_vlm(remote_cfg, request_base, args.model, messages, defaults)
 
     else:
         base_url = remote_cfg.get("baseUrl")
