@@ -1,31 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-This file contains the OCR pipeline used to extract key/value pairs from
-documents. The code is copied from the user-provided script and retained here
-for completeness. It is not executed as part of the Node.js application by
-default because its dependencies (paddleocr, Qwen2.5-VL, huggingface_hub) are
-not installed in this environment. To enable real OCR extraction, install the
-required Python dependencies and adjust the Node API to call this script.
+Vision-language model (VLM) powered extraction pipeline.
+
+The script prepares image + prompt payloads for a remote VLM, captures the
+model response, and normalizes the returned key/value pairs into
+`structured.json` so the Next.js layer can persist the parsed fields. Previous
+iterations depended on PaddleOCR for local text extraction; that dependency has
+been removed so the workflow now relies entirely on the configured VLM.
 """
 
 from __future__ import annotations
 
-import os, re, sys, json, argparse, base64, mimetypes, statistics
+import os, re, sys, json, argparse, base64, mimetypes
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from collections import OrderedDict
 from urllib import request as urllib_request, error as urllib_error
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
-
-try:
-    from paddleocr import PaddleOCR as PaddleOCRRuntime
-except Exception:
-    PaddleOCRRuntime = None
-    print("[FATAL] Install paddleocr + paddlepaddle", file=sys.stderr)
-
-if TYPE_CHECKING:
-    from paddleocr import PaddleOCR
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
@@ -200,7 +192,11 @@ def build_http_headers(remote_cfg: Dict[str, Any]) -> Dict[str, str]:
     headers.setdefault("Accept", "application/json")
     return headers
 
-def build_vlm_messages(image_path: str, ocr_txt: str, system_prompt: Optional[str] = None) -> List[Dict[str, Any]]:
+def build_vlm_messages(
+    image_path: str,
+    ocr_txt: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     img_b64 = encode_image_to_base64(image_path)
     instruction = (
         "You are given a shipping/order IMAGE and its OCR transcript.\n"
@@ -210,9 +206,21 @@ def build_vlm_messages(image_path: str, ocr_txt: str, system_prompt: Optional[st
     user_content = [
         {"type": "text", "text": instruction},
         {"type": "image_url", "image_url": {"url": img_b64}},
-        {"type": "text", "text": "OCR_TEXT_BEGIN\n" + ocr_txt + "\nOCR_TEXT_END"},
-        {"type": "text", "text": "OUTPUT: JSON only."},
     ]
+    cleaned_txt = (ocr_txt or "").strip()
+    if cleaned_txt:
+        user_content.append({"type": "text", "text": "OCR_TEXT_BEGIN\n" + cleaned_txt + "\nOCR_TEXT_END"})
+    else:
+        user_content.append(
+            {
+                "type": "text",
+                "text": (
+                    "No OCR transcript is available. Use the visual content of the image to"
+                    " extract header key/value pairs."
+                ),
+            }
+        )
+    user_content.append({"type": "text", "text": "OUTPUT: JSON only."})
     messages: List[Dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -338,87 +346,6 @@ def call_http_vlm(
     if message is None:
         return raw if isinstance(raw, str) else json.dumps(parsed)
     return to_str_content(message)
-
-# --------------------------
-# OCR wrappers
-# --------------------------
-def _to_rect_from_box(box) -> Tuple[float,float,float,float,float,float,float,float]:
-    if not box:
-        return (0,0,0,0,0,0,0,0)
-    # handle polygon or x1,y1,x2,y2
-    if isinstance(box, (list, tuple)) and len(box) == 4 and all(isinstance(v, (int,float)) for v in box):
-        x1, y1, x2, y2 = map(float, box)
-    else:
-        xs = [float(p[0]) for p in box]
-        ys = [float(p[1]) for p in box]
-        x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
-    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-    return x1, y1, x2, y2, cx, cy, (x2 - x1), (y2 - y1)
-
-def _parse_paddle_line(line) -> Tuple[List[List[float]], str]:
-    box, text = None, None
-    if isinstance(line, dict):
-        text = line.get("text") or line.get("transcription") or line.get("label")
-        if "points" in line and isinstance(line["points"], (list, tuple)) and len(line["points"]) >= 4:
-            box = [[float(p[0]), float(p[1])] for p in line["points"][:4]]
-        elif "bbox" in line and isinstance(line["bbox"], (list, tuple)) and len(line["bbox"]) >= 4:
-            x1, y1, x2, y2 = line["bbox"][:4]
-            box = [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]
-    if (box is None or text is None) and isinstance(line, (list, tuple)) and len(line) >= 2:
-        mb, mp = line[0], line[1]
-        if isinstance(mp, (list, tuple)) and mp and isinstance(mp[0], str):
-            text = mp[0]
-        elif isinstance(mp, str):
-            text = mp
-        if isinstance(mb, (list, tuple)):
-            if len(mb) >= 4 and all(isinstance(p, (list, tuple)) and len(p) >= 2 for p in mb[:4]):
-                box = [[float(mb[i][0]), float(mb[i][1])] for i in range(4)]
-            elif len(mb) >= 8 and all(isinstance(v, (int,float)) for v in mb[:8]):
-                mb = list(mb)
-                box = [[mb[0],mb[1]],[mb[2],mb[3]],[mb[4],mb[5]],[mb[6],mb[7]]]
-    if box is None:
-        box = [[0,0],[0,0],[0,0],[0,0]]
-    if text is None:
-        text = ""
-    return box, text
-
-def _entries_from_paddle_page(page) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    if hasattr(page, "to_dict"):
-        try:
-            d = page.to_dict()
-            texts = d.get("rec_texts") or d.get("texts") or []
-            boxes = d.get("rec_boxes") or d.get("boxes") or d.get("rec_polys") or d.get("dt_polys") or d.get("det_polys") or []
-            for t, b in zip(texts, boxes):
-                x1,y1,x2,y2,cx,cy,w,h = _to_rect_from_box(b)
-                out.append({"text": str(t), "x1":x1,"y1":y1,"x2":x2,"y2":y2,"cx":cx,"cy":cy,"w":w,"h":h})
-            return out
-        except Exception:
-            pass
-    if isinstance(page, (list, tuple)):
-        for line in page:
-            box, txt = _parse_paddle_line(line)
-            x1,y1,x2,y2,cx,cy,w,h = _to_rect_from_box(box)
-            out.append({"text": str(txt), "x1":x1,"y1":y1,"x2":x2,"y2":y2,"cx":cx,"cy":cy,"w":w,"h":h})
-    return out
-
-def run_paddle_ocr(ocr: "PaddleOCR", image_path: str) -> Tuple[List[Dict[str, Any]], float]:
-    try:
-        raw = ocr.predict(str(image_path))
-    except Exception:
-        raw = ocr.ocr(str(image_path), cls=False)
-    pages = raw if isinstance(raw, (list, tuple)) else [raw]
-    entries, heights = [], []
-    for pg in pages:
-        e = _entries_from_paddle_page(pg)
-        entries.extend(e); heights.extend([v["h"] for v in e])
-    med_h = statistics.median(heights) if heights else 20.0
-    return entries, med_h
-
-def ocr_text(entries: List[Dict[str, Any]], max_chars=12000) -> str:
-    ents = sorted(entries, key=lambda e: (e.get("cy", 0.0), e.get("cx", 0.0)))
-    txt = "\n".join((e["text"].strip()) for e in ents if e["text"].strip())
-    return (txt[:max_chars] + "\n...[TRUNCATED]") if len(txt) > max_chars else txt
 
 # --------------------------
 # LLM call
@@ -600,30 +527,25 @@ def write_json_array(recs: List[dict], path: str):
 # Pipeline
 # --------------------------
 def process_one(
-    vlm_call: Callable[[str, str], str],
-    ocr: "PaddleOCR",
+    vlm_call: Callable[[str, Optional[str]], str],
     image_path: str,
     normalize_dates: bool,
-    ocr_char_limit: int,
+    ocr_hint: Optional[str] = None,
 ) -> Dict[str, Any]:
-    entries, _ = run_paddle_ocr(ocr, image_path)
-    txt = ocr_text(entries, max_chars=ocr_char_limit)
-
-    raw = vlm_call(image_path, txt)
+    raw = vlm_call(image_path, ocr_hint)
     parsed = parse_universal_kv(raw, normalize_dates=normalize_dates)
     return {
         "image": Path(image_path).name,
         "llm_raw": raw,
-        "llm_parsed": parsed
+        "llm_parsed": parsed,
     }
 
 def process_folder(
-    vlm_call: Callable[[str, str], str],
-    ocr: "PaddleOCR",
+    vlm_call: Callable[[str, Optional[str]], str],
     data_dir: str,
     out_dir: str,
     normalize_dates: bool,
-    ocr_char_limit: int,
+    ocr_hint: Optional[str] = None,
 ):
     structured_json = str(Path(out_dir)/"structured.json")
 
@@ -635,7 +557,12 @@ def process_folder(
 
     for p in paths:
         print(f"[proc] {p.name}")
-        rec = process_one(vlm_call, ocr, str(p), normalize_dates=normalize_dates, ocr_char_limit=ocr_char_limit)
+        rec = process_one(
+            vlm_call,
+            str(p),
+            normalize_dates=normalize_dates,
+            ocr_hint=ocr_hint,
+        )
         structured.append(rec)
 
     write_json_array(structured, structured_json)
@@ -653,12 +580,8 @@ def main():
     ap.add_argument("--hf_token", default=None, help="HF token (else env HF_TOKEN)")
     ap.add_argument("--provider", default="", help="Inference provider id")
     ap.add_argument("--model", default=DEFAULT_MODEL, help="Model id on provider")
-    ap.add_argument("--lang", default="en", help="PaddleOCR language")
     ap.add_argument("--no_normalize_dates", action="store_true", help="Disable date zero-padding normalization")
     args = ap.parse_args()
-
-    if PaddleOCRRuntime is None:
-        sys.exit(2)
 
     remote_cfg = load_remote_config()
     remote_cfg = remote_cfg if isinstance(remote_cfg, dict) else {}
@@ -671,11 +594,15 @@ def main():
     token = args.hf_token or os.environ.get("HF_TOKEN")
 
     defaults = remote_cfg.get("defaults") if isinstance(remote_cfg.get("defaults"), dict) else {}
-    ocr_cfg = remote_cfg.get("ocr") if isinstance(remote_cfg.get("ocr"), dict) else {}
-    try:
-        ocr_char_limit = int(ocr_cfg.get("inputLimitChars") or 12000)
-    except Exception:
-        ocr_char_limit = 12000
+    ocr_hint: Optional[str] = None
+    ocr_cfg = remote_cfg.get("ocr") if isinstance(remote_cfg.get("ocr"), dict) else None
+    if isinstance(ocr_cfg, dict):
+        hint_candidate = ocr_cfg.get("prefillTranscript") or ocr_cfg.get("ocrHint")
+        if isinstance(hint_candidate, str) and hint_candidate.strip():
+            ocr_hint = hint_candidate.strip()
+    env_hint = os.environ.get("OCR_HINT_TEXT")
+    if isinstance(env_hint, str) and env_hint.strip():
+        ocr_hint = env_hint.strip()
 
     if remote_cfg:
         model_override = remote_cfg.get("modelId")
@@ -727,7 +654,7 @@ def main():
         if not token:
             print("[warn] HF token missing; gated/provider models may fail.", file=sys.stderr)
 
-        def vlm_call(image_path: str, ocr_txt: str) -> str:
+        def vlm_call(image_path: str, ocr_txt: Optional[str]) -> str:
             messages = build_vlm_messages(image_path, ocr_txt, system_prompt)
             return call_http_vlm(remote_cfg, request_base, args.model, messages, defaults)
 
@@ -736,16 +663,9 @@ def main():
         if not isinstance(base_url, str) or not base_url.strip():
             sys.exit("[FATAL] Base URL is required for remote HTTP providers")
 
-        def vlm_call(image_path: str, ocr_txt: str) -> str:
+        def vlm_call(image_path: str, ocr_txt: Optional[str]) -> str:
             messages = build_vlm_messages(image_path, ocr_txt, system_prompt)
             return call_http_vlm(remote_cfg, base_url, args.model, messages, defaults)
-
-    ocr = PaddleOCRRuntime(
-        lang=args.lang,
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=False
-    )
 
     safe_mkdir(args.out_dir)
     normalize_dates = not args.no_normalize_dates
@@ -758,10 +678,9 @@ def main():
         print(f"[proc] {p.name}")
         rec = process_one(
             vlm_call,
-            ocr,
             str(p),
             normalize_dates=normalize_dates,
-            ocr_char_limit=ocr_char_limit,
+            ocr_hint=ocr_hint,
         )
 
         # write artifacts
@@ -775,11 +694,10 @@ def main():
             sys.exit(f"[FATAL] Folder not found: {args.data_dir}")
         process_folder(
             vlm_call,
-            ocr,
             args.data_dir,
             args.out_dir,
             normalize_dates,
-            ocr_char_limit,
+            ocr_hint,
         )
         return
 
