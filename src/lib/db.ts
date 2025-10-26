@@ -77,19 +77,18 @@ const formatDateTimeInTimeZone = (date: Date, timeZone: string) => {
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
+    timeZoneName: 'longOffset',
   }).formatToParts(date);
   const lookup = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((part) => part.type === type)?.value ?? '';
   const isoDate = `${lookup('year')}-${lookup('month')}-${lookup('day')}T${lookup('hour')}:${lookup('minute')}:${lookup(
     'second',
   )}`;
-  const zonedDate = new Date(date.toLocaleString('en-US', { timeZone }));
-  const offsetMinutes = Math.round((zonedDate.getTime() - date.getTime()) / 60000);
-  const sign = offsetMinutes >= 0 ? '+' : '-';
-  const absoluteMinutes = Math.abs(offsetMinutes);
-  const offsetHours = String(Math.floor(absoluteMinutes / 60)).padStart(2, '0');
-  const offsetMins = String(absoluteMinutes % 60).padStart(2, '0');
-  return `${isoDate}${sign}${offsetHours}:${offsetMins}`;
+  const timeZoneName = parts.find((part) => part.type === 'timeZoneName')?.value ?? 'UTC';
+  const offsetMatch = timeZoneName.replace(/^GMT/, '').replace(/^UTC/, '').match(/([+-]\d{2})(?::?(\d{2}))?/);
+  const offsetHours = offsetMatch?.[1] ?? '+00';
+  const offsetMinutes = offsetMatch?.[2] ?? '00';
+  return `${isoDate}${offsetHours}:${offsetMinutes}`;
 };
 
 const getMelbourneTimestamp = () => formatDateTimeInTimeZone(new Date(), MELBOURNE_TIME_ZONE);
