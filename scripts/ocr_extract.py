@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os, re, sys, json, argparse, base64, mimetypes, statistics
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 from collections import OrderedDict
 from urllib import request as urllib_request, error as urllib_error
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
@@ -23,6 +23,9 @@ try:
 except Exception:
     PaddleOCRRuntime = None
     print("[FATAL] Install paddleocr + paddlepaddle", file=sys.stderr)
+
+if TYPE_CHECKING:
+    from paddleocr import PaddleOCR
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
