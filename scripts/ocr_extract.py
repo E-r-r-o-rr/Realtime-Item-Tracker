@@ -11,7 +11,7 @@ required Python dependencies and adjust the Node API to call this script.
 
 from __future__ import annotations
 
-import os, re, sys, json, csv, argparse, base64, mimetypes, statistics
+import os, re, sys, json, argparse, base64, mimetypes, statistics
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from collections import OrderedDict
@@ -339,27 +339,10 @@ def parse_universal_kv(llm_raw: str, normalize_dates: bool=True) -> Dict[str, st
 
     return dict(out)
 
-# --------------------------
-# Writers
-# --------------------------
-def append_jsonl(recs: List[dict], path: str):
-    safe_mkdir(Path(path).parent.as_posix())
-    with open(path, "a", encoding="utf-8") as f:
-        for r in recs:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
-
 def write_json_array(recs: List[dict], path: str):
     safe_mkdir(Path(path).parent.as_posix())
     with open(path, "w", encoding="utf-8") as f:
         json.dump(recs, f, ensure_ascii=False, indent=2)
-
-def write_csv(rows: List[Dict[str, Any]], out_csv: str):
-    safe_mkdir(Path(out_csv).parent.as_posix())
-    with open(out_csv, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["image","json"])
-        w.writeheader()
-        for r in rows:
-            w.writerow({"image": r["image"], "json": json.dumps(r.get("json", {}), ensure_ascii=False)})
 
 # --------------------------
 # Pipeline
@@ -369,12 +352,9 @@ def process_one(
     model: str,
     ocr: "PaddleOCR",
     image_path: str,
-    ocr_dump: Optional[str],
     normalize_dates: bool
 ) -> Dict[str, Any]:
     entries, _ = run_paddle_ocr(ocr, image_path)
-    if ocr_dump:
-        append_jsonl([{"image": Path(image_path).name, "entries": entries}], ocr_dump)
 
     raw = call_qwen_image_plus_ocr(client, model, image_path, ocr_text(entries))
     parsed = parse_universal_kv(raw, normalize_dates=normalize_dates)
@@ -390,17 +370,10 @@ def process_folder(
     ocr: "PaddleOCR",
     data_dir: str,
     out_dir: str,
-    save_ocr: bool,
     normalize_dates: bool
 ):
-    out_csv = str(Path(out_dir)/"predictions.csv")
-    llm_jsonl = str(Path(out_dir)/"llm_preds.jsonl")
-    ocr_jsonl = str(Path(out_dir)/"raw_ocr.jsonl") if save_ocr else None
     structured_json = str(Path(out_dir)/"structured.json")
-    structured_jsonl = str(Path(out_dir)/"structured.jsonl")
 
-    rows_csv: List[Dict[str,Any]] = []
-    llm_recs: List[dict] = []
     structured: List[dict] = []
 
     paths = sorted([p for p in Path(data_dir).rglob("*") if p.suffix.lower() in IMAGE_EXTS])
@@ -409,22 +382,12 @@ def process_folder(
 
     for p in paths:
         print(f"[proc] {p.name}")
-        rec = process_one(client, model, ocr, str(p), ocr_dump=ocr_jsonl, normalize_dates=normalize_dates)
+        rec = process_one(client, model, ocr, str(p), normalize_dates=normalize_dates)
         structured.append(rec)
-        rows_csv.append({"image": rec["image"], "json": rec["llm_parsed"]})
-        llm_recs.append({"image": rec["image"], "raw": rec["llm_raw"], "parsed": rec["llm_parsed"]})
 
-    write_csv(rows_csv, out_csv)
-    append_jsonl(llm_recs, llm_jsonl)
     write_json_array(structured, structured_json)
-    append_jsonl(structured, structured_jsonl)
 
     print(f"[done] Array JSON -> {structured_json}")
-    print(f"[done] JSONL -> {structured_jsonl}")
-    print(f"[done] CSV -> {out_csv}")
-    print(f"[done] LLM preds -> {llm_jsonl}")
-    if save_ocr:
-        print(f"[done] raw OCR -> {ocr_jsonl}")
 
 # --------------------------
 # Main
@@ -438,7 +401,6 @@ def main():
     ap.add_argument("--provider", default="", help="Inference provider id")
     ap.add_argument("--model", default=DEFAULT_MODEL, help="Model id on provider")
     ap.add_argument("--lang", default="en", help="PaddleOCR language")
-    ap.add_argument("--save_ocr", action="store_true", help="Save raw OCR JSONL")
     ap.add_argument("--no_normalize_dates", action="store_true", help="Disable date zero-padding normalization")
     args = ap.parse_args()
 
@@ -505,16 +467,11 @@ def main():
         print(f"[proc] {p.name}")
         rec = process_one(
             client, args.model, ocr, str(p),
-            ocr_dump=(str(Path(args.out_dir)/"raw_ocr.jsonl") if args.save_ocr else None),
             normalize_dates=normalize_dates
         )
 
         # write artifacts
         write_json_array([rec], str(Path(args.out_dir)/"structured.json"))
-        append_jsonl([rec], str(Path(args.out_dir)/"structured.jsonl"))
-        write_csv([{"image": rec["image"], "json": rec["llm_parsed"]}], str(Path(args.out_dir)/"predictions.csv"))
-        append_jsonl([{"image": rec["image"], "raw": rec["llm_raw"], "parsed": rec["llm_parsed"]}],
-                     str(Path(args.out_dir)/"llm_preds.jsonl"))
 
         print(json.dumps(rec, ensure_ascii=False, indent=2))
         return
@@ -522,7 +479,7 @@ def main():
     if args.data_dir:
         if not Path(args.data_dir).exists():
             sys.exit(f"[FATAL] Folder not found: {args.data_dir}")
-        process_folder(client, args.model, ocr, args.data_dir, args.out_dir, args.save_ocr, normalize_dates)
+        process_folder(client, args.model, ocr, args.data_dir, args.out_dir, normalize_dates)
         return
 
     print("Provide --image or --data_dir")
