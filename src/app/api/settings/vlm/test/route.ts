@@ -129,17 +129,6 @@ export async function POST(request: Request) {
     }
   }
 
-  const baseUrlHasHfDomain = (settings.remote.baseUrl || "").toLowerCase().includes("huggingface.co");
-  if (baseUrlHasHfDomain && !settings.remote.hfProvider.trim()) {
-    return NextResponse.json(
-      {
-        ok: false,
-        message: "Hugging Face router endpoints require a provider slug. Update the settings before testing.",
-      },
-      { status: 400, headers: noStoreHeaders },
-    );
-  }
-
   if (!settings.remote.baseUrl) {
     return NextResponse.json(
       { ok: false, message: "Base URL is required to test the remote connection." },

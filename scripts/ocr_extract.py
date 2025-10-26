@@ -35,7 +35,7 @@ except Exception:
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
-HF_ROUTER_BASE = "https://router.huggingface.co/hf-inference"
+HF_ROUTER_BASE = "https://router.huggingface.co"
 
 
 def load_remote_config() -> Optional[Dict[str, Any]]:
@@ -59,6 +59,13 @@ def normalize_hf_base_url(value: Optional[str]) -> str:
     if trimmed.startswith(deprecated_prefix):
         suffix = trimmed[len(deprecated_prefix) :].lstrip("/")
         return f"{HF_ROUTER_BASE}/{suffix}" if suffix else HF_ROUTER_BASE
+
+    router_prefix = "https://router.huggingface.co"
+    if trimmed.startswith(router_prefix):
+        suffix = trimmed[len(router_prefix) :].lstrip("/")
+        if suffix.startswith("hf-inference"):
+            suffix = suffix[len("hf-inference") :].lstrip("/")
+        return f"{router_prefix}/{suffix}".rstrip("/") if suffix else router_prefix
 
     return trimmed.rstrip("/")
 
@@ -245,9 +252,6 @@ def call_http_vlm(
     provider_type = str(remote_cfg.get("providerType") or "").lower()
     provider_hint = str(remote_cfg.get("hfProvider") or "").strip()
     request_url = base_url.strip()
-
-    if provider_type != "huggingface" and "huggingface.co" in request_url.lower():
-        provider_type = "huggingface"
 
     if provider_type == "huggingface":
         request_url = normalize_hf_base_url(request_url)

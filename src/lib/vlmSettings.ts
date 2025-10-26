@@ -18,7 +18,7 @@ import {
   VlmImageHandlingMode,
 } from "@/types/vlm";
 
-const HF_ROUTER_BASE = "https://router.huggingface.co/hf-inference";
+const HF_ROUTER_BASE = "https://router.huggingface.co";
 const HF_DEPRECATED_PREFIX = "https://api-inference.huggingface.co";
 
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -92,6 +92,14 @@ const normalizeRemoteSettings = (value: unknown): VlmRemoteSettings => {
     } else if (incomingBaseUrl.startsWith(HF_DEPRECATED_PREFIX)) {
       const suffix = incomingBaseUrl.slice(HF_DEPRECATED_PREFIX.length).replace(/^\/+/, "");
       base.baseUrl = suffix ? `${HF_ROUTER_BASE}/${suffix}` : HF_ROUTER_BASE;
+    } else if (incomingBaseUrl.startsWith(HF_ROUTER_BASE)) {
+      const suffix = incomingBaseUrl.slice(HF_ROUTER_BASE.length).replace(/^\/+/, "");
+      if (suffix.startsWith("hf-inference")) {
+        const remainder = suffix.slice("hf-inference".length).replace(/^\/+/, "");
+        base.baseUrl = remainder ? `${HF_ROUTER_BASE}/${remainder}` : HF_ROUTER_BASE;
+      } else {
+        base.baseUrl = incomingBaseUrl.replace(/\/+$/, "");
+      }
     } else {
       base.baseUrl = incomingBaseUrl.replace(/\/+$/, "");
     }

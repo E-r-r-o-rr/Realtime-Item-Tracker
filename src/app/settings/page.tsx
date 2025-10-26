@@ -233,7 +233,6 @@ export default function SettingsPage() {
 
   const remote = settings.remote;
   const providerType = remote.providerType;
-  const baseUrlContainsHuggingFace = (remote.baseUrl || "").toLowerCase().includes("huggingface.co");
   const baseUrlDisabled = providerType === "huggingface";
   const baseUrlPlaceholder =
     providerType === "openai-compatible"
@@ -247,7 +246,7 @@ export default function SettingsPage() {
       : providerType === "generic-http"
       ? "Provide the full URL your custom inference service expects requests on."
       : "The OpenAI-compatible chat/completions endpoint to post OCR prompts to.";
-  const showProviderField = providerType === "huggingface" || baseUrlContainsHuggingFace;
+  const showProviderField = providerType === "huggingface";
   const providerFieldDescription = showProviderField
     ? "Required when routing through Hugging Face Inference. Use the slug from your provider (e.g. mistralai, hyperbolic)."
     : "";
