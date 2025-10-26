@@ -35,6 +35,17 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
 
 
+def load_remote_config() -> Optional[Dict[str, Any]]:
+    raw = os.environ.get("VLM_REMOTE_CONFIG")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        print("[warn] Failed to parse VLM_REMOTE_CONFIG", file=sys.stderr)
+        return None
+
+
 
 def safe_mkdir(d: str):
     if d:
@@ -434,7 +445,39 @@ def main():
     if HFInferenceClient is None or PaddleOCRRuntime is None:
         sys.exit(2)
 
+    remote_cfg = load_remote_config()
+
     token = args.hf_token or os.environ.get("HF_TOKEN")
+    if remote_cfg:
+        model_override = remote_cfg.get("modelId")
+        if isinstance(model_override, str) and model_override.strip():
+            args.model = model_override.strip()
+
+        auth_scheme = str(remote_cfg.get("authScheme") or "").lower()
+        header_name = str(remote_cfg.get("authHeaderName") or "authorization").lower()
+        api_key = remote_cfg.get("apiKey")
+        if isinstance(api_key, str) and api_key:
+            if auth_scheme == "bearer" or (auth_scheme == "api-key-header" and header_name == "authorization"):
+                token = api_key
+
+        proxy_url = remote_cfg.get("proxyUrl")
+        if isinstance(proxy_url, str) and proxy_url.strip():
+            os.environ.setdefault("HTTPS_PROXY", proxy_url.strip())
+            os.environ.setdefault("HTTP_PROXY", proxy_url.strip())
+
+        base_url = remote_cfg.get("baseUrl")
+        if isinstance(base_url, str) and base_url.strip():
+            os.environ.setdefault("HF_ENDPOINT", base_url.strip())
+
+        timeout_override = remote_cfg.get("requestTimeoutMs")
+        if isinstance(timeout_override, (int, float)) and timeout_override > 0:
+            os.environ["HF_TIMEOUT"] = str(float(timeout_override) / 1000.0)
+
+        defaults = remote_cfg.get("defaults") if isinstance(remote_cfg, dict) else None
+        system_prompt = defaults.get("systemPrompt") if isinstance(defaults, dict) else None
+        if isinstance(system_prompt, str):
+            os.environ["OCR_SYSTEM_PROMPT"] = system_prompt
+
     if not token:
         print("[warn] HF_TOKEN missing; gated/provider models may fail.", file=sys.stderr)
 

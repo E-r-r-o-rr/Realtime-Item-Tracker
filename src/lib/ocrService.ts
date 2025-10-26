@@ -4,6 +4,8 @@ import path from 'path';
 import os from 'os';
 import { randomUUID } from 'crypto';
 
+import { loadPersistedVlmSettings } from './settingsStore';
+
 const DEFAULT_MODEL = process.env.OCR_MODEL || 'Qwen/Qwen2-VL-2B-Instruct';
 
 // Prefer explicit venv python; fall back to system python
@@ -37,20 +39,44 @@ export async function extractKvPairs(filePath: string): Promise<Record<string, s
   }
 
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-out-'));
+  const vlmSettings = loadPersistedVlmSettings();
+  const configuredModel =
+    vlmSettings.mode === 'remote' && vlmSettings.remote.modelId
+      ? vlmSettings.remote.modelId
+      : DEFAULT_MODEL;
 
   const args = [
-   OCR_SCRIPT,
-   '--image', filePath,
-   '--out_dir', outDir,
-   '--model', DEFAULT_MODEL,
-   // Optional tuning (uncomment if you want explicit control)
-   // '--device', process.env.OCR_DEVICE || (process.env.CUDA_VISIBLE_DEVICES ? 'cuda' : 'cpu'),
-   // '--dtype', process.env.OCR_DTYPE || 'auto',
-   // '--max_pixels', String(process.env.OCR_MAX_PIXELS || 384*384),
-   // '--max_new_tokens', String(process.env.OCR_MAX_NEW_TOKENS || 600),
- ];
+    OCR_SCRIPT,
+    '--image', filePath,
+    '--out_dir', outDir,
+    '--model', configuredModel,
+    // Optional tuning (uncomment if you want explicit control)
+    // '--device', process.env.OCR_DEVICE || (process.env.CUDA_VISIBLE_DEVICES ? 'cuda' : 'cpu'),
+    // '--dtype', process.env.OCR_DTYPE || 'auto',
+    // '--max_pixels', String(process.env.OCR_MAX_PIXELS || 384*384),
+    // '--max_new_tokens', String(process.env.OCR_MAX_NEW_TOKENS || 600),
+  ];
 
   const env = { ...process.env };
+  env.VLM_MODE = vlmSettings.mode;
+  if (vlmSettings.mode === 'remote') {
+    env.VLM_REMOTE_CONFIG = JSON.stringify(vlmSettings.remote);
+    env.OCR_REQUEST_TIMEOUT_MS = String(vlmSettings.remote.requestTimeoutMs || OCR_TIMEOUT_MS);
+    env.OCR_RETRY_MAX = String(vlmSettings.remote.retryPolicy.maxRetries);
+    env.OCR_STREAMING = vlmSettings.remote.defaults.streaming ? '1' : '0';
+    env.OCR_SYSTEM_PROMPT = vlmSettings.remote.defaults.systemPrompt || '';
+    if (vlmSettings.remote.authScheme !== 'none' && vlmSettings.remote.apiKey) {
+      const header = vlmSettings.remote.authHeaderName.toLowerCase();
+      if (
+        vlmSettings.remote.authScheme === 'bearer' ||
+        (vlmSettings.remote.authScheme === 'api-key-header' && header === 'authorization')
+      ) {
+        env.HF_TOKEN = vlmSettings.remote.apiKey;
+      }
+    }
+  } else {
+    delete env.VLM_REMOTE_CONFIG;
+  }
 
   let timer: NodeJS.Timeout | null = null;
 
