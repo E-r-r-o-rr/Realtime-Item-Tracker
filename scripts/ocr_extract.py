@@ -19,6 +19,11 @@ from collections import OrderedDict
 from urllib import request as urllib_request, error as urllib_error
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
+try:  # Optional dependency for Hugging Face Inference convenience client
+    from huggingface_hub import InferenceClient  # type: ignore
+except Exception:  # pragma: no cover - the CLI handles absence at runtime
+    InferenceClient = None  # type: ignore
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
 HF_ROUTER_BASE = "https://router.huggingface.co"
@@ -112,10 +117,13 @@ def guess_mime(p: str) -> str:
     mime, _ = mimetypes.guess_type(p)
     return mime or "image/jpeg"
 
-def encode_image_to_base64(image_path: str) -> str:
+def encode_image_to_base64(image_path: str) -> Tuple[str, str, str]:
     with open(image_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("utf-8")
-    return f"data:{guess_mime(image_path)};base64,{b64}"
+        raw_bytes = f.read()
+    b64 = base64.b64encode(raw_bytes).decode("ascii")
+    mime = guess_mime(image_path)
+    data_url = f"data:{mime};base64,{b64}"
+    return data_url, b64, mime
 
 def parse_path_tokens(path: str) -> List[Union[str, int]]:
     tokens: List[Union[str, int]] = []
@@ -192,20 +200,77 @@ def build_http_headers(remote_cfg: Dict[str, Any]) -> Dict[str, str]:
     headers.setdefault("Accept", "application/json")
     return headers
 
+
+def build_chat_params(defaults: Dict[str, Any]) -> Dict[str, Any]:
+    params: Dict[str, Any] = {"stream": False}
+
+    temperature = defaults.get("temperature")
+    if isinstance(temperature, (int, float)):
+        params["temperature"] = float(temperature)
+
+    max_tokens = defaults.get("maxOutputTokens")
+    if isinstance(max_tokens, (int, float)) and max_tokens > 0:
+        params["max_tokens"] = int(max_tokens)
+
+    stop_sequences = defaults.get("stopSequences")
+    if isinstance(stop_sequences, list) and stop_sequences:
+        params["stop"] = stop_sequences
+
+    seed = defaults.get("seed")
+    if isinstance(seed, (int, float)):
+        params["seed"] = int(seed)
+
+    top_p = defaults.get("topP")
+    if isinstance(top_p, (int, float)):
+        params["top_p"] = float(top_p)
+
+    top_k = defaults.get("topK")
+    if isinstance(top_k, (int, float)):
+        params["top_k"] = int(top_k)
+
+    repetition_penalty = defaults.get("repetitionPenalty")
+    if isinstance(repetition_penalty, (int, float)):
+        params["repetition_penalty"] = float(repetition_penalty)
+
+    if defaults.get("jsonMode"):
+        params["response_format"] = {"type": "json_object"}
+        schema_raw = defaults.get("jsonSchema")
+        if isinstance(schema_raw, str) and schema_raw.strip():
+            try:
+                params["response_format"]["schema"] = json.loads(schema_raw)
+            except Exception:
+                pass
+
+    return params
+
+
+def compute_timeout(remote_cfg: Dict[str, Any]) -> float:
+    timeout_ms = remote_cfg.get("requestTimeoutMs")
+    if isinstance(timeout_ms, (int, float)) and timeout_ms > 0:
+        return max(1.0, float(timeout_ms) / 1000.0)
+    return 30.0
+
 def build_vlm_messages(
     image_path: str,
     ocr_txt: Optional[str] = None,
     system_prompt: Optional[str] = None,
+    provider_type: str = "generic",
 ) -> List[Dict[str, Any]]:
-    img_b64 = encode_image_to_base64(image_path)
+    data_url, raw_b64, mime = encode_image_to_base64(image_path)
     instruction = (
         "You are given a shipping/order IMAGE and its OCR transcript.\n"
         "Extract all visible header key/value pairs (ignore item rows). "
         "Return a single flat JSON object. Do not wrap in code fences."
     )
+    image_part: Dict[str, Any]
+    if provider_type.lower() == "huggingface":
+        image_part = {"type": "input_image", "image_base64": raw_b64, "mime_type": mime}
+    else:
+        image_part = {"type": "image_url", "image_url": {"url": data_url}}
+
     user_content = [
         {"type": "text", "text": instruction},
-        {"type": "image_url", "image_url": {"url": img_b64}},
+        image_part,
     ]
     cleaned_txt = (ocr_txt or "").strip()
     if cleaned_txt:
@@ -264,52 +329,10 @@ def call_http_vlm(
         if provider_hint:
             headers.setdefault("X-Inference-Provider", provider_hint)
 
-    payload: Dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-    }
+    payload: Dict[str, Any] = {"model": model, "messages": messages}
+    payload.update(build_chat_params(defaults))
 
-    temperature = defaults.get("temperature")
-    if isinstance(temperature, (int, float)):
-        payload["temperature"] = float(temperature)
-
-    max_tokens = defaults.get("maxOutputTokens")
-    if isinstance(max_tokens, (int, float)) and max_tokens > 0:
-        payload["max_tokens"] = int(max_tokens)
-
-    payload["stream"] = False
-
-    stop_sequences = defaults.get("stopSequences")
-    if isinstance(stop_sequences, list) and stop_sequences:
-        payload["stop"] = stop_sequences
-
-    seed = defaults.get("seed")
-    if isinstance(seed, (int, float)):
-        payload["seed"] = int(seed)
-
-    top_p = defaults.get("topP")
-    if isinstance(top_p, (int, float)):
-        payload["top_p"] = float(top_p)
-
-    top_k = defaults.get("topK")
-    if isinstance(top_k, (int, float)):
-        payload["top_k"] = int(top_k)
-
-    repetition_penalty = defaults.get("repetitionPenalty")
-    if isinstance(repetition_penalty, (int, float)):
-        payload["repetition_penalty"] = float(repetition_penalty)
-
-    if defaults.get("jsonMode"):
-        payload["response_format"] = {"type": "json_object"}
-        schema_raw = defaults.get("jsonSchema")
-        if isinstance(schema_raw, str) and schema_raw.strip():
-            try:
-                payload["response_format"]["schema"] = json.loads(schema_raw)
-            except Exception:
-                pass
-
-    timeout_ms = remote_cfg.get("requestTimeoutMs")
-    timeout_s = max(1.0, float(timeout_ms) / 1000.0) if isinstance(timeout_ms, (int, float)) else 30.0
+    timeout_s = compute_timeout(remote_cfg)
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib_request.Request(request_url, data=data, headers=headers, method="POST")
@@ -346,6 +369,56 @@ def call_http_vlm(
     if message is None:
         return raw if isinstance(raw, str) else json.dumps(parsed)
     return to_str_content(message)
+
+
+def call_hf_client(
+    remote_cfg: Dict[str, Any],
+    provider_hint: str,
+    model: str,
+    messages: List[Dict[str, Any]],
+    defaults: Dict[str, Any],
+    token: Optional[str],
+) -> str:
+    if InferenceClient is None:
+        raise RuntimeError(
+            "huggingface_hub is required for Hugging Face Inference. Install it to use this provider."
+        )
+
+    client_kwargs: Dict[str, Any] = {"provider": provider_hint}
+
+    base_override = normalize_hf_base_url(remote_cfg.get("baseUrl"))
+    if base_override:
+        client_kwargs["base_url"] = base_override
+
+    timeout_s = compute_timeout(remote_cfg)
+    client_kwargs["timeout"] = timeout_s
+
+    api_key = token or remote_cfg.get("apiKey")
+    if isinstance(api_key, str) and api_key:
+        client_kwargs["api_key"] = api_key
+
+    extra_headers = build_http_headers(remote_cfg)
+    for auto_header in ("Content-Type", "Accept", "Authorization"):
+        extra_headers.pop(auto_header, None)
+    if extra_headers:
+        client_kwargs["headers"] = extra_headers
+
+    client = InferenceClient(**client_kwargs)
+
+    params = build_chat_params(defaults)
+    params.pop("stream", None)
+
+    try:
+        response = client.chat.completions.create(model=model, messages=messages, **params)
+    except Exception as exc:
+        raise RuntimeError(f"HF request failed: {exc}") from exc
+
+    if hasattr(response, "model_dump_json"):
+        return response.model_dump_json()
+    if hasattr(response, "model_dump"):
+        return json.dumps(response.model_dump())
+    return json.dumps(response, default=str)
+
 
 # --------------------------
 # LLM call
@@ -653,10 +726,29 @@ def main():
 
         if not token:
             print("[warn] HF token missing; gated/provider models may fail.", file=sys.stderr)
+        else:
+            os.environ.setdefault("HF_TOKEN", token)
 
         def vlm_call(image_path: str, ocr_txt: Optional[str]) -> str:
-            messages = build_vlm_messages(image_path, ocr_txt, system_prompt)
-            return call_http_vlm(remote_cfg, request_base, args.model, messages, defaults)
+            hf_messages = build_vlm_messages(
+                image_path,
+                ocr_txt,
+                system_prompt,
+                provider_type="huggingface",
+            )
+            try:
+                return call_hf_client(remote_cfg, provider_hint, args.model, hf_messages, defaults, token)
+            except RuntimeError as exc:
+                if "huggingface_hub is required" not in str(exc):
+                    raise
+
+                fallback_messages = build_vlm_messages(
+                    image_path,
+                    ocr_txt,
+                    system_prompt,
+                    provider_type="generic",
+                )
+                return call_http_vlm(remote_cfg, request_base, args.model, fallback_messages, defaults)
 
     else:
         base_url = remote_cfg.get("baseUrl")
@@ -664,7 +756,12 @@ def main():
             sys.exit("[FATAL] Base URL is required for remote HTTP providers")
 
         def vlm_call(image_path: str, ocr_txt: Optional[str]) -> str:
-            messages = build_vlm_messages(image_path, ocr_txt, system_prompt)
+            messages = build_vlm_messages(
+                image_path,
+                ocr_txt,
+                system_prompt,
+                provider_type=provider_type,
+            )
             return call_http_vlm(remote_cfg, base_url, args.model, messages, defaults)
 
     safe_mkdir(args.out_dir)
