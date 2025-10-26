@@ -5,6 +5,14 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 
+export const runtime = 'nodejs';
+export const config = {
+  api: {
+    bodyParser: false,
+    sizeLimit: '25mb',
+  },
+};
+
 /**
  * Handle POST requests to the OCR endpoint. This endpoint accepts a file
  * uploaded via multipart/form-data and returns the extracted key/value pairs
