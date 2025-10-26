@@ -407,6 +407,10 @@ def call_hf_client(
 
     params = build_chat_params(defaults)
     params.pop("stream", None)
+    # The Hugging Face SDK currently rejects unknown kwargs such as ``top_k``.
+    # Filter any unsupported parameters here so we fail gracefully when users
+    # configure generic defaults that include provider-specific options.
+    params.pop("top_k", None)
 
     try:
         response = client.chat.completions.create(model=model, messages=messages, **params)
