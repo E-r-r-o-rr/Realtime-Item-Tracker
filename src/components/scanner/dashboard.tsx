@@ -53,6 +53,7 @@ interface ApiOcrResponse {
   barcodeWarnings?: string[];
   validation?: ApiValidation;
   providerInfo?: ProviderInfo;
+  error?: string;
 }
 
 interface ApiHistoryEntry {
@@ -96,6 +97,59 @@ const trimString = (value: unknown): string | undefined => {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const DEFAULT_SCAN_ERROR_MESSAGE = "Error scanning document.";
+
+const parseErrorPayload = (raw: string): string => {
+  if (!raw) return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === "object") {
+      const asRecord = parsed as Record<string, unknown>;
+      const errorMessage = asRecord.error;
+      if (typeof errorMessage === "string" && errorMessage.trim()) {
+        return errorMessage.trim();
+      }
+      const message = asRecord.message;
+      if (typeof message === "string" && message.trim()) {
+        return message.trim();
+      }
+    }
+  } catch (error) {
+    // Ignore JSON parse failures and fall back to the raw string
+  }
+  return trimmed;
+};
+
+const formatStatusError = (error: unknown): string => {
+  if (!error) return DEFAULT_SCAN_ERROR_MESSAGE;
+
+  if (error instanceof Error) {
+    const parsed = parseErrorPayload(error.message);
+    if (parsed) return parsed;
+    const cause = (error as Error & { cause?: unknown }).cause;
+    if (cause && cause !== error) {
+      const causeMessage = formatStatusError(cause);
+      if (causeMessage && causeMessage !== DEFAULT_SCAN_ERROR_MESSAGE) {
+        return causeMessage;
+      }
+    }
+  }
+
+  if (typeof error === "string") {
+    const parsed = parseErrorPayload(error);
+    if (parsed) return parsed;
+  }
+
+  if (error && typeof (error as { message?: unknown }).message === "string") {
+    const parsed = parseErrorPayload((error as { message: string }).message);
+    if (parsed) return parsed;
+  }
+
+  return DEFAULT_SCAN_ERROR_MESSAGE;
 };
 
 const sanitizeProviderInfo = (value: unknown): ProviderInfo | null => {
@@ -950,10 +1004,33 @@ export default function ScannerDashboard() {
         headers: { "x-api-key": API_KEY },
         body: formData,
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        let text = "";
+        try {
+          text = await res.text();
+        } catch (error) {
+          text = "";
+        }
+        const reason = parseErrorPayload(text) || res.statusText || DEFAULT_SCAN_ERROR_MESSAGE;
+        throw new Error(reason);
+      }
 
       const data: ApiOcrResponse = await res.json();
       const nextProviderInfo = sanitizeProviderInfo(data.providerInfo);
+
+      const errorMessage = typeof data.error === "string" ? data.error.trim() : "";
+      if (errorMessage) {
+        setStatus(errorMessage);
+        setKv(null);
+        setBarcodes([]);
+        setBarcodeWarnings([]);
+        setValidation(null);
+        setBookingWarning(null);
+        setBookingSuccess(null);
+        setVlmInfo(nextProviderInfo ?? null);
+        updateLiveRecord(null);
+        return;
+      }
 
       setKv(data.kv || {});
       setBarcodes(Array.isArray(data.barcodes) ? data.barcodes : []);
@@ -1087,7 +1164,7 @@ export default function ScannerDashboard() {
       }
     } catch (err) {
       console.error(err);
-      setStatus("Error scanning document.");
+      setStatus(formatStatusError(err));
       setBookingWarning(null);
       setBookingSuccess(null);
       setVlmInfo(null);

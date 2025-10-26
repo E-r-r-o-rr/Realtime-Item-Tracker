@@ -23,7 +23,12 @@ export async function POST(req: Request) {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'upload-'));
     const tmpPath = path.join(tmpDir, file.name);
     await fs.writeFile(tmpPath, buffer);
-    const { kv, providerInfo } = await extractKvPairs(tmpPath);
+    const { kv, providerInfo, error } = await extractKvPairs(tmpPath);
+    if (error) {
+      await fs.unlink(tmpPath);
+      return NextResponse.json({ error, providerInfo }, { status: 502 });
+    }
+
     const { barcodes, warnings: barcodeWarnings } = await extractBarcodes(tmpPath);
     const validation = buildBarcodeValidation(kv, barcodes);
     await fs.unlink(tmpPath);

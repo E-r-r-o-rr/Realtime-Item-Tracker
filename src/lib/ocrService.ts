@@ -16,6 +16,7 @@ export type VlmProviderInfo = {
 export type OcrExtractionResult = {
   kv: Record<string, string>;
   providerInfo: VlmProviderInfo;
+  error?: string;
 };
 
 const DEFAULT_MODEL = process.env.OCR_MODEL || 'Qwen/Qwen2-VL-2B-Instruct';
@@ -38,6 +39,26 @@ function rmrf(p: string) {
   try {
     fs.rmSync(p, { recursive: true, force: true });
   } catch {}
+}
+
+function deriveOcrErrorMessage(stdout: string, stderr: string, code?: number): string {
+  const fallback = code ? `OCR pipeline failed (code ${code})` : 'OCR pipeline failed.';
+  const combined = `${stderr}\n${stdout}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (let i = combined.length - 1; i >= 0; i -= 1) {
+    const line = combined[i];
+    if (/^runtimeerror:/i.test(line)) return line;
+    if (/^\[fatal\]/i.test(line)) return line.replace(/^\[fatal\]\s*/i, '').trim();
+  }
+
+  if (combined.length > 0) {
+    return combined[combined.length - 1];
+  }
+
+  return fallback;
 }
 
 /**
@@ -137,9 +158,10 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     if (timer) { clearTimeout(timer); timer = null; }
 
     if (code !== 0) {
+      const message = deriveOcrErrorMessage(stdout, stderr, code);
       console.warn('[ocrService] OCR script non-zero exit', { code, signal });
       if (stderr) console.warn('[ocrService] stderr:\n' + stderr);
-      return { kv: stubFromFilename(filePath), providerInfo };
+      return { kv: {}, providerInfo, error: message };
     }
 
     const structuredPath = path.join(outDir, 'structured.json');
@@ -154,12 +176,14 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
       }
     }
 
+    const message = deriveOcrErrorMessage(stdout, stderr);
     console.warn('[ocrService] structured.json missing or invalid. stderr:\n' + (stderr || '(empty)'));
-    return { kv: stubFromFilename(filePath), providerInfo };
+    return { kv: {}, providerInfo, error: message };
   } catch (err) {
     if (timer) { clearTimeout(timer); }
     console.warn('[ocrService] Error running OCR script:', err);
-    return { kv: stubFromFilename(filePath), providerInfo };
+    const message = err instanceof Error && err.message ? err.message : 'Failed to run OCR script.';
+    return { kv: {}, providerInfo, error: message };
   } finally {
     if (!KEEP_TMP) rmrf(outDir);
     else console.log('[ocrService] Keeping temp OCR output at:', outDir);
