@@ -542,26 +542,35 @@ const formatBarcodeValue = (normalizedKey: string, value: string): BarcodeFieldV
   return { raw, display: normalized, comparable: normalized.toLowerCase() };
 };
 
-const valuesLooselyMatch = (left: BarcodeFieldValue, right: BarcodeFieldValue): boolean => {
+const valuesMatchForKey = (
+  normalizedKey: string,
+  left: BarcodeFieldValue,
+  right: BarcodeFieldValue,
+): boolean => {
   const comparableLeft = left.comparable;
   const comparableRight = right.comparable;
-  if (comparableLeft && comparableRight) {
-    if (comparableLeft === comparableRight) return true;
-    if (comparableLeft.includes(comparableRight) || comparableRight.includes(comparableLeft)) return true;
+  if (comparableLeft && comparableRight && comparableLeft === comparableRight) {
+    return true;
+  }
+
+  const normalizedDisplayLeft = left.display.trim().toLowerCase();
+  const normalizedDisplayRight = right.display.trim().toLowerCase();
+  if (normalizedDisplayLeft && normalizedDisplayRight && normalizedDisplayLeft === normalizedDisplayRight) {
+    return true;
   }
 
   const strictLeft = normalizeAlphanumeric(left.display);
   const strictRight = normalizeAlphanumeric(right.display);
-  if (strictLeft && strictRight) {
-    if (strictLeft === strictRight) return true;
-    if (strictLeft.includes(strictRight) || strictRight.includes(strictLeft)) return true;
+  if (strictLeft && strictRight && strictLeft === strictRight) {
+    return true;
   }
 
-  const looseLeft = normalizeForSearch(left.display);
-  const looseRight = normalizeForSearch(right.display);
-  if (looseLeft && looseRight) {
-    if (looseLeft === looseRight) return true;
-    if (looseLeft.includes(looseRight) || looseRight.includes(looseLeft)) return true;
+  if (ID_LIKE_SET.has(normalizedKey)) {
+    const strictRawLeft = normalizeAlphanumeric(left.raw);
+    const strictRawRight = normalizeAlphanumeric(right.raw);
+    if (strictRawLeft && strictRawRight && strictRawLeft === strictRawRight) {
+      return true;
+    }
   }
 
   return false;
@@ -950,7 +959,7 @@ export default function ScannerDashboard() {
 
       for (const value of structured) {
         const formatted = formatBarcodeValue(canonicalBarcodeKey, value);
-        if (valuesLooselyMatch(formattedOcr, formatted)) {
+        if (valuesMatchForKey(normalizedOcrKey, formattedOcr, formatted)) {
           return formatted;
         }
       }
@@ -960,7 +969,7 @@ export default function ScannerDashboard() {
     const directCandidateRaw = barcodeKv.get(canonicalBarcodeKey);
     if (directCandidateRaw && directCandidateRaw.trim()) {
       const formattedDirect = formatBarcodeValue(canonicalBarcodeKey, directCandidateRaw);
-      if (valuesLooselyMatch(formattedOcr, formattedDirect)) {
+      if (valuesMatchForKey(canonicalBarcodeKey, formattedOcr, formattedDirect)) {
         return formattedDirect;
       }
 
@@ -977,7 +986,7 @@ export default function ScannerDashboard() {
       const fallbackId = pickBestBarcodeId(barcodeKv, barcodeValues);
       if (fallbackId && fallbackId.trim()) {
         const formattedId = formatBarcodeValue(canonicalBarcodeKey, fallbackId);
-        if (valuesLooselyMatch(formattedOcr, formattedId)) {
+        if (valuesMatchForKey(canonicalBarcodeKey, formattedOcr, formattedId)) {
           return formattedId;
         }
       }
@@ -986,7 +995,7 @@ export default function ScannerDashboard() {
     for (const rawValue of barcodeValues) {
       if (!rawValue || !rawValue.trim()) continue;
       const formattedCandidate = formatBarcodeValue(canonicalBarcodeKey, rawValue);
-      if (valuesLooselyMatch(formattedOcr, formattedCandidate)) {
+      if (valuesMatchForKey(canonicalBarcodeKey, formattedOcr, formattedCandidate)) {
         return formattedCandidate;
       }
     }
@@ -1007,51 +1016,25 @@ export default function ScannerDashboard() {
     const formattedOcr = formatBarcodeValue(normalizedKey, trimmedOcrValue);
 
     if (barcodeValue) {
-      if (valuesLooselyMatch(formattedOcr, barcodeValue)) {
+      if (valuesMatchForKey(normalizedKey, formattedOcr, barcodeValue)) {
         return MATCH_STATES.match;
-      }
-
-      const ocrLoose = normalizeForSearch(formattedOcr.display);
-      if (ocrLoose) {
-        const barcodeLooseCandidates = [
-          normalizeForSearch(barcodeValue.display),
-          normalizeForSearch(barcodeValue.raw),
-        ].filter(Boolean) as string[];
-
-        if (barcodeLooseCandidates.some((candidate) => candidate.includes(ocrLoose))) {
-          return MATCH_STATES.match;
-        }
-
-        if (barcodeSearchText && barcodeSearchText.includes(ocrLoose)) {
-          return MATCH_STATES.match;
-        }
-      }
-
-      const ocrStrict = normalizeAlphanumeric(formattedOcr.display);
-      if (ocrStrict) {
-        const barcodeStrict = normalizeAlphanumeric(`${barcodeValue.display} ${barcodeValue.raw}`);
-        if (barcodeStrict.includes(ocrStrict)) {
-          return MATCH_STATES.match;
-        }
-        if (barcodeSearchText && barcodeSearchText.replace(/\s+/g, "").includes(ocrStrict)) {
-          return MATCH_STATES.match;
-        }
-        if (barcodeStrictSearch.includes(ocrStrict)) {
-          return MATCH_STATES.match;
-        }
       }
 
       return MATCH_STATES.mismatch;
     }
 
-    const ocrLoose = normalizeForSearch(formattedOcr.display);
-    if (ocrLoose && barcodeSearchText && barcodeSearchText.includes(ocrLoose)) {
-      return MATCH_STATES.match;
-    }
+    if (ID_LIKE_SET.has(normalizedKey)) {
+      const ocrStrict = normalizeAlphanumeric(formattedOcr.display);
+      if (ocrStrict) {
+        if (barcodeStrictSearch.includes(ocrStrict)) {
+          return MATCH_STATES.match;
+        }
 
-    const ocrStrict = normalizeAlphanumeric(formattedOcr.display);
-    if (ocrStrict && barcodeStrictSearch.includes(ocrStrict)) {
-      return MATCH_STATES.match;
+        const ocrLoose = normalizeForSearch(formattedOcr.display);
+        if (ocrLoose && barcodeSearchText && barcodeSearchText.includes(ocrLoose)) {
+          return MATCH_STATES.match;
+        }
+      }
     }
 
     return MATCH_STATES.noBarcode;
