@@ -490,6 +490,7 @@ interface BarcodeFieldValue {
 
 interface BarcodeKeyValueData {
   kv: Map<string, string>;
+  valuesByKey: Map<string, Set<string>>;
   rawValues: string[];
 }
 
@@ -574,6 +575,7 @@ const getCanonicalBarcodeKey = (rawKey: string): string | null => {
 
 const buildBarcodeKeyValueData = (barcodes: string[]): BarcodeKeyValueData => {
   const kv = new Map<string, string>();
+  const valuesByKey = new Map<string, Set<string>>();
   const rawValues = new Set<string>();
 
   const addValue = (key: string, value: string) => {
@@ -583,6 +585,10 @@ const buildBarcodeKeyValueData = (barcodes: string[]): BarcodeKeyValueData => {
     if (!existing || trimmed.length > existing.length) {
       kv.set(key, trimmed);
     }
+    if (!valuesByKey.has(key)) {
+      valuesByKey.set(key, new Set());
+    }
+    valuesByKey.get(key)!.add(trimmed);
     rawValues.add(trimmed);
   };
 
@@ -687,7 +693,7 @@ const buildBarcodeKeyValueData = (barcodes: string[]): BarcodeKeyValueData => {
     }
   }
 
-  return { kv, rawValues: Array.from(rawValues) };
+  return { kv, valuesByKey, rawValues: Array.from(rawValues) };
 };
 
 const pickBestBarcodeId = (kv: Map<string, string>, rawValues: string[]): string | null => {
@@ -921,10 +927,11 @@ export default function ScannerDashboard() {
 
   const barcodeSearchText = useMemo(() => buildBarcodeSearchText(barcodes), [barcodes]);
   const barcodeStrictSearch = useMemo(() => normalizeAlphanumeric(barcodes.join(" ")), [barcodes]);
-  const { kv: barcodeKv, rawValues: barcodeValues } = useMemo(
-    () => buildBarcodeKeyValueData(barcodes),
-    [barcodes],
-  );
+  const {
+    kv: barcodeKv,
+    valuesByKey: barcodeValuesByKey,
+    rawValues: barcodeValues,
+  } = useMemo(() => buildBarcodeKeyValueData(barcodes), [barcodes]);
 
   const getBarcodeValueForOcrKey = (
     normalizedOcrKey: string,
@@ -933,10 +940,22 @@ export default function ScannerDashboard() {
     const trimmedOcrValue = typeof ocrRawValue === "string" ? ocrRawValue.trim() : "";
     if (!trimmedOcrValue) return null;
 
-    const canonicalBarcodeKey = OCR_TO_BARCODE_KEY[normalizedOcrKey] ?? normalizedOcrKey;
+    const canonicalBarcodeKey =
+      OCR_TO_BARCODE_KEY[normalizedOcrKey] ?? BARCODE_ALIAS_LOOKUP[normalizedOcrKey] ?? normalizedOcrKey;
     const formattedOcr = formatBarcodeValue(normalizedOcrKey, trimmedOcrValue);
 
-    let fallbackCandidate: BarcodeFieldValue | null = null;
+    const considerStructuredValues = (): BarcodeFieldValue | null => {
+      const structured = barcodeValuesByKey.get(canonicalBarcodeKey);
+      if (!structured) return null;
+
+      for (const value of structured) {
+        const formatted = formatBarcodeValue(canonicalBarcodeKey, value);
+        if (valuesLooselyMatch(formattedOcr, formatted)) {
+          return formatted;
+        }
+      }
+      return null;
+    };
 
     const directCandidateRaw = barcodeKv.get(canonicalBarcodeKey);
     if (directCandidateRaw && directCandidateRaw.trim()) {
@@ -944,7 +963,14 @@ export default function ScannerDashboard() {
       if (valuesLooselyMatch(formattedOcr, formattedDirect)) {
         return formattedDirect;
       }
-      fallbackCandidate = fallbackCandidate ?? formattedDirect;
+
+      const structuredMatch = considerStructuredValues();
+      return structuredMatch ?? formattedDirect;
+    }
+
+    const structuredMatch = considerStructuredValues();
+    if (structuredMatch) {
+      return structuredMatch;
     }
 
     if (ID_LIKE_SET.has(normalizedOcrKey)) {
@@ -954,18 +980,6 @@ export default function ScannerDashboard() {
         if (valuesLooselyMatch(formattedOcr, formattedId)) {
           return formattedId;
         }
-        fallbackCandidate = fallbackCandidate ?? formattedId;
-      }
-    }
-
-    for (const [key, value] of barcodeKv.entries()) {
-      if (!value || !value.trim()) continue;
-      const formattedCandidate = formatBarcodeValue(key, value);
-      if (valuesLooselyMatch(formattedOcr, formattedCandidate)) {
-        return formattedCandidate;
-      }
-      if (!fallbackCandidate) {
-        fallbackCandidate = formattedCandidate;
       }
     }
 
@@ -977,7 +991,7 @@ export default function ScannerDashboard() {
       }
     }
 
-    return fallbackCandidate;
+    return null;
   };
 
   const getRowMatch = (
