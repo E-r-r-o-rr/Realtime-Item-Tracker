@@ -503,15 +503,16 @@ const formatBarcodeValue = (normalizedKey: string, value: string): BarcodeFieldV
   }
 
   if (COMPACT_BARCODE_KEYS.has(lowerKey) || ID_LIKE_SET.has(lowerKey)) {
-    let displayValue = trimmed.toUpperCase();
-    displayValue = displayValue.replace(/\s*-\s*/g, "-");
-    displayValue = displayValue.replace(/\s+/g, "");
+    const squashedWhitespace = trimmed.replace(/\s+/g, " ");
+    const normalizedDisplay = squashedWhitespace.replace(/\s*-\s*/g, "-").replace(/\s+/g, " ").trim();
+    let comparable = squashedWhitespace.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
     if (lowerKey.includes("truck")) {
-      const hasDigit = /\d/.test(displayValue);
-      if (hasDigit) displayValue = displayValue.replace(/^[A-Z]+/, "");
+      const digitIndex = comparable.search(/\d/);
+      if (digitIndex > 0) {
+        comparable = comparable.slice(digitIndex);
+      }
     }
-    const comparable = displayValue.replace(/[^A-Z0-9]/g, "").toLowerCase();
-    return { raw, display: displayValue, comparable };
+    return { raw, display: normalizedDisplay, comparable };
   }
 
   if (lowerKey.includes("time")) {
