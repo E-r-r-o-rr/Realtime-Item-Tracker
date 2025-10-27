@@ -7,6 +7,27 @@ const PY_BIN =
 const BARCODE_SCRIPT = path.join(process.cwd(), 'scripts', 'barcode_decode.py');
 const BARCODE_TIMEOUT_MS = Number(process.env.BARCODE_TIMEOUT_MS || 30_000);
 
+const normalizeKey = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const OCR_ID_KEY_GROUPS: string[][] = [
+  ['item_code', 'itemcode'],
+  ['order_id', 'orderid'],
+  ['tracking_id', 'trackingid'],
+  ['tracking_number', 'trackingnumber'],
+  ['tracking_no', 'trackingno'],
+  ['order_reference', 'orderreference'],
+  ['order_ref', 'orderref'],
+  ['id'],
+];
+
+interface NormalizedOcrEntry {
+  normalizedKey: string;
+  originalKey: string;
+  value: string;
+}
+
+const MIN_COMPARABLE_LENGTH = 3;
+
 export interface BarcodeExtractionResult {
   barcodes: string[];
   warnings: string[];
@@ -14,6 +35,79 @@ export interface BarcodeExtractionResult {
 
 function normalizeBarcodeValue(value: string): string {
   return value.replace(/[^a-z0-9]/gi, '').toUpperCase();
+}
+
+function buildNormalizedOcrEntries(kv: Record<string, string> | undefined | null) {
+  const map = new Map<string, NormalizedOcrEntry>();
+  if (!kv) {
+    return map;
+  }
+
+  for (const [rawKey, rawValue] of Object.entries(kv)) {
+    if (typeof rawValue !== 'string') continue;
+    const trimmedValue = rawValue.trim();
+    if (!trimmedValue) continue;
+    const normalizedKey = normalizeKey(rawKey);
+    if (!normalizedKey) continue;
+
+    const existing = map.get(normalizedKey);
+    if (!existing || trimmedValue.length > existing.value.length) {
+      map.set(normalizedKey, {
+        normalizedKey,
+        originalKey: rawKey,
+        value: trimmedValue,
+      });
+    }
+  }
+
+  return map;
+}
+
+function pickPreferredOcrId(entries: Map<string, NormalizedOcrEntry>): NormalizedOcrEntry | null {
+  for (const group of OCR_ID_KEY_GROUPS) {
+    for (const alias of group) {
+      const normalized = normalizeKey(alias);
+      if (!normalized) continue;
+      const entry = entries.get(normalized);
+      if (entry) return entry;
+    }
+  }
+
+  let fallback: NormalizedOcrEntry | null = null;
+  for (const entry of entries.values()) {
+    const comparable = normalizeBarcodeValue(entry.value);
+    if (comparable.length < MIN_COMPARABLE_LENGTH) continue;
+    if (!/[0-9]/.test(comparable)) continue;
+    if (!fallback) {
+      fallback = entry;
+      continue;
+    }
+    const fallbackComparable = normalizeBarcodeValue(fallback.value);
+    if (comparable.length > fallbackComparable.length) {
+      fallback = entry;
+    }
+  }
+
+  return fallback;
+}
+
+function prettifyKeyLabel(rawKey: string): string {
+  if (!rawKey) {
+    return 'identifier';
+  }
+  const trimmed = rawKey.trim();
+  if (!trimmed) {
+    return 'identifier';
+  }
+  if (/\s/.test(trimmed)) {
+    return trimmed;
+  }
+  const withSpaces = trimmed.replace(/_/g, ' ');
+  return withSpaces
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 }
 
 function stubFromFilename(filePath: string): BarcodeExtractionResult {
@@ -87,7 +181,7 @@ export async function extractBarcodes(filePath: string): Promise<BarcodeExtracti
 }
 
 export function buildBarcodeValidation(
-  kv: Record<string, string>,
+  kv: Record<string, string> | undefined | null,
   barcodes: string[],
 ): {
   matches: boolean | null;
@@ -95,7 +189,12 @@ export function buildBarcodeValidation(
   message: string;
   comparedValue?: string;
 } {
-  if (!barcodes.length) {
+  const sanitizedBarcodes = (Array.isArray(barcodes) ? barcodes : [])
+    .map((code) => (typeof code === 'string' ? code : String(code ?? '')))
+    .map((code) => code.trim())
+    .filter((code) => code.length > 0);
+
+  if (!sanitizedBarcodes.length) {
     return {
       matches: null,
       status: 'no_barcode',
@@ -103,25 +202,49 @@ export function buildBarcodeValidation(
     };
   }
 
-  const itemCode = kv?.item_code;
-  if (!itemCode) {
+  const normalizedEntries = buildNormalizedOcrEntries(kv ?? null);
+  const preferredEntry = pickPreferredOcrId(normalizedEntries);
+
+  if (!preferredEntry) {
     return {
       matches: null,
       status: 'missing_item_code',
-      message: 'OCR extraction did not produce an item code to compare with barcode data.',
+      message: 'OCR extraction did not produce a tracking or order identifier to compare with barcode data.',
+      comparedValue: sanitizedBarcodes.join(', '),
     };
   }
 
-  const normalizedItem = normalizeBarcodeValue(itemCode);
-  const normalizedBarcodes = barcodes.map((code) => normalizeBarcodeValue(code));
-  const matched = normalizedBarcodes.includes(normalizedItem);
+  const comparableItem = normalizeBarcodeValue(preferredEntry.value);
+  if (comparableItem.length < MIN_COMPARABLE_LENGTH) {
+    return {
+      matches: null,
+      status: 'missing_item_code',
+      message: 'OCR extraction did not produce a tracking or order identifier to compare with barcode data.',
+      comparedValue: sanitizedBarcodes.join(', '),
+    };
+  }
+
+  const normalizedBarcodes = sanitizedBarcodes.map((raw) => ({
+    raw,
+    comparable: normalizeBarcodeValue(raw),
+  }));
+
+  const matchingBarcodes = normalizedBarcodes.filter((barcode) =>
+    barcode.comparable.includes(comparableItem),
+  );
+  const matched = matchingBarcodes.length > 0;
+
+  const fieldLabel = prettifyKeyLabel(preferredEntry.originalKey);
+  const comparedValue = sanitizedBarcodes.join(', ');
 
   return {
     matches: matched,
     status: matched ? 'match' : 'mismatch',
-    comparedValue: barcodes.join(', '),
+    comparedValue,
     message: matched
-      ? 'OCR item code matches the detected barcode value.'
-      : `OCR item code ${itemCode} does not match barcode value(s): ${barcodes.join(', ')}.`,
+      ? `OCR ${fieldLabel} ${preferredEntry.value} matches barcode value(s): ${matchingBarcodes
+          .map((barcode) => barcode.raw)
+          .join(', ')}.`
+      : `OCR ${fieldLabel} ${preferredEntry.value} does not match barcode value(s): ${comparedValue}.`,
   };
 }
