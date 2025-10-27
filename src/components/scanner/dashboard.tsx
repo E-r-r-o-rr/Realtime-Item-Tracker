@@ -204,6 +204,15 @@ const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
 
 const normalizeKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
+const normalizeForSearch = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const normalizeAlphanumeric = (value: string): string => value.replace(/[^a-z0-9]/gi, "").toLowerCase();
+
 const BARCODE_FIELD_TITLES = [
   "Product Name",
   "Truck ID",
@@ -457,44 +466,11 @@ const DEMO_RECORDS: KvPairs[] = [
   },
 ];
 
-const normalizeForSearch = (value: string): string =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
 const buildBarcodeSearchText = (barcodes: string[]): string | null => {
   if (!Array.isArray(barcodes) || barcodes.length === 0) return null;
   const combined = barcodes.join(" ");
   const normalized = normalizeForSearch(combined);
   return normalized.length > 0 ? normalized : null;
-};
-
-const hasKeyValueInBarcode = (barcodeText: string, key: string, value: string): boolean => {
-  const normalizedValue = normalizeForSearch(value);
-  if (!normalizedValue) return false;
-
-  const normalizedKeyWords = normalizeForSearch(key)
-    .split(" ")
-    .filter(Boolean);
-  const meaningfulWords = normalizedKeyWords.filter((word) => word.length > 2);
-  const windowRadius = 60;
-
-  let index = barcodeText.indexOf(normalizedValue);
-  while (index !== -1) {
-    const start = Math.max(0, index - windowRadius);
-    const end = Math.min(barcodeText.length, index + normalizedValue.length + windowRadius);
-    const context = barcodeText.slice(start, end);
-
-    if (meaningfulWords.length === 0 || meaningfulWords.some((word) => context.includes(word))) {
-      return true;
-    }
-
-    index = barcodeText.indexOf(normalizedValue, index + normalizedValue.length);
-  }
-
-  return false;
 };
 
 const MATCH_STATES = {
@@ -505,12 +481,6 @@ const MATCH_STATES = {
 } as const;
 
 type MatchState = (typeof MATCH_STATES)[keyof typeof MATCH_STATES];
-
-interface RowComparison {
-  barcodeDisplay: string;
-  barcodeHasValue: boolean;
-  match: MatchState;
-}
 
 interface BarcodeFieldValue {
   raw: string;
@@ -568,6 +538,31 @@ const formatBarcodeValue = (normalizedKey: string, value: string): BarcodeFieldV
 
   const normalized = trimmed.replace(/\s+/g, " ");
   return { raw, display: normalized, comparable: normalized.toLowerCase() };
+};
+
+const valuesLooselyMatch = (left: BarcodeFieldValue, right: BarcodeFieldValue): boolean => {
+  const comparableLeft = left.comparable;
+  const comparableRight = right.comparable;
+  if (comparableLeft && comparableRight) {
+    if (comparableLeft === comparableRight) return true;
+    if (comparableLeft.includes(comparableRight) || comparableRight.includes(comparableLeft)) return true;
+  }
+
+  const strictLeft = normalizeAlphanumeric(left.display);
+  const strictRight = normalizeAlphanumeric(right.display);
+  if (strictLeft && strictRight) {
+    if (strictLeft === strictRight) return true;
+    if (strictLeft.includes(strictRight) || strictRight.includes(strictLeft)) return true;
+  }
+
+  const looseLeft = normalizeForSearch(left.display);
+  const looseRight = normalizeForSearch(right.display);
+  if (looseLeft && looseRight) {
+    if (looseLeft === looseRight) return true;
+    if (looseLeft.includes(looseRight) || looseRight.includes(looseLeft)) return true;
+  }
+
+  return false;
 };
 
 const getCanonicalBarcodeKey = (rawKey: string): string | null => {
@@ -924,35 +919,127 @@ export default function ScannerDashboard() {
   }, [kv]);
 
   const barcodeSearchText = useMemo(() => buildBarcodeSearchText(barcodes), [barcodes]);
+  const barcodeStrictSearch = useMemo(() => normalizeAlphanumeric(barcodes.join(" ")), [barcodes]);
   const { kv: barcodeKv, rawValues: barcodeValues } = useMemo(
     () => buildBarcodeKeyValueData(barcodes),
     [barcodes],
   );
 
-  const getBarcodeValueForOcrKey = (normalizedOcrKey: string): BarcodeFieldValue | null => {
-    const mapped = OCR_TO_BARCODE_KEY[normalizedOcrKey];
-    if (mapped) {
-      const v = barcodeKv.get(mapped);
-      if (v && v.trim()) return formatBarcodeValue(normalizedOcrKey, v);
+  const getBarcodeValueForOcrKey = (
+    normalizedOcrKey: string,
+    ocrRawValue: string,
+  ): BarcodeFieldValue | null => {
+    const trimmedOcrValue = typeof ocrRawValue === "string" ? ocrRawValue.trim() : "";
+    if (!trimmedOcrValue) return null;
+
+    const canonicalBarcodeKey = OCR_TO_BARCODE_KEY[normalizedOcrKey] ?? normalizedOcrKey;
+    const formattedOcr = formatBarcodeValue(normalizedOcrKey, trimmedOcrValue);
+
+    let fallbackCandidate: BarcodeFieldValue | null = null;
+
+    const directCandidateRaw = barcodeKv.get(canonicalBarcodeKey);
+    if (directCandidateRaw && directCandidateRaw.trim()) {
+      const formattedDirect = formatBarcodeValue(canonicalBarcodeKey, directCandidateRaw);
+      if (valuesLooselyMatch(formattedOcr, formattedDirect)) {
+        return formattedDirect;
+      }
+      fallbackCandidate = fallbackCandidate ?? formattedDirect;
     }
+
     if (ID_LIKE_SET.has(normalizedOcrKey)) {
-      const id = pickBestBarcodeId(barcodeKv, barcodeValues);
-      if (id) return formatBarcodeValue(normalizedOcrKey, id);
+      const fallbackId = pickBestBarcodeId(barcodeKv, barcodeValues);
+      if (fallbackId && fallbackId.trim()) {
+        const formattedId = formatBarcodeValue(canonicalBarcodeKey, fallbackId);
+        if (valuesLooselyMatch(formattedOcr, formattedId)) {
+          return formattedId;
+        }
+        fallbackCandidate = fallbackCandidate ?? formattedId;
+      }
     }
-    return null;
+
+    for (const [key, value] of barcodeKv.entries()) {
+      if (!value || !value.trim()) continue;
+      const formattedCandidate = formatBarcodeValue(key, value);
+      if (valuesLooselyMatch(formattedOcr, formattedCandidate)) {
+        return formattedCandidate;
+      }
+      if (!fallbackCandidate) {
+        fallbackCandidate = formattedCandidate;
+      }
+    }
+
+    for (const rawValue of barcodeValues) {
+      if (!rawValue || !rawValue.trim()) continue;
+      const formattedCandidate = formatBarcodeValue(canonicalBarcodeKey, rawValue);
+      if (valuesLooselyMatch(formattedOcr, formattedCandidate)) {
+        return formattedCandidate;
+      }
+    }
+
+    return fallbackCandidate;
   };
 
   const getRowMatch = (
     normalizedKey: string,
     ocrValue: string,
     barcodeValue: BarcodeFieldValue | null,
-  ) => {
-    if (!barcodeValue) return { symbol: "–", label: "Not compared", className: "text-slate-500" };
-    const ocrComparable = formatBarcodeValue(normalizedKey, ocrValue).comparable;
-    if (ocrComparable && ocrComparable === barcodeValue.comparable) {
-      return { symbol: "✓", label: "Match", className: "text-green-600" };
+  ): MatchState => {
+    const trimmedOcrValue = typeof ocrValue === "string" ? ocrValue.trim() : "";
+    if (!trimmedOcrValue) {
+      return MATCH_STATES.noValue;
     }
-    return { symbol: "✗", label: "Mismatch", className: "text-red-600" };
+
+    const formattedOcr = formatBarcodeValue(normalizedKey, trimmedOcrValue);
+
+    if (barcodeValue) {
+      if (valuesLooselyMatch(formattedOcr, barcodeValue)) {
+        return MATCH_STATES.match;
+      }
+
+      const ocrLoose = normalizeForSearch(formattedOcr.display);
+      if (ocrLoose) {
+        const barcodeLooseCandidates = [
+          normalizeForSearch(barcodeValue.display),
+          normalizeForSearch(barcodeValue.raw),
+        ].filter(Boolean) as string[];
+
+        if (barcodeLooseCandidates.some((candidate) => candidate.includes(ocrLoose))) {
+          return MATCH_STATES.match;
+        }
+
+        if (barcodeSearchText && barcodeSearchText.includes(ocrLoose)) {
+          return MATCH_STATES.match;
+        }
+      }
+
+      const ocrStrict = normalizeAlphanumeric(formattedOcr.display);
+      if (ocrStrict) {
+        const barcodeStrict = normalizeAlphanumeric(`${barcodeValue.display} ${barcodeValue.raw}`);
+        if (barcodeStrict.includes(ocrStrict)) {
+          return MATCH_STATES.match;
+        }
+        if (barcodeSearchText && barcodeSearchText.replace(/\s+/g, "").includes(ocrStrict)) {
+          return MATCH_STATES.match;
+        }
+        if (barcodeStrictSearch.includes(ocrStrict)) {
+          return MATCH_STATES.match;
+        }
+      }
+
+      return MATCH_STATES.mismatch;
+    }
+
+    const ocrLoose = normalizeForSearch(formattedOcr.display);
+    if (ocrLoose && barcodeSearchText && barcodeSearchText.includes(ocrLoose)) {
+      return MATCH_STATES.match;
+    }
+
+    const ocrStrict = normalizeAlphanumeric(formattedOcr.display);
+    if (ocrStrict && barcodeStrictSearch.includes(ocrStrict)) {
+      return MATCH_STATES.match;
+    }
+
+    return MATCH_STATES.noBarcode;
   };
 
   const getBufferValue = (keys: string[]) => {
@@ -1501,7 +1588,7 @@ export default function ScannerDashboard() {
                 {Object.entries(kv).map(([rawKey, rawVal]) => {
                   const ocrKey = normalizeKey(rawKey);
                   const ocrValue = String(rawVal ?? "");
-                  const barcodeValue = getBarcodeValueForOcrKey(ocrKey);
+                  const barcodeValue = getBarcodeValueForOcrKey(ocrKey, ocrValue);
                   const match = getRowMatch(ocrKey, ocrValue, barcodeValue);
 
                   return (
