@@ -93,7 +93,7 @@ const sanitizeBarcodeComparison = (value: unknown): BarcodeComparisonReport | nu
     ? raw.results
     : [];
 
-  const rows = (rowSource as unknown[])
+  const rawRows = (rowSource as unknown[])
     .map((row) => {
         if (!row || typeof row !== "object") return null;
         const entry = row as Record<string, unknown>;
@@ -120,14 +120,42 @@ const sanitizeBarcodeComparison = (value: unknown): BarcodeComparisonReport | nu
     })
     .filter((row): row is BarcodeComparisonRow => Boolean(row));
 
+  const rows = rawRows.map((row) => {
+    if (row.status === "MATCH") return row;
+    const barcodeValue = row.barcodeValue.trim();
+    if (!barcodeValue) {
+      return { ...row, status: "MISSING" as ComparisonStatus };
+    }
+    return row;
+  });
+
   const summarySource =
     raw.summary && typeof raw.summary === "object" ? (raw.summary as Record<string, unknown>) : {};
   const toNumber = (input: unknown) => (typeof input === "number" && Number.isFinite(input) ? input : 0);
-  const summary: BarcodeComparisonSummary = {
+  const baseSummary: BarcodeComparisonSummary = {
     matched: toNumber(summarySource.matched),
     mismatched: toNumber(summarySource.mismatched),
     missing: toNumber(summarySource.missing),
   };
+
+  const computedSummary = rows.reduce(
+    (acc, row) => {
+      switch (row.status) {
+        case "MATCH":
+          acc.matched += 1;
+          break;
+        case "MISSING":
+          acc.missing += 1;
+          break;
+        default:
+          acc.mismatched += 1;
+      }
+      return acc;
+    },
+    { matched: 0, mismatched: 0, missing: 0 } as BarcodeComparisonSummary,
+  );
+
+  const summary = rows.length > 0 ? computedSummary : baseSummary;
 
   const librarySource =
     raw.library && typeof raw.library === "object" ? (raw.library as Record<string, unknown>) : {};

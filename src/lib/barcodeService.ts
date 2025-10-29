@@ -278,10 +278,37 @@ function parseComparisonReport(raw: unknown): BarcodeComparisonReport | null {
     : Array.isArray((value as { results?: unknown }).results)
     ? (((value as { results?: unknown[] }).results as unknown[]) ?? [])
     : [];
-  const rows = (rowsSource as unknown[])
+  const parsedRows = (rowsSource as unknown[])
     .map((row) => parseComparisonRow(row))
     .filter((row): row is BarcodeComparisonRow => Boolean(row));
-  const summary = parseComparisonSummary(value.summary);
+
+  const rows = parsedRows.map((row) => {
+    if (row.status === 'MATCH') return row;
+    const barcodeValue = row.barcodeValue.trim();
+    if (barcodeValue.length === 0) {
+      return { ...row, status: 'MISSING' as BarcodeComparisonStatus };
+    }
+    return row;
+  });
+
+  const computedSummary = rows.reduce(
+    (acc, row) => {
+      switch (row.status) {
+        case 'MATCH':
+          acc.matched += 1;
+          break;
+        case 'MISSING':
+          acc.missing += 1;
+          break;
+        default:
+          acc.mismatched += 1;
+      }
+      return acc;
+    },
+    { matched: 0, mismatched: 0, missing: 0 } satisfies BarcodeComparisonSummary,
+  );
+
+  const summary = rows.length > 0 ? computedSummary : parseComparisonSummary(value.summary);
   const libraryRaw = (value.library && typeof value.library === 'object'
     ? value.library
     : {}) as Record<string, unknown>;
