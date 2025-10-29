@@ -1,7 +1,12 @@
 import { VlmSettings } from "@/types/vlm";
 
+const DEFAULT_LOCAL_MODEL_ID = "Qwen/Qwen3-VL-2B-Instruct";
+
 export const DEFAULT_VLM_SETTINGS: VlmSettings = {
   mode: "remote",
+  local: {
+    modelId: DEFAULT_LOCAL_MODEL_ID,
+  },
   remote: {
     providerType: "openai-compatible",
     baseUrl: "https://api.example.com/v1/chat/completions",

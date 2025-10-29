@@ -19,7 +19,7 @@ export type OcrExtractionResult = {
   error?: string;
 };
 
-const DEFAULT_MODEL = process.env.OCR_MODEL || 'Qwen/Qwen2-VL-2B-Instruct';
+const DEFAULT_MODEL = process.env.OCR_MODEL || 'Qwen/Qwen3-VL-2B-Instruct';
 
 // Prefer explicit venv python; fall back to system python
 const PY_BIN =
@@ -67,10 +67,11 @@ function deriveOcrErrorMessage(stdout: string, stderr: string, code?: number): s
  */
 export async function extractKvPairs(filePath: string): Promise<OcrExtractionResult> {
   const vlmSettings = loadPersistedVlmSettings();
+  const localModelId = vlmSettings.local?.modelId?.trim();
   const configuredModel =
-    vlmSettings.mode === 'remote' && vlmSettings.remote.modelId
-      ? vlmSettings.remote.modelId
-      : DEFAULT_MODEL;
+    vlmSettings.mode === 'remote'
+      ? vlmSettings.remote.modelId?.trim() || localModelId || DEFAULT_MODEL
+      : localModelId || DEFAULT_MODEL;
 
   const providerInfo: VlmProviderInfo = {
     mode: vlmSettings.mode,

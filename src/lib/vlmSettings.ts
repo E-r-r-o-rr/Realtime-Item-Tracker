@@ -5,6 +5,7 @@ import {
   KeyValuePair,
   VlmSettings,
   VlmRemoteSettings,
+  VlmLocalSettings,
   VlmMode,
   VlmAuthScheme,
   VlmProviderType,
@@ -247,12 +248,26 @@ const normalizeRemoteSettings = (value: unknown): VlmRemoteSettings => {
   return base;
 };
 
+const normalizeLocalSettings = (value: unknown): VlmLocalSettings => {
+  const normalized = structuredClone(DEFAULT_VLM_SETTINGS.local);
+  if (typeof value === "string") {
+    normalized.modelId = value.trim() || normalized.modelId;
+    return normalized;
+  }
+
+  const incoming = (value && typeof value === "object" ? value : {}) as any;
+  const rawModelId = toString(incoming.modelId, normalized.modelId).trim();
+  normalized.modelId = rawModelId || normalized.modelId;
+  return normalized;
+};
+
 export const normalizeVlmSettings = (value: unknown): VlmSettings => {
   const base = structuredClone(DEFAULT_VLM_SETTINGS);
   const incoming = (value && typeof value === "object" ? value : {}) as any;
   const mode = normalizeEnum<VlmMode>(incoming.mode, ["local", "remote"] as const, base.mode);
   return {
     mode,
+    local: normalizeLocalSettings(incoming.local),
     remote: normalizeRemoteSettings(incoming.remote),
   };
 };
