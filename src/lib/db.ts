@@ -675,6 +675,16 @@ export const getBookingByTrackingId = (trackingId: string): BookingRecord | unde
   return row ? mapBookingRow(row) : undefined;
 };
 
+export const getBookingByTruckAndShipDate = (
+  truckNumber: string,
+  shipDate: string,
+): BookingRecord | undefined => {
+  const row = getDb()
+    .prepare(`SELECT * FROM bookings WHERE truck_number = ? AND ship_date = ? LIMIT 1`)
+    .get(truckNumber, shipDate);
+  return row ? mapBookingRow(row) : undefined;
+};
+
 export const listStorage = (): StorageRecord[] => {
   const rows = getDb().prepare(`SELECT * FROM storage ORDER BY last_updated DESC`).all();
   return rows.map(mapStorageRow);
@@ -983,6 +993,12 @@ export const syncLiveBufferWithStorage = (): LiveBufferRecord[] => {
      WHERE id = ?`
   );
   for (const row of rows) {
+    const bookingMatch =
+      getBookingByTrackingId(row.tracking_id) ||
+      getBookingByTruckAndShipDate(row.truck_number, row.ship_date);
+    if (!bookingMatch) {
+      continue;
+    }
     let storage = getStorageByTrackingId(row.tracking_id);
     if (!storage) {
       storage = getStorageByTruckAndShipDate(row.truck_number, row.ship_date);

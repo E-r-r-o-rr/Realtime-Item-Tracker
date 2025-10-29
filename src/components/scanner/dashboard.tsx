@@ -579,6 +579,7 @@ export default function ScannerDashboard() {
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
   const [bookingWarning, setBookingWarning] = useState<string | null>(null);
   const [bookingSuccess, setBookingSuccess] = useState<string | null>(null);
+  const [bookingLocated, setBookingLocated] = useState(false);
   const [vlmInfo, setVlmInfo] = useState<ProviderInfo | null>(null);
   const [checkingBooking, setCheckingBooking] = useState(false);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState<number>(DEFAULT_REFRESH_MS);
@@ -595,10 +596,21 @@ export default function ScannerDashboard() {
         setStatus(typeof maybeStatus === "string" ? maybeStatus : null);
 
         const maybeWarning = (parsed as { bookingWarning?: unknown }).bookingWarning;
-        setBookingWarning(typeof maybeWarning === "string" ? maybeWarning : null);
+        const normalizedWarning = typeof maybeWarning === "string" ? maybeWarning : null;
+        setBookingWarning(normalizedWarning);
 
         const maybeSuccess = (parsed as { bookingSuccess?: unknown }).bookingSuccess;
-        setBookingSuccess(typeof maybeSuccess === "string" ? maybeSuccess : null);
+        const normalizedSuccess = typeof maybeSuccess === "string" ? maybeSuccess : null;
+        setBookingSuccess(normalizedSuccess);
+
+        const maybeLocated = (parsed as { bookingLocated?: unknown }).bookingLocated;
+        if (typeof maybeLocated === "boolean") {
+          setBookingLocated(maybeLocated);
+        } else if (normalizedSuccess && normalizedSuccess.trim().length > 0) {
+          setBookingLocated(true);
+        } else if (normalizedWarning && normalizedWarning.trim().length > 0) {
+          setBookingLocated(false);
+        }
 
         const maybeProviderInfo = (parsed as { providerInfo?: unknown }).providerInfo;
         setVlmInfo(sanitizeProviderInfo(maybeProviderInfo));
@@ -677,6 +689,7 @@ export default function ScannerDashboard() {
         barcodeComparison,
         validation,
         refreshIntervalMs,
+        bookingLocated,
       };
       window.localStorage.setItem(PERSISTED_STATE_KEY, JSON.stringify(payload));
     } catch (error) {
@@ -693,6 +706,7 @@ export default function ScannerDashboard() {
     barcodeComparison,
     validation,
     vlmInfo,
+    bookingLocated,
     refreshIntervalMs,
     hasHydrated,
   ]);
@@ -756,23 +770,24 @@ export default function ScannerDashboard() {
         updateLiveRecord(mapApiRecordToLive(payload.record));
       } else {
         updateLiveRecord(null);
+        setBookingLocated(false);
       }
     } catch (error) {
       console.error("Failed to load live buffer", error);
     }
-  }, [mapApiRecordToLive, updateLiveRecord]);
+  }, [mapApiRecordToLive, updateLiveRecord, setBookingLocated]);
 
   useEffect(() => {
-    fetchLiveBuffer({ sync: true });
-  }, [fetchLiveBuffer]);
+    fetchLiveBuffer(bookingLocated ? { sync: true } : undefined);
+  }, [fetchLiveBuffer, bookingLocated]);
 
   useEffect(() => {
-    if (!refreshIntervalMs || typeof window === "undefined") return;
+    if (!bookingLocated || !refreshIntervalMs || typeof window === "undefined") return;
     const id = window.setInterval(() => {
       fetchLiveBuffer({ sync: true });
     }, refreshIntervalMs);
     return () => window.clearInterval(id);
-  }, [refreshIntervalMs, fetchLiveBuffer]);
+  }, [refreshIntervalMs, fetchLiveBuffer, bookingLocated]);
 
   const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "my-secret-api-key";
 
@@ -818,6 +833,7 @@ export default function ScannerDashboard() {
     setBarcodeWarnings([]);
     setValidation(null);
     setBookingWarning(null);
+    setBookingLocated(false);
   };
 
   const scanDocument = async () => {
@@ -905,6 +921,7 @@ export default function ScannerDashboard() {
           setBookingWarning(null);
           setBookingSuccess(null);
           setVlmInfo(null);
+          setBookingLocated(false);
         } else {
           const trackingIdForStatus = recordCandidate.trackingId;
           setStatus(`Logging scan for ${trackingIdForStatus}…`);
@@ -951,10 +968,13 @@ export default function ScannerDashboard() {
             const trackedId = record?.trackingId || recordCandidate.trackingId;
             if (warning) {
               setBookingSuccess(null);
+              setBookingLocated(false);
             } else if (trackedId) {
               setBookingSuccess(`Booked item found for ${trackedId}`);
+              setBookingLocated(true);
             } else {
               setBookingSuccess("Booked item found");
+              setBookingLocated(true);
             }
             if (record) {
               const nextRecord: LiveRecord = {
@@ -1058,6 +1078,7 @@ export default function ScannerDashboard() {
         const successCopy = message || `Booked item found for ${refreshedTrackingId}`;
         setBookingWarning(null);
         setBookingSuccess(successCopy);
+        setBookingLocated(true);
         const statusSegments: string[] = [];
         if (refreshedTrackingId) {
           statusSegments.push(`Order ${refreshedTrackingId} -`);
@@ -1068,6 +1089,7 @@ export default function ScannerDashboard() {
         const warningCopy = warningMessage || message || "Booked item not found";
         setBookingWarning(warningCopy);
         setBookingSuccess(null);
+        setBookingLocated(false);
         const statusSegments: string[] = [];
         if (refreshedTrackingId) {
           statusSegments.push(`Order ${refreshedTrackingId} -`);
@@ -1086,12 +1108,13 @@ export default function ScannerDashboard() {
   const handleRefreshIntervalChange = useCallback(
     (event: React.ChangeEvent<HTMLSelectElement>) => {
       const rawValue = Number(event.target.value);
+      if (!bookingLocated) return;
       if (Number.isFinite(rawValue) && rawValue > 0) {
         setRefreshIntervalMs(rawValue);
         fetchLiveBuffer({ sync: true });
       }
     },
-    [fetchLiveBuffer],
+    [fetchLiveBuffer, bookingLocated],
   );
 
   const handleWriteStorage = async () => {
@@ -1145,6 +1168,7 @@ export default function ScannerDashboard() {
       setBookingWarning(null);
       setBookingSuccess(null);
       setVlmInfo(null);
+      setBookingLocated(false);
     } catch (error) {
       console.error(error);
       setStatus(error instanceof Error ? error.message : "Failed to clear live buffer.");
@@ -1484,20 +1508,22 @@ export default function ScannerDashboard() {
                   </span>
                 )}
               </div>
-              <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-slate-300/70 sm:flex-row sm:items-center sm:gap-3">
-                <span className="font-semibold text-slate-300/80">Auto refresh</span>
-                <select
-                  value={refreshIntervalMs}
-                  onChange={handleRefreshIntervalChange}
-                  className="rounded-full border border-white/15 bg-slate-900/70 px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-slate-100 shadow-sm transition focus:border-indigo-400 focus:outline-none focus:ring-0"
-                >
-                  {REFRESH_INTERVAL_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value} className="text-slate-900">
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {bookingLocated && (
+                <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-slate-300/70 sm:flex-row sm:items-center sm:gap-3">
+                  <span className="font-semibold text-slate-300/80">Auto refresh</span>
+                  <select
+                    value={refreshIntervalMs}
+                    onChange={handleRefreshIntervalChange}
+                    className="rounded-full border border-white/15 bg-slate-900/70 px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-slate-100 shadow-sm transition focus:border-indigo-400 focus:outline-none focus:ring-0"
+                  >
+                    {REFRESH_INTERVAL_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value} className="text-slate-900">
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
             </div>
           }
           footer={
