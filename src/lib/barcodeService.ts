@@ -273,8 +273,12 @@ function parseBarcodeOnlyEntries(raw: unknown): BarcodeOnlyEntry[] {
 function parseComparisonReport(raw: unknown): BarcodeComparisonReport | null {
   if (!raw || typeof raw !== 'object') return null;
   const value = raw as Record<string, unknown>;
-  const rowsRaw = Array.isArray(value.rows) ? value.rows : [];
-  const rows = rowsRaw
+  const rowsSource = Array.isArray(value.rows)
+    ? value.rows
+    : Array.isArray((value as { results?: unknown }).results)
+    ? (((value as { results?: unknown[] }).results as unknown[]) ?? [])
+    : [];
+  const rows = (rowsSource as unknown[])
     .map((row) => parseComparisonRow(row))
     .filter((row): row is BarcodeComparisonRow => Boolean(row));
   const summary = parseComparisonSummary(value.summary);

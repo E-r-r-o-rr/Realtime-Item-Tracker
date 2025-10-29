@@ -87,13 +87,18 @@ const sanitizeBarcodeComparison = (value: unknown): BarcodeComparisonReport | nu
       : "MISSING";
   };
 
-  const rows = Array.isArray(raw.rows)
+  const rowSource = Array.isArray(raw.rows)
     ? raw.rows
-        .map((row) => {
-          if (!row || typeof row !== "object") return null;
-          const entry = row as Record<string, unknown>;
-          return {
-            key: typeof entry.key === "string" ? entry.key : "",
+    : Array.isArray(raw.results)
+    ? raw.results
+    : [];
+
+  const rows = (rowSource as unknown[])
+    .map((row) => {
+        if (!row || typeof row !== "object") return null;
+        const entry = row as Record<string, unknown>;
+        return {
+          key: typeof entry.key === "string" ? entry.key : "",
             ocr: typeof entry.ocr === "string" ? entry.ocr : "",
             barcodeLabel: typeof entry.barcodeLabel === "string"
               ? entry.barcodeLabel
@@ -108,13 +113,12 @@ const sanitizeBarcodeComparison = (value: unknown): BarcodeComparisonReport | nu
             status: toStatus(entry.status),
             contextLabel: typeof entry.contextLabel === "string"
               ? entry.contextLabel
-              : typeof entry.context_label === "string"
-              ? entry.context_label
-              : undefined,
-          } as BarcodeComparisonRow;
-        })
-        .filter((row): row is BarcodeComparisonRow => Boolean(row))
-    : [];
+            : typeof entry.context_label === "string"
+            ? entry.context_label
+            : undefined,
+        } as BarcodeComparisonRow;
+    })
+    .filter((row): row is BarcodeComparisonRow => Boolean(row));
 
   const summarySource =
     raw.summary && typeof raw.summary === "object" ? (raw.summary as Record<string, unknown>) : {};
