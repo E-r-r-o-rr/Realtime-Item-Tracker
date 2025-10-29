@@ -15,6 +15,7 @@ export type VlmProviderInfo = {
 
 export type OcrExtractionResult = {
   kv: Record<string, string>;
+  selectedKv: Record<string, string>;
   providerInfo: VlmProviderInfo;
   error?: string;
 };
@@ -34,6 +35,124 @@ const OCR_TIMEOUT_MS = Number(process.env.OCR_TIMEOUT_MS || 180_000);
 
 // Set OCR_KEEP=1 to keep tmp output for debugging
 const KEEP_TMP = process.env.OCR_KEEP === '1';
+
+const SELECTED_FIELD_ALIASES: Record<string, string[]> = {
+  Destination: ['destination', 'destinationwarehouseid', 'destination_warehouse_id'],
+  'Item Name': ['item_name', 'itemname', 'product_name', 'product'],
+  'Tracking/Order ID': ['tracking_id', 'trackingid', 'order_id', 'orderid', 'item_code', 'trackingorderid'],
+  'Truck Number': ['truck_number', 'trucknumber', 'truck_id', 'truckid', 'truck_no', 'truck'],
+  'Ship Date': ['ship_date', 'shipdate', 'shipping_date', 'date'],
+  'Expected Departure Time': [
+    'expected_departure_time',
+    'expecteddeparturetime',
+    'estimated_departure_time',
+    'estimateddeparturetime',
+    'departure_time',
+    'etd',
+  ],
+  Origin: ['origin', 'origin_warehouse', 'originwarehouse', 'current_warehouse_id', 'currentwarehouseid'],
+};
+
+const SELECTED_CANONICAL_BY_NORMALIZED: Record<string, string> = (() => {
+  const entries: Record<string, string> = {};
+  for (const [label, aliases] of Object.entries(SELECTED_FIELD_ALIASES)) {
+    const normalizedLabel = normalizeLabelKey(label);
+    entries[normalizedLabel] = label;
+    aliases.forEach((alias) => {
+      entries[normalizeLabelKey(alias)] = label;
+    });
+  }
+  return entries;
+})();
+
+function normalizeLabelKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function sanitizeKvRecord(input: unknown): Record<string, string> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return {};
+  }
+
+  const result: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(input as Record<string, unknown>)) {
+    const key = String(rawKey).trim();
+    if (!key) continue;
+
+    let value: string;
+    if (typeof rawValue === 'string') {
+      value = rawValue.trim();
+    } else if (rawValue == null) {
+      value = '';
+    } else if (Array.isArray(rawValue)) {
+      value = rawValue
+        .map((entry) => (entry == null ? '' : String(entry)))
+        .join(', ')
+        .trim();
+    } else if (typeof rawValue === 'object') {
+      try {
+        value = JSON.stringify(rawValue);
+      } catch (error) {
+        value = String(rawValue);
+      }
+    } else {
+      value = String(rawValue).trim();
+    }
+
+    result[key] = value;
+  }
+
+  return result;
+}
+
+function buildSelectedFromAll(all: Record<string, string>): Record<string, string> {
+  const normalized = new Map<string, string>();
+  for (const [key, value] of Object.entries(all)) {
+    const normalizedKey = normalizeLabelKey(key);
+    if (!normalizedKey) continue;
+    normalized.set(normalizedKey, value);
+  }
+
+  const selected: Record<string, string> = {};
+  for (const [label, aliases] of Object.entries(SELECTED_FIELD_ALIASES)) {
+    let candidate = '';
+    for (const alias of aliases) {
+      const normalizedAlias = normalizeLabelKey(alias);
+      const nextValue = normalized.get(normalizedAlias);
+      if (nextValue && nextValue.trim()) {
+        candidate = nextValue.trim();
+        break;
+      }
+    }
+    selected[label] = candidate;
+  }
+
+  return selected;
+}
+
+function deriveSelectedKv(all: Record<string, string>, selectedRaw: unknown): Record<string, string> {
+  const base = buildSelectedFromAll(all);
+  const overrides = sanitizeKvRecord(selectedRaw);
+  const merged: Record<string, string> = { ...base };
+
+  for (const [rawKey, rawValue] of Object.entries(overrides)) {
+    const trimmedKey = rawKey.trim();
+    if (!trimmedKey) continue;
+    const normalizedKey = normalizeLabelKey(trimmedKey);
+    const canonical = SELECTED_CANONICAL_BY_NORMALIZED[normalizedKey];
+    const trimmedValue = rawValue.trim();
+
+    if (canonical) {
+      if (trimmedValue) {
+        merged[canonical] = trimmedValue;
+      }
+    } else {
+      merged[trimmedKey] = trimmedValue;
+    }
+  }
+
+  return merged;
+}
 
 function rmrf(p: string) {
   try {
@@ -96,7 +215,8 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
 
   if (!fs.existsSync(OCR_SCRIPT)) {
     console.warn('[ocrService] Python script not found, returning stub.');
-    return { kv: stubFromFilename(filePath), providerInfo };
+    const stubKv = sanitizeKvRecord(stubFromFilename(filePath));
+    return { kv: stubKv, selectedKv: deriveSelectedKv(stubKv, {}), providerInfo };
   }
 
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-out-'));
@@ -161,7 +281,7 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
       const message = deriveOcrErrorMessage(stdout, stderr, code);
       console.warn('[ocrService] OCR script non-zero exit', { code, signal });
       if (stderr) console.warn('[ocrService] stderr:\n' + stderr);
-      return { kv: {}, providerInfo, error: message };
+      return { kv: {}, selectedKv: {}, providerInfo, error: message };
     }
 
     const structuredPath = path.join(outDir, 'structured.json');
@@ -169,8 +289,22 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
       const payload = JSON.parse(fs.readFileSync(structuredPath, 'utf-8'));
       // Python writes an array with a single record: { image, llm_raw, llm_parsed }
       if (Array.isArray(payload) && payload.length > 0 && payload[0]?.llm_parsed) {
+        const parsed = payload[0].llm_parsed as Record<string, unknown>;
+        const allRaw =
+          (parsed as { all_key_values?: unknown }).all_key_values ??
+          (parsed as { allKeyValues?: unknown }).allKeyValues ??
+          parsed;
+        const selectedRaw =
+          (parsed as { selected_key_values?: unknown }).selected_key_values ??
+          (parsed as { selectedKeyValues?: unknown }).selectedKeyValues ??
+          {};
+
+        const kv = sanitizeKvRecord(allRaw);
+        const selectedKv = deriveSelectedKv(kv, selectedRaw);
+
         return {
-          kv: payload[0].llm_parsed as Record<string, string>,
+          kv,
+          selectedKv,
           providerInfo,
         };
       }
@@ -178,12 +312,12 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
 
     const message = deriveOcrErrorMessage(stdout, stderr);
     console.warn('[ocrService] structured.json missing or invalid. stderr:\n' + (stderr || '(empty)'));
-    return { kv: {}, providerInfo, error: message };
+    return { kv: {}, selectedKv: {}, providerInfo, error: message };
   } catch (err) {
     if (timer) { clearTimeout(timer); }
     console.warn('[ocrService] Error running OCR script:', err);
     const message = err instanceof Error && err.message ? err.message : 'Failed to run OCR script.';
-    return { kv: {}, providerInfo, error: message };
+    return { kv: {}, selectedKv: {}, providerInfo, error: message };
   } finally {
     if (!KEEP_TMP) rmrf(outDir);
     else console.log('[ocrService] Keeping temp OCR output at:', outDir);

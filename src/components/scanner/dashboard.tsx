@@ -233,6 +233,7 @@ interface ApiValidation {
 
 interface ApiOcrResponse {
   kv?: KvPairs;
+  selectedKv?: KvPairs;
   barcodes?: string[];
   barcodeWarnings?: string[];
   barcodeComparison?: BarcodeComparisonReport;
@@ -389,6 +390,47 @@ const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
 
 const normalizeKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
+const toDisplayString = (value: unknown): string => {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => toDisplayString(entry))
+      .filter((segment) => segment.length > 0)
+      .join(", ");
+  }
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch (error) {
+      return String(value);
+    }
+  }
+  return String(value).trim();
+};
+
+const toNormalizedMap = (pairs: KvPairs | null): Map<string, string> => {
+  const map = new Map<string, string>();
+  if (!pairs) return map;
+  for (const [key, rawValue] of Object.entries(pairs)) {
+    if (typeof key !== "string") continue;
+    const normalizedKey = normalizeKey(key);
+    if (!normalizedKey) continue;
+    map.set(normalizedKey, toDisplayString(rawValue));
+  }
+  return map;
+};
+
+const getValueFromMap = (map: Map<string, string>, keys: string[]): string => {
+  for (const key of keys) {
+    const candidate = map.get(normalizeKey(key));
+    if (candidate && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return "";
+};
+
 
 
 const OCR_TO_BARCODE_KEY: Record<string, string> = (() => {
@@ -422,14 +464,22 @@ const OCR_TO_BARCODE_KEY: Record<string, string> = (() => {
 })();
 
 const LIVE_BUFFER_FIELDS: Array<{ label: string; keys: string[] }> = [
-  { label: "Destination", keys: ["destinationwarehouseid", "destination_warehouse_id"] },
+  { label: "Destination", keys: ["destination", "destinationwarehouseid", "destination_warehouse_id"] },
   {
     label: "Item Name",
     keys: ["item_name", "itemname", "product_name", "productname", "product", "item"],
   },
   {
     label: "Tracking ID (Order ID)",
-    keys: ["order_id", "orderid", "tracking_id", "trackingid", "order_reference", "orderreference"],
+    keys: [
+      "order_id",
+      "orderid",
+      "tracking_id",
+      "trackingid",
+      "order_reference",
+      "orderreference",
+      "trackingorderid",
+    ],
   },
   {
     label: "Truck Number",
@@ -496,9 +546,30 @@ const buildLiveRecord = (getBufferValue: (keys: string[]) => string): LiveRecord
   return hasValue ? record : null;
 };
 
+const buildLiveRecordFromMap = (map: Map<string, string>): LiveRecord | null => {
+  if (!map || map.size === 0) return null;
+  return buildLiveRecord((keys) => getValueFromMap(map, keys));
+};
+
+const mergeLiveRecords = (primary: LiveRecord | null, secondary: LiveRecord | null): LiveRecord | null => {
+  if (!primary && !secondary) return null;
+  if (!secondary) return primary;
+  if (!primary) return secondary;
+
+  const merged: LiveRecord = { ...secondary };
+  (Object.keys(merged) as Array<keyof LiveRecord>).forEach((key) => {
+    const primaryValue = primary[key];
+    const fallbackValue = secondary[key];
+    merged[key] = primaryValue && primaryValue.trim() ? primaryValue : fallbackValue;
+  });
+  const hasValue = Object.values(merged).some((value) => Boolean(value && value.trim()));
+  return hasValue ? merged : null;
+};
+
 export default function ScannerDashboard() {
   const [file, setFile] = useState<File | null>(null);
   const [kv, setKv] = useState<KvPairs | null>(null);
+  const [selectedKv, setSelectedKv] = useState<KvPairs | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [barcodes, setBarcodes] = useState<string[]>([]);
@@ -535,6 +606,18 @@ export default function ScannerDashboard() {
         const maybeKv = (parsed as { kv?: unknown }).kv;
         if (maybeKv && typeof maybeKv === "object" && !Array.isArray(maybeKv)) {
           setKv(maybeKv as KvPairs);
+        }
+
+        const maybeSelectedRaw =
+          (parsed as { selectedKv?: unknown }).selectedKv ??
+          (parsed as { selected_kv?: unknown }).selected_kv ??
+          (parsed as { selectedKeyValues?: unknown }).selectedKeyValues ??
+          (parsed as { selected_key_values?: unknown }).selected_key_values ??
+          null;
+        if (maybeSelectedRaw && typeof maybeSelectedRaw === "object" && !Array.isArray(maybeSelectedRaw)) {
+          setSelectedKv(maybeSelectedRaw as KvPairs);
+        } else {
+          setSelectedKv(null);
         }
 
         const maybeBarcodes = (parsed as { barcodes?: unknown }).barcodes;
@@ -588,6 +671,7 @@ export default function ScannerDashboard() {
         bookingSuccess,
         providerInfo: vlmInfo,
         kv,
+        selectedKv,
         barcodes,
         barcodeWarnings,
         barcodeComparison,
@@ -603,6 +687,7 @@ export default function ScannerDashboard() {
     bookingWarning,
     bookingSuccess,
     kv,
+    selectedKv,
     barcodes,
     barcodeWarnings,
     barcodeComparison,
@@ -691,43 +776,43 @@ export default function ScannerDashboard() {
 
   const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "my-secret-api-key";
 
-  const ocrKv = useMemo(() => {
-    const m = new Map<string, string>();
-    if (!kv) return m;
-    const toStr = (v: any) =>
-      v == null ? "" : Array.isArray(v) ? v.join(", ") : typeof v === "object" ? JSON.stringify(v) : String(v);
-    for (const [k, v] of Object.entries(kv)) m.set(normalizeKey(k), toStr(v));
-    return m;
-  }, [kv]);
+  const allKvMap = useMemo(() => toNormalizedMap(kv), [kv]);
+  const selectedMap = useMemo(() => toNormalizedMap(selectedKv), [selectedKv]);
 
-  const getBufferValue = (keys: string[]) => {
-    for (const k of keys) {
-      const v = ocrKv.get(normalizeKey(k));
-      if (v && v.trim()) return v.trim();
-    }
-    return "";
-  };
+  const getBufferValue = useCallback((keys: string[]) => getValueFromMap(allKvMap, keys), [allKvMap]);
 
-  const bufferDestination = LIVE_BUFFER_FIELDS[0]
-    ? getBufferValue(LIVE_BUFFER_FIELDS[0].keys)
-    : "";
+  const bufferDestination = useMemo(() => {
+    if (!LIVE_BUFFER_FIELDS[0]) return "";
+    return getBufferValue(LIVE_BUFFER_FIELDS[0].keys);
+  }, [getBufferValue]);
+
+  const selectedLiveRecord = useMemo(() => buildLiveRecordFromMap(selectedMap), [selectedMap]);
+  const fallbackLiveRecord = useMemo(() => buildLiveRecordFromMap(allKvMap), [allKvMap]);
+  const mergedLiveRecord = useMemo(
+    () => mergeLiveRecords(selectedLiveRecord, fallbackLiveRecord),
+    [selectedLiveRecord, fallbackLiveRecord],
+  );
+  const hasSourceData = selectedMap.size > 0 || allKvMap.size > 0;
+
   const activeDestination =
     (liveRecord?.destination && liveRecord.destination.trim()) ||
     (bufferDestination && bufferDestination.trim()) ||
     "";
 
   useEffect(() => {
-    if (!kv) return;
-    const record = buildLiveRecord(getBufferValue);
-    if (record) {
-      updateLiveRecord(record);
+    if (!hasSourceData) return;
+    if (!mergedLiveRecord) {
+      updateLiveRecord(null);
+      return;
     }
-  }, [kv, updateLiveRecord]);
+    updateLiveRecord(mergedLiveRecord);
+  }, [hasSourceData, mergedLiveRecord, updateLiveRecord]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     setFile(f ?? null);
     setKv(null);
+    setSelectedKv(null);
     setStatus(null);
     setBarcodes([]);
     setBarcodeWarnings([]);
@@ -767,6 +852,7 @@ export default function ScannerDashboard() {
       if (errorMessage) {
         setStatus(errorMessage);
         setKv(null);
+        setSelectedKv(null);
         setBarcodes([]);
         setBarcodeWarnings([]);
         setBarcodeComparison(null);
@@ -778,7 +864,13 @@ export default function ScannerDashboard() {
         return;
       }
 
-      setKv(data.kv || {});
+      const kvPayload = data.kv && typeof data.kv === "object" ? (data.kv as KvPairs) : {};
+      const rawSelected = data.selectedKv ?? (data as { selected_key_values?: unknown }).selected_key_values ?? null;
+      const selectedPayload =
+        rawSelected && typeof rawSelected === "object" && !Array.isArray(rawSelected) ? (rawSelected as KvPairs) : {};
+
+      setKv(kvPayload);
+      setSelectedKv(selectedPayload);
       setBarcodes(Array.isArray(data.barcodes) ? data.barcodes : []);
       setBarcodeWarnings(Array.isArray(data.barcodeWarnings) ? data.barcodeWarnings : []);
       setBarcodeComparison(sanitizeBarcodeComparison(data.barcodeComparison));
@@ -794,31 +886,15 @@ export default function ScannerDashboard() {
       const vStatus = data.validation?.status;
       if (vStatus) setStatus(statusFromValidation[vStatus]);
 
-      const normalizedKv = new Map<string, string>();
-      if (data.kv) {
-        for (const [key, value] of Object.entries(data.kv)) {
-          const normalized = normalizeKey(key);
-          const formatted =
-            value == null
-              ? ""
-              : Array.isArray(value)
-              ? value.join(", ")
-              : typeof value === "object"
-              ? JSON.stringify(value)
-              : String(value);
-          normalizedKv.set(normalized, formatted.trim());
-        }
-      }
-
-      const recordCandidate = buildLiveRecord((keys) => {
-        for (const key of keys) {
-          const val = normalizedKv.get(normalizeKey(key));
-          if (val && val.trim()) return val.trim();
-        }
-        return "";
-      });
+      const normalizedAllMap = toNormalizedMap(kvPayload);
+      const normalizedSelectedMap = toNormalizedMap(selectedPayload);
+      const recordCandidate = mergeLiveRecords(
+        buildLiveRecordFromMap(normalizedSelectedMap),
+        buildLiveRecordFromMap(normalizedAllMap),
+      );
 
       if (recordCandidate) {
+        updateLiveRecord(recordCandidate);
         const missingField = (Object.entries(recordCandidate) as Array<[keyof LiveRecord, string]>).find(
           ([, value]) => !value || !value.trim(),
         );
@@ -908,6 +984,8 @@ export default function ScannerDashboard() {
             setVlmInfo(nextProviderInfo ?? null);
           }
         }
+      } else {
+        updateLiveRecord(null);
       }
     } catch (err) {
       console.error(err);
@@ -924,6 +1002,15 @@ export default function ScannerDashboard() {
     const sample = DEMO_RECORDS[Math.floor(Math.random() * DEMO_RECORDS.length)];
     setFile(null);
     setKv(sample);
+    setSelectedKv({
+      Destination: toDisplayString(sample.destination_warehouse_id),
+      "Item Name": toDisplayString(sample.item_name),
+      "Tracking/Order ID": toDisplayString(sample.tracking_id ?? sample.item_code),
+      "Truck Number": toDisplayString(sample.truck_number),
+      "Ship Date": toDisplayString(sample.ship_date),
+      "Expected Departure Time": toDisplayString(sample.expected_departure_time),
+      Origin: toDisplayString(sample.origin),
+    });
     setStatus("Demo scan loaded into the live buffer.");
     setBarcodes([]);
     setBarcodeWarnings([]);
@@ -1050,6 +1137,7 @@ export default function ScannerDashboard() {
         updateLiveRecord(null);
       }
       setKv(null);
+      setSelectedKv(null);
       setBarcodes([]);
       setBarcodeWarnings([]);
       setValidation(null);
