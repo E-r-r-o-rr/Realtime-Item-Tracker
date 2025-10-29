@@ -5,7 +5,7 @@ import os from 'os';
 import { randomUUID } from 'crypto';
 
 import { loadPersistedVlmSettings } from './settingsStore';
-import { startLocalRunner } from './localRunner';
+import { getLocalRunnerBaseUrl, startLocalRunner } from './localRunner';
 
 export type VlmProviderInfo = {
   mode: 'remote' | 'local';
@@ -35,19 +35,6 @@ const OCR_TIMEOUT_MS = Number(process.env.OCR_TIMEOUT_MS || 180_000);
 
 // Set OCR_KEEP=1 to keep tmp output for debugging
 const KEEP_TMP = process.env.OCR_KEEP === '1';
-
-const resolveLocalBaseUrl = (): string => {
-  const explicit = process.env.VLLM_BASE_URL?.trim();
-  if (explicit) {
-    return explicit.replace(/\/+$/, '');
-  }
-
-  const protocol = (process.env.VLLM_PROTOCOL?.trim() || 'http').replace(/:$/, '');
-  const host = process.env.VLLM_HOST?.trim() || '127.0.0.1';
-  const port = process.env.VLLM_PORT?.trim() || '8000';
-  const base = port ? `${protocol}://${host}:${port}` : `${protocol}://${host}`;
-  return `${base.replace(/\/+$/, '')}/v1`;
-};
 
 function rmrf(p: string) {
   try {
@@ -111,7 +98,7 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
   } else {
     providerInfo.providerType = 'local';
     providerInfo.modelId = configuredModel;
-    localBaseUrl = resolveLocalBaseUrl();
+    localBaseUrl = getLocalRunnerBaseUrl();
     providerInfo.baseUrl = localBaseUrl;
     remoteConfigPayload = {
       ...remoteConfigBase,

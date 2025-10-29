@@ -42,3 +42,10 @@ huggingface-cli login
 | `VLLM_STOP_GRACE_MS` | Milliseconds to wait before sending `SIGKILL` during shutdown. | `5000` |
 
 With these dependencies installed you can enable **Local** mode in the settings UI, choose the desired model id, and the backend will handle starting/stopping the vLLM server automatically when scans are processed.
+
+
+## Troubleshooting
+
+- **`ModuleNotFoundError: No module named 'vllm._C'`** – This means the Python package was installed without its GPU extension. Install the CUDA-enabled build (for example `pip install "vllm[triton]"`) on a supported Linux environment with a matching CUDA toolkit.
+- **Windows hosts** – vLLM only ships Linux wheels today; use WSL2 or a Linux machine for local serving.
+
