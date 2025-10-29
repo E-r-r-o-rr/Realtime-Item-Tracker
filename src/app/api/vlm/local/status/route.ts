@@ -11,7 +11,14 @@ const noStoreHeaders = {
 export async function GET() {
   const state = getLocalRunnerState();
   return NextResponse.json(
-    { ok: true, status: state.status, modelId: state.modelId, message: state.message, error: state.error },
+    {
+      ok: state.status === "running",
+      status: state.status,
+      modelId: state.modelId,
+      pid: state.pid,
+      message: state.message,
+      error: state.error,
+    },
     { headers: noStoreHeaders },
   );
 }

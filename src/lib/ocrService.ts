@@ -5,6 +5,7 @@ import os from 'os';
 import { randomUUID } from 'crypto';
 
 import { loadPersistedVlmSettings } from './settingsStore';
+import { startLocalRunner } from './localRunner';
 
 export type VlmProviderInfo = {
   mode: 'remote' | 'local';
@@ -34,6 +35,19 @@ const OCR_TIMEOUT_MS = Number(process.env.OCR_TIMEOUT_MS || 180_000);
 
 // Set OCR_KEEP=1 to keep tmp output for debugging
 const KEEP_TMP = process.env.OCR_KEEP === '1';
+
+const resolveLocalBaseUrl = (): string => {
+  const explicit = process.env.VLLM_BASE_URL?.trim();
+  if (explicit) {
+    return explicit.replace(/\/+$/, '');
+  }
+
+  const protocol = (process.env.VLLM_PROTOCOL?.trim() || 'http').replace(/:$/, '');
+  const host = process.env.VLLM_HOST?.trim() || '127.0.0.1';
+  const port = process.env.VLLM_PORT?.trim() || '8000';
+  const base = port ? `${protocol}://${host}:${port}` : `${protocol}://${host}`;
+  return `${base.replace(/\/+$/, '')}/v1`;
+};
 
 function rmrf(p: string) {
   try {
@@ -77,6 +91,10 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     mode: vlmSettings.mode,
   };
 
+  const remoteConfigBase: any = JSON.parse(JSON.stringify(vlmSettings.remote || {}));
+  let remoteConfigPayload: any = null;
+  let localBaseUrl = '';
+
   if (vlmSettings.mode === 'remote') {
     const providerType = vlmSettings.remote.providerType;
     const normalizedType = typeof providerType === 'string' ? providerType : undefined;
@@ -89,15 +107,42 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     providerInfo.providerType = normalizedType;
     providerInfo.modelId = vlmSettings.remote.modelId?.trim() || configuredModel;
     providerInfo.baseUrl = effectiveBase;
+    remoteConfigPayload = remoteConfigBase;
   } else {
     providerInfo.providerType = 'local';
     providerInfo.modelId = configuredModel;
-    providerInfo.baseUrl = '';
+    localBaseUrl = resolveLocalBaseUrl();
+    providerInfo.baseUrl = localBaseUrl;
+    remoteConfigPayload = {
+      ...remoteConfigBase,
+      providerType: 'openai-compatible',
+      baseUrl: localBaseUrl,
+      modelId: configuredModel,
+      authScheme: 'none',
+      authHeaderName: 'Authorization',
+      apiKey: '',
+      extraHeaders: [],
+    };
   }
 
   if (!fs.existsSync(OCR_SCRIPT)) {
     console.warn('[ocrService] Python script not found, returning stub.');
     return { kv: stubFromFilename(filePath), providerInfo };
+  }
+
+  if (vlmSettings.mode === 'local') {
+    try {
+      const runnerState = await startLocalRunner(configuredModel);
+      if (runnerState.status !== 'running') {
+        const message = runnerState.error || runnerState.message || 'Local VLM runner is not ready.';
+        return { kv: {}, providerInfo, error: message };
+      }
+    } catch (error: any) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to start the local VLM runner.';
+      console.error('[ocrService] Unable to start local VLM runner', error);
+      return { kv: {}, providerInfo, error: message };
+    }
   }
 
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-out-'));
@@ -116,12 +161,29 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
 
   const env = { ...process.env };
   env.VLM_MODE = vlmSettings.mode;
+  if (remoteConfigPayload) {
+    env.VLM_REMOTE_CONFIG = JSON.stringify(remoteConfigPayload);
+    const timeoutCandidate = remoteConfigPayload.requestTimeoutMs;
+    const fallbackTimeout = vlmSettings.remote.requestTimeoutMs || OCR_TIMEOUT_MS;
+    const effectiveTimeout = typeof timeoutCandidate === 'number' && timeoutCandidate > 0 ? timeoutCandidate : fallbackTimeout;
+    env.OCR_REQUEST_TIMEOUT_MS = String(effectiveTimeout);
+
+    const retryCandidate = remoteConfigPayload.retryPolicy?.maxRetries;
+    const fallbackRetry = vlmSettings.remote.retryPolicy?.maxRetries ?? 0;
+    env.OCR_RETRY_MAX = String(typeof retryCandidate === 'number' ? retryCandidate : fallbackRetry);
+
+    const defaults = remoteConfigPayload.defaults ?? vlmSettings.remote.defaults ?? {};
+    env.OCR_STREAMING = defaults.streaming ? '1' : '0';
+    env.OCR_SYSTEM_PROMPT = defaults.systemPrompt || '';
+  } else {
+    delete env.VLM_REMOTE_CONFIG;
+    delete env.OCR_REQUEST_TIMEOUT_MS;
+    delete env.OCR_RETRY_MAX;
+    delete env.OCR_STREAMING;
+    delete env.OCR_SYSTEM_PROMPT;
+  }
+
   if (vlmSettings.mode === 'remote') {
-    env.VLM_REMOTE_CONFIG = JSON.stringify(vlmSettings.remote);
-    env.OCR_REQUEST_TIMEOUT_MS = String(vlmSettings.remote.requestTimeoutMs || OCR_TIMEOUT_MS);
-    env.OCR_RETRY_MAX = String(vlmSettings.remote.retryPolicy.maxRetries);
-    env.OCR_STREAMING = vlmSettings.remote.defaults.streaming ? '1' : '0';
-    env.OCR_SYSTEM_PROMPT = vlmSettings.remote.defaults.systemPrompt || '';
     if (vlmSettings.remote.authScheme !== 'none' && vlmSettings.remote.apiKey) {
       const header = vlmSettings.remote.authHeaderName.toLowerCase();
       if (
@@ -132,7 +194,7 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
       }
     }
   } else {
-    delete env.VLM_REMOTE_CONFIG;
+    delete env.HF_TOKEN;
   }
 
   let timer: NodeJS.Timeout | null = null;
