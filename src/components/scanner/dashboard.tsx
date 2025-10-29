@@ -41,6 +41,158 @@ interface BarcodeValidation {
 
 type ValidationStatus = "match" | "mismatch" | "no_barcode" | "missing_item_code";
 
+type ComparisonStatus = "MATCH" | "MISMATCH" | "MISSING";
+
+interface BarcodeComparisonRow {
+  key: string;
+  ocr: string;
+  barcodeLabel: string;
+  barcodeValue: string;
+  status: ComparisonStatus;
+  contextLabel?: string;
+}
+
+interface BarcodeComparisonSummary {
+  matched: number;
+  mismatched: number;
+  missing: number;
+}
+
+interface BarcodeOnlyEntry {
+  class: string;
+  labels: string[];
+  value: string;
+  count: number;
+}
+
+interface BarcodeComparisonReport {
+  rows: BarcodeComparisonRow[];
+  summary: BarcodeComparisonSummary;
+  library: {
+    entriesCount: number;
+    missedByOcrCount: number;
+    missedByOcr: BarcodeOnlyEntry[];
+  };
+  barcodeText?: string;
+}
+
+const sanitizeBarcodeComparison = (value: unknown): BarcodeComparisonReport | null => {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+
+  const toStatus = (status: unknown): ComparisonStatus => {
+    const normalized = typeof status === "string" ? status.toUpperCase() : "MISSING";
+    return normalized === "MATCH" || normalized === "MISMATCH" || normalized === "MISSING"
+      ? normalized
+      : "MISSING";
+  };
+
+  const rows = Array.isArray(raw.rows)
+    ? raw.rows
+        .map((row) => {
+          if (!row || typeof row !== "object") return null;
+          const entry = row as Record<string, unknown>;
+          return {
+            key: typeof entry.key === "string" ? entry.key : "",
+            ocr: typeof entry.ocr === "string" ? entry.ocr : "",
+            barcodeLabel: typeof entry.barcodeLabel === "string"
+              ? entry.barcodeLabel
+              : typeof entry.barcode_label === "string"
+              ? entry.barcode_label
+              : "",
+            barcodeValue: typeof entry.barcodeValue === "string"
+              ? entry.barcodeValue
+              : typeof entry.barcode_value === "string"
+              ? entry.barcode_value
+              : "",
+            status: toStatus(entry.status),
+            contextLabel: typeof entry.contextLabel === "string"
+              ? entry.contextLabel
+              : typeof entry.context_label === "string"
+              ? entry.context_label
+              : undefined,
+          } as BarcodeComparisonRow;
+        })
+        .filter((row): row is BarcodeComparisonRow => Boolean(row))
+    : [];
+
+  const summarySource =
+    raw.summary && typeof raw.summary === "object" ? (raw.summary as Record<string, unknown>) : {};
+  const toNumber = (input: unknown) => (typeof input === "number" && Number.isFinite(input) ? input : 0);
+  const summary: BarcodeComparisonSummary = {
+    matched: toNumber(summarySource.matched),
+    mismatched: toNumber(summarySource.mismatched),
+    missing: toNumber(summarySource.missing),
+  };
+
+  const librarySource =
+    raw.library && typeof raw.library === "object" ? (raw.library as Record<string, unknown>) : {};
+  const missedRaw =
+    Array.isArray(librarySource.missedByOcr)
+      ? librarySource.missedByOcr
+      : Array.isArray(librarySource.missed_by_ocr)
+      ? librarySource.missed_by_ocr
+      : [];
+  const missed: BarcodeOnlyEntry[] = missedRaw
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const item = entry as Record<string, unknown>;
+      return {
+        class: typeof item.class === "string" ? item.class : "unknown",
+        labels: Array.isArray(item.labels)
+          ? item.labels.filter((lbl): lbl is string => typeof lbl === "string")
+          : [],
+        value: typeof item.value === "string" ? item.value : "",
+        count: toNumber(item.count),
+      } as BarcodeOnlyEntry;
+    })
+    .filter((entry): entry is BarcodeOnlyEntry => Boolean(entry));
+
+  const library = {
+    entriesCount: toNumber(librarySource.entriesCount ?? librarySource.entries_count),
+    missedByOcrCount: toNumber(librarySource.missedByOcrCount ?? librarySource.missed_by_ocr_count),
+    missedByOcr: missed,
+  };
+
+  const barcodeTextValue =
+    typeof raw.barcodeText === "string"
+      ? raw.barcodeText
+      : typeof raw.barcode_text === "string"
+      ? raw.barcode_text
+      : undefined;
+
+  return { rows, summary, library, barcodeText: barcodeTextValue };
+};
+
+const COMPARISON_STATUS_META: Record<ComparisonStatus, { symbol: string; label: string; className: string }> = {
+  MATCH: { symbol: "✓", label: "Match", className: "text-emerald-400" },
+  MISMATCH: { symbol: "✕", label: "Mismatch", className: "text-rose-400" },
+  MISSING: { symbol: "–", label: "Missing", className: "text-amber-300" },
+};
+
+const DEMO_RECORDS: KvPairs[] = [
+  {
+    destination_warehouse_id: "R1-A",
+    item_name: "Widget Alpha",
+    tracking_id: "TRK900001",
+    truck_number: "301",
+    ship_date: "2025-09-16",
+    expected_departure_time: "10:15",
+    origin: "Dock 1",
+    item_code: "TRK900001",
+  },
+  {
+    destination_warehouse_id: "R2-B",
+    item_name: "Gizmo Max",
+    tracking_id: "TRK900002",
+    truck_number: "302",
+    ship_date: "2025-09-16",
+    expected_departure_time: "11:40",
+    origin: "Inbound A",
+    item_code: "TRK900002",
+  },
+];
+
 interface ApiValidation {
   status: ValidationStatus;
   message: string;
@@ -51,6 +203,7 @@ interface ApiOcrResponse {
   kv?: KvPairs;
   barcodes?: string[];
   barcodeWarnings?: string[];
+  barcodeComparison?: BarcodeComparisonReport;
   validation?: ApiValidation;
   providerInfo?: ProviderInfo;
   error?: string;
@@ -204,144 +357,7 @@ const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
 
 const normalizeKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
-const normalizeForSearch = (value: string): string =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 
-const normalizeAlphanumeric = (value: string): string => value.replace(/[^a-z0-9]/gi, "").toLowerCase();
-
-const BARCODE_FIELD_TITLES = [
-  "Product Name",
-  "Truck ID",
-  "Date",
-  "Current Warehouse ID",
-  "Destination Warehouse ID",
-  "Estimated Departure Time",
-  "Estimated Arrival Time",
-  "Loading Dock ID",
-  "Shipping Dock ID",
-  "Loading Bay",
-  "Priority Class",
-  "Order ID",
-  "Loading Time",
-  "Loading Priority",
-  "Stow Position",
-  "Order Reference",
-  "Shipping Carrier",
-];
-
-const PREFERRED_ID_KEYS = [
-  "order_id",
-  "orderid",
-  "tracking_id",
-  "trackingid",
-  "order_reference",
-  "orderreference",
-];
-
-const ID_LIKE_SET = new Set(
-  ["order_id", "orderid", "tracking_id", "trackingid", "item_code", "itemcode", "order_reference", "orderreference"].map(
-    normalizeKey,
-  ),
-);
-
-const COMPACT_BARCODE_KEYS = new Set(
-  [
-    "order_id",
-    "orderid",
-    "tracking_id",
-    "trackingid",
-    "truck_id",
-    "truckid",
-    "truck_number",
-    "trucknumber",
-    "destinationwarehouseid",
-    "currentwarehouseid",
-    "shippingdockid",
-    "loadingdockid",
-    "loadingbay",
-    "stowposition",
-    "orderreference",
-  ].map(normalizeKey),
-);
-
-type ParsedTime = { hour24: number; minute: number; second: number; hadSeconds: boolean };
-
-const parseTime = (value: string): ParsedTime | null => {
-  const match = value
-    .trim()
-    .toLowerCase()
-    .match(/^(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*([ap]m)?$/);
-  if (!match) return null;
-  let hour = parseInt(match[1] ?? "", 10);
-  const minute = parseInt(match[2] ?? "0", 10);
-  const second = parseInt(match[3] ?? "0", 10);
-  if (Number.isNaN(hour) || Number.isNaN(minute) || Number.isNaN(second)) return null;
-  const meridiem = match[4];
-  if (meridiem) {
-    const isPm = meridiem === "pm";
-    if (isPm && hour < 12) hour += 12;
-    if (!isPm && hour === 12) hour = 0;
-  }
-  hour = hour % 24;
-  return { hour24: hour, minute, second, hadSeconds: Boolean(match[3]) };
-};
-
-const formatTimeForDisplay = (parts: ParsedTime): string => {
-  let hour = parts.hour24 % 12;
-  if (hour === 0) hour = 12;
-  const meridiem = parts.hour24 >= 12 ? "PM" : "AM";
-  const minute = parts.minute.toString().padStart(2, "0");
-  const includeSeconds = parts.hadSeconds || parts.second !== 0;
-  const second = parts.second.toString().padStart(2, "0");
-  return `${hour}:${minute}${includeSeconds ? `:${second}` : ""} ${meridiem}`;
-};
-
-const normalizeTimeForComparison = (parts: ParsedTime): string => {
-  const hour = parts.hour24.toString().padStart(2, "0");
-  const minute = parts.minute.toString().padStart(2, "0");
-  const second = parts.second.toString().padStart(2, "0");
-  return `${hour}:${minute}:${second}`;
-};
-
-type ParsedDate = { year: number; month: number; day: number };
-
-const parseDate = (value: string): ParsedDate | null => {
-  const trimmed = value.trim();
-  const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (iso) {
-    const year = parseInt(iso[1], 10);
-    const month = parseInt(iso[2], 10);
-    const day = parseInt(iso[3], 10);
-    if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) return null;
-    return { year, month, day };
-  }
-  const slash = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-  if (slash) {
-    let year = parseInt(slash[3], 10);
-    const month = parseInt(slash[1], 10);
-    const day = parseInt(slash[2], 10);
-    if (slash[3].length === 2) year += year >= 70 ? 1900 : 2000;
-    if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) return null;
-    return { year, month, day };
-  }
-  return null;
-};
-
-const formatDateForDisplay = (parts: ParsedDate): string => {
-  const month = parts.month.toString().padStart(2, "0");
-  const day = parts.day.toString().padStart(2, "0");
-  return `${month}/${day}/${parts.year}`;
-};
-
-const normalizeDateForComparison = (parts: ParsedDate): string => {
-  const month = parts.month.toString().padStart(2, "0");
-  const day = parts.day.toString().padStart(2, "0");
-  return `${parts.year.toString().padStart(4, "0")}-${month}-${day}`;
-};
 
 const OCR_TO_BARCODE_KEY: Record<string, string> = (() => {
   const m: Record<string, string> = {};
@@ -417,322 +433,6 @@ const BARCODE_ALIAS_GROUPS: string[][] = [
   ["Shipping Carrier", "Carrier"],
 ];
 
-const BARCODE_TITLE_SET = new Set(BARCODE_FIELD_TITLES.map((title) => normalizeKey(title)));
-
-const BARCODE_ALIAS_LOOKUP: Record<string, string> = (() => {
-  const map: Record<string, string> = {};
-  for (const group of BARCODE_ALIAS_GROUPS) {
-    const canonicalAlias = group.find((alias) => BARCODE_TITLE_SET.has(normalizeKey(alias))) ?? group[0];
-    const canonicalKey = normalizeKey(canonicalAlias);
-    for (const alias of group) {
-      map[normalizeKey(alias)] = canonicalKey;
-    }
-  }
-  return map;
-})();
-
-const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|\[\]\\]/g, "\\$&");
-
-const DEMO_RECORDS: KvPairs[] = [
-  {
-    destination_warehouse_id: "R1-A",
-    item_name: "Widget Alpha",
-    tracking_id: "TRK900001",
-    truck_number: "301",
-    ship_date: "2025-09-16",
-    expected_departure_time: "10:15",
-    origin: "Dock 1",
-    item_code: "TRK900001",
-  },
-  {
-    destination_warehouse_id: "R2-B",
-    item_name: "Gizmo Max",
-    tracking_id: "TRK900002",
-    truck_number: "302",
-    ship_date: "2025-09-16",
-    expected_departure_time: "11:40",
-    origin: "Inbound A",
-    item_code: "TRK900002",
-  },
-  {
-    destination_warehouse_id: "R3-C",
-    item_name: "Box Large",
-    tracking_id: "TRK900003",
-    truck_number: "305",
-    ship_date: "2025-09-17",
-    expected_departure_time: "09:05",
-    origin: "Dock 2",
-    item_code: "TRK900003",
-  },
-];
-
-const buildBarcodeSearchText = (barcodes: string[]): string | null => {
-  if (!Array.isArray(barcodes) || barcodes.length === 0) return null;
-  const combined = barcodes.join(" ");
-  const normalized = normalizeForSearch(combined);
-  return normalized.length > 0 ? normalized : null;
-};
-
-const MATCH_STATES = {
-  match: { symbol: "✓", label: "Match", className: "text-green-600" },
-  mismatch: { symbol: "✗", label: "Mismatch", className: "text-red-600" },
-  noBarcode: { symbol: "–", label: "No barcode", className: "text-slate-500" },
-  noValue: { symbol: "–", label: "No OCR value", className: "text-slate-500" },
-} as const;
-
-type MatchState = (typeof MATCH_STATES)[keyof typeof MATCH_STATES];
-
-interface BarcodeFieldValue {
-  raw: string;
-  display: string;
-  comparable: string;
-}
-
-interface BarcodeKeyValueData {
-  kv: Map<string, string>;
-  valuesByKey: Map<string, Set<string>>;
-  rawValues: string[];
-}
-
-const formatBarcodeValue = (normalizedKey: string, value: string): BarcodeFieldValue => {
-  const raw = value;
-  const trimmed = value.trim();
-  const lowerKey = normalizedKey.toLowerCase();
-
-  if (!trimmed) {
-    return { raw, display: "", comparable: "" };
-  }
-
-  if (COMPACT_BARCODE_KEYS.has(lowerKey) || ID_LIKE_SET.has(lowerKey)) {
-    const squashedWhitespace = trimmed.replace(/\s+/g, " ");
-    const normalizedDisplay = squashedWhitespace.replace(/\s*-\s*/g, "-").replace(/\s+/g, " ").trim();
-    let comparable = squashedWhitespace.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
-    if (lowerKey.includes("truck")) {
-      const digitIndex = comparable.search(/\d/);
-      if (digitIndex > 0) {
-        comparable = comparable.slice(digitIndex);
-      }
-    }
-    return { raw, display: normalizedDisplay, comparable };
-  }
-
-  if (lowerKey.includes("time")) {
-    const parsed = parseTime(trimmed);
-    if (parsed) {
-      return {
-        raw,
-        display: formatTimeForDisplay(parsed),
-        comparable: normalizeTimeForComparison(parsed),
-      };
-    }
-  }
-
-  if (lowerKey.includes("date")) {
-    const parsed = parseDate(trimmed);
-    if (parsed) {
-      return {
-        raw,
-        display: formatDateForDisplay(parsed),
-        comparable: normalizeDateForComparison(parsed),
-      };
-    }
-  }
-
-  const normalized = trimmed.replace(/\s+/g, " ");
-  return { raw, display: normalized, comparable: normalized.toLowerCase() };
-};
-
-const valuesMatchForKey = (
-  normalizedKey: string,
-  left: BarcodeFieldValue,
-  right: BarcodeFieldValue,
-): boolean => {
-  const comparableLeft = left.comparable;
-  const comparableRight = right.comparable;
-  if (comparableLeft && comparableRight && comparableLeft === comparableRight) {
-    return true;
-  }
-
-  const normalizedDisplayLeft = left.display.trim().toLowerCase();
-  const normalizedDisplayRight = right.display.trim().toLowerCase();
-  if (normalizedDisplayLeft && normalizedDisplayRight && normalizedDisplayLeft === normalizedDisplayRight) {
-    return true;
-  }
-
-  const strictLeft = normalizeAlphanumeric(left.display);
-  const strictRight = normalizeAlphanumeric(right.display);
-  if (strictLeft && strictRight && strictLeft === strictRight) {
-    return true;
-  }
-
-  if (ID_LIKE_SET.has(normalizedKey)) {
-    const strictRawLeft = normalizeAlphanumeric(left.raw);
-    const strictRawRight = normalizeAlphanumeric(right.raw);
-    if (strictRawLeft && strictRawRight && strictRawLeft === strictRawRight) {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-const getCanonicalBarcodeKey = (rawKey: string): string | null => {
-  const normalized = normalizeKey(rawKey);
-  if (!normalized) return null;
-  return BARCODE_ALIAS_LOOKUP[normalized] ?? (BARCODE_TITLE_SET.has(normalized) ? normalized : null);
-};
-
-const buildBarcodeKeyValueData = (barcodes: string[]): BarcodeKeyValueData => {
-  const kv = new Map<string, string>();
-  const valuesByKey = new Map<string, Set<string>>();
-  const rawValues = new Set<string>();
-
-  const addValue = (key: string, value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    const existing = kv.get(key);
-    if (!existing || trimmed.length > existing.length) {
-      kv.set(key, trimmed);
-    }
-    if (!valuesByKey.has(key)) {
-      valuesByKey.set(key, new Set());
-    }
-    valuesByKey.get(key)!.add(trimmed);
-    rawValues.add(trimmed);
-  };
-
-  const textBlocks = (Array.isArray(barcodes) ? barcodes : []).map((b) =>
-    typeof b === "string" ? b : String(b ?? ""),
-  );
-
-  const tryParseDelimitedBlock = (block: string) => {
-    const separators = ["|", ";", "‖"];
-    for (const separator of separators) {
-      if (!block.includes(separator)) continue;
-      const parts = block
-        .split(separator)
-        .map((part) => part.trim())
-        .filter(Boolean);
-      if (parts.length < 2) continue;
-
-      let extracted = false;
-      for (let i = 0; i < parts.length; i += 1) {
-        const possibleKey = parts[i];
-        const canonical = getCanonicalBarcodeKey(possibleKey);
-        if (!canonical) continue;
-
-        let valueParts: string[] = [];
-        for (let j = i + 1; j < parts.length; j += 1) {
-          const maybeKey = getCanonicalBarcodeKey(parts[j]);
-          if (maybeKey) break;
-          valueParts.push(parts[j]);
-          i = j;
-        }
-
-        const value = valueParts.join(" ").trim();
-        if (value) {
-          addValue(canonical, value);
-          extracted = true;
-        }
-      }
-
-      // Only early-return if we successfully extracted structured data.
-      if (extracted) {
-        return;
-      }
-    }
-  };
-
-  for (const block of textBlocks) {
-    if (!block) continue;
-    tryParseDelimitedBlock(block);
-    const lines = block.split(/\r?\n/);
-    for (const line of lines) {
-      const trimmedLine = line.trim();
-      if (!trimmedLine) continue;
-
-      const colonMatch = trimmedLine.match(/^(.+?)[\s]*[:=|]\s*(.+)$/);
-      if (colonMatch) {
-        const canonical = getCanonicalBarcodeKey(colonMatch[1]);
-        if (canonical) {
-          addValue(canonical, colonMatch[2]);
-          continue;
-        }
-      }
-
-      const dashMatch = trimmedLine.match(/^(.+?)\s+-\s+(.+)$/);
-      if (dashMatch) {
-        const canonical = getCanonicalBarcodeKey(dashMatch[1]);
-        if (canonical) {
-          addValue(canonical, dashMatch[2]);
-          continue;
-        }
-      }
-
-      const doubleSpaceMatch = trimmedLine.match(/^(.+?)\s{2,}(.+)$/);
-      if (doubleSpaceMatch) {
-        const canonical = getCanonicalBarcodeKey(doubleSpaceMatch[1]);
-        if (canonical) {
-          addValue(canonical, doubleSpaceMatch[2]);
-        }
-      }
-    }
-
-    const tokens = block.match(/[A-Za-z0-9]{4,}/g);
-    if (tokens) {
-      for (const token of tokens) {
-        rawValues.add(token);
-      }
-    }
-  }
-
-  const combinedText = textBlocks.join("\n");
-  for (const group of BARCODE_ALIAS_GROUPS) {
-    const canonicalAlias = group.find((alias) => BARCODE_TITLE_SET.has(normalizeKey(alias))) ?? group[0];
-    const canonicalKey = getCanonicalBarcodeKey(canonicalAlias);
-    if (!canonicalKey || kv.has(canonicalKey)) continue;
-    for (const alias of group) {
-      const aliasPattern = escapeRegex(alias);
-      const regex = new RegExp(`${aliasPattern}\\s*[#:;=\\|\\-]*\\s*([^\\n\\r]+)`, "i");
-      const match = combinedText.match(regex);
-      if (match) {
-        addValue(canonicalKey, match[1]);
-        break;
-      }
-    }
-  }
-
-  return { kv, valuesByKey, rawValues: Array.from(rawValues) };
-};
-
-const pickBestBarcodeId = (kv: Map<string, string>, rawValues: string[]): string | null => {
-  for (const key of PREFERRED_ID_KEYS) {
-    const candidate = kv.get(normalizeKey(key));
-    if (candidate && candidate.trim()) {
-      return candidate.trim();
-    }
-  }
-
-  const candidates = new Set<string>();
-  for (const value of kv.values()) {
-    const trimmed = value.trim();
-    if (trimmed) candidates.add(trimmed);
-  }
-  for (const value of rawValues) {
-    const trimmed = String(value).trim();
-    if (trimmed) candidates.add(trimmed);
-  }
-
-  const ordered = Array.from(candidates).sort((a, b) => b.length - a.length);
-  for (const candidate of ordered) {
-    if (/\d/.test(candidate)) {
-      return candidate;
-    }
-  }
-
-  return ordered[0] ?? null;
-};
-
 const LABEL_TO_RECORD_KEY: Record<string, keyof LiveRecord> = {
   Destination: "destination",
   "Item Name": "itemName",
@@ -771,6 +471,7 @@ export default function ScannerDashboard() {
   const [loading, setLoading] = useState(false);
   const [barcodes, setBarcodes] = useState<string[]>([]);
   const [barcodeWarnings, setBarcodeWarnings] = useState<string[]>([]);
+  const [barcodeComparison, setBarcodeComparison] = useState<BarcodeComparisonReport | null>(null);
   const [validation, setValidation] = useState<BarcodeValidation | null>(null);
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
   const [bookingWarning, setBookingWarning] = useState<string | null>(null);
@@ -814,6 +515,9 @@ export default function ScannerDashboard() {
             : [],
         );
 
+        const maybeBarcodeComparison = (parsed as { barcodeComparison?: unknown }).barcodeComparison;
+        setBarcodeComparison(sanitizeBarcodeComparison(maybeBarcodeComparison));
+
         const maybeValidation = (parsed as { validation?: unknown }).validation;
         if (maybeValidation && typeof maybeValidation === "object") {
           const val = maybeValidation as Partial<BarcodeValidation>;
@@ -854,6 +558,7 @@ export default function ScannerDashboard() {
         kv,
         barcodes,
         barcodeWarnings,
+        barcodeComparison,
         validation,
         refreshIntervalMs,
       };
@@ -868,6 +573,7 @@ export default function ScannerDashboard() {
     kv,
     barcodes,
     barcodeWarnings,
+    barcodeComparison,
     validation,
     vlmInfo,
     refreshIntervalMs,
@@ -887,6 +593,21 @@ export default function ScannerDashboard() {
   const updateLiveRecord = useCallback((record: LiveRecord | null) => {
     setLiveRecordState(record);
   }, []);
+
+  const comparisonRows = useMemo(() => {
+    if (barcodeComparison && Array.isArray(barcodeComparison.rows) && barcodeComparison.rows.length > 0) {
+      return barcodeComparison.rows;
+    }
+    if (!kv) return [] as BarcodeComparisonRow[];
+    return Object.entries(kv).map(([rawKey, rawVal]) => ({
+      key: rawKey,
+      ocr: String(rawVal ?? ""),
+      barcodeLabel: "",
+      barcodeValue: "",
+      status: "MISSING" as ComparisonStatus,
+      contextLabel: undefined,
+    }));
+  }, [barcodeComparison, kv]);
 
   const fetchLiveBuffer = useCallback(async (options?: { sync?: boolean }) => {
     try {
@@ -933,112 +654,6 @@ export default function ScannerDashboard() {
     for (const [k, v] of Object.entries(kv)) m.set(normalizeKey(k), toStr(v));
     return m;
   }, [kv]);
-
-  const barcodeSearchText = useMemo(() => buildBarcodeSearchText(barcodes), [barcodes]);
-  const barcodeStrictSearch = useMemo(() => normalizeAlphanumeric(barcodes.join(" ")), [barcodes]);
-  const {
-    kv: barcodeKv,
-    valuesByKey: barcodeValuesByKey,
-    rawValues: barcodeValues,
-  } = useMemo(() => buildBarcodeKeyValueData(barcodes), [barcodes]);
-
-  const getBarcodeValueForOcrKey = (
-    normalizedOcrKey: string,
-    ocrRawValue: string,
-  ): BarcodeFieldValue | null => {
-    const trimmedOcrValue = typeof ocrRawValue === "string" ? ocrRawValue.trim() : "";
-    if (!trimmedOcrValue) return null;
-
-    const canonicalBarcodeKey =
-      OCR_TO_BARCODE_KEY[normalizedOcrKey] ?? BARCODE_ALIAS_LOOKUP[normalizedOcrKey] ?? normalizedOcrKey;
-    const formattedOcr = formatBarcodeValue(normalizedOcrKey, trimmedOcrValue);
-
-    const considerStructuredValues = (): BarcodeFieldValue | null => {
-      const structured = barcodeValuesByKey.get(canonicalBarcodeKey);
-      if (!structured) return null;
-
-      for (const value of structured) {
-        const formatted = formatBarcodeValue(canonicalBarcodeKey, value);
-        if (valuesMatchForKey(normalizedOcrKey, formattedOcr, formatted)) {
-          return formatted;
-        }
-      }
-      return null;
-    };
-
-    const directCandidateRaw = barcodeKv.get(canonicalBarcodeKey);
-    if (directCandidateRaw && directCandidateRaw.trim()) {
-      const formattedDirect = formatBarcodeValue(canonicalBarcodeKey, directCandidateRaw);
-      if (valuesMatchForKey(canonicalBarcodeKey, formattedOcr, formattedDirect)) {
-        return formattedDirect;
-      }
-
-      const structuredMatch = considerStructuredValues();
-      return structuredMatch ?? formattedDirect;
-    }
-
-    const structuredMatch = considerStructuredValues();
-    if (structuredMatch) {
-      return structuredMatch;
-    }
-
-    if (ID_LIKE_SET.has(normalizedOcrKey)) {
-      const fallbackId = pickBestBarcodeId(barcodeKv, barcodeValues);
-      if (fallbackId && fallbackId.trim()) {
-        const formattedId = formatBarcodeValue(canonicalBarcodeKey, fallbackId);
-        if (valuesMatchForKey(canonicalBarcodeKey, formattedOcr, formattedId)) {
-          return formattedId;
-        }
-      }
-    }
-
-    for (const rawValue of barcodeValues) {
-      if (!rawValue || !rawValue.trim()) continue;
-      const formattedCandidate = formatBarcodeValue(canonicalBarcodeKey, rawValue);
-      if (valuesMatchForKey(canonicalBarcodeKey, formattedOcr, formattedCandidate)) {
-        return formattedCandidate;
-      }
-    }
-
-    return null;
-  };
-
-  const getRowMatch = (
-    normalizedKey: string,
-    ocrValue: string,
-    barcodeValue: BarcodeFieldValue | null,
-  ): MatchState => {
-    const trimmedOcrValue = typeof ocrValue === "string" ? ocrValue.trim() : "";
-    if (!trimmedOcrValue) {
-      return MATCH_STATES.noValue;
-    }
-
-    const formattedOcr = formatBarcodeValue(normalizedKey, trimmedOcrValue);
-
-    if (barcodeValue) {
-      if (valuesMatchForKey(normalizedKey, formattedOcr, barcodeValue)) {
-        return MATCH_STATES.match;
-      }
-
-      return MATCH_STATES.mismatch;
-    }
-
-    if (ID_LIKE_SET.has(normalizedKey)) {
-      const ocrStrict = normalizeAlphanumeric(formattedOcr.display);
-      if (ocrStrict) {
-        if (barcodeStrictSearch.includes(ocrStrict)) {
-          return MATCH_STATES.match;
-        }
-
-        const ocrLoose = normalizeForSearch(formattedOcr.display);
-        if (ocrLoose && barcodeSearchText && barcodeSearchText.includes(ocrLoose)) {
-          return MATCH_STATES.match;
-        }
-      }
-    }
-
-    return MATCH_STATES.noBarcode;
-  };
 
   const getBufferValue = (keys: string[]) => {
     for (const k of keys) {
@@ -1109,6 +724,7 @@ export default function ScannerDashboard() {
         setKv(null);
         setBarcodes([]);
         setBarcodeWarnings([]);
+        setBarcodeComparison(null);
         setValidation(null);
         setBookingWarning(null);
         setBookingSuccess(null);
@@ -1120,6 +736,7 @@ export default function ScannerDashboard() {
       setKv(data.kv || {});
       setBarcodes(Array.isArray(data.barcodes) ? data.barcodes : []);
       setBarcodeWarnings(Array.isArray(data.barcodeWarnings) ? data.barcodeWarnings : []);
+      setBarcodeComparison(sanitizeBarcodeComparison(data.barcodeComparison));
       setValidation(toClientValidation(data.validation));
 
       const statusFromValidation: Record<ValidationStatus, string> = {
@@ -1265,6 +882,7 @@ export default function ScannerDashboard() {
     setStatus("Demo scan loaded into the live buffer.");
     setBarcodes([]);
     setBarcodeWarnings([]);
+    setBarcodeComparison(null);
     setValidation(null);
     setBookingWarning(null);
     setBookingSuccess(null);
@@ -1583,23 +1201,30 @@ export default function ScannerDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(kv).map(([rawKey, rawVal]) => {
-                  const ocrKey = normalizeKey(rawKey);
-                  const ocrValue = String(rawVal ?? "");
-                  const barcodeValue = getBarcodeValueForOcrKey(ocrKey, ocrValue);
-                  const match = getRowMatch(ocrKey, ocrValue, barcodeValue);
-
+                {comparisonRows.map((row, index) => {
+                  const meta = COMPARISON_STATUS_META[row.status] ?? COMPARISON_STATUS_META.MISSING;
+                  const hasBarcodeValue = row.barcodeValue && row.barcodeValue.trim().length > 0;
+                  const contextLabel = row.contextLabel || row.barcodeLabel;
                   return (
-                    <tr key={rawKey} className="border-b border-white/10 last:border-0">
-                      <td className="px-4 py-3 font-medium text-slate-100">{rawKey}</td>
-                      <td className="px-4 py-3 text-slate-200">{ocrValue}</td>
-                      <td className={`px-4 py-3 ${barcodeValue ? "text-slate-200" : "text-slate-500"}`}>
-                        {barcodeValue?.display ?? "—"}
+                    <tr key={`${row.key}-${index}`} className="border-b border-white/10 last:border-0">
+                      <td className="px-4 py-3 font-medium text-slate-100">{row.key}</td>
+                      <td className="px-4 py-3 text-slate-200">{row.ocr}</td>
+                      <td className={`px-4 py-3 ${hasBarcodeValue ? "text-slate-200" : "text-slate-500"}`}>
+                        {hasBarcodeValue ? (
+                          <div className="flex flex-col">
+                            <span>{row.barcodeValue}</span>
+                            {contextLabel && (
+                              <span className="text-xs uppercase tracking-wide text-slate-400/80">{contextLabel}</span>
+                            )}
+                          </div>
+                        ) : (
+                          "—"
+                        )}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <span className={`inline-flex items-center justify-end gap-2 text-sm ${match.className}`}>
-                          <span aria-hidden>{match.symbol}</span>
-                          <span className="text-xs uppercase tracking-wide">{match.label}</span>
+                        <span className={`inline-flex items-center justify-end gap-2 text-sm ${meta.className}`}>
+                          <span aria-hidden>{meta.symbol}</span>
+                          <span className="text-xs uppercase tracking-wide">{meta.label}</span>
                         </span>
                       </td>
                     </tr>
@@ -1608,6 +1233,12 @@ export default function ScannerDashboard() {
               </tbody>
             </table>
           </div>
+
+          {barcodeComparison && (
+            <p className="mt-4 text-xs text-slate-300">
+              Comparison summary: {barcodeComparison.summary.matched} match{barcodeComparison.summary.matched === 1 ? "" : "es"}, {barcodeComparison.summary.mismatched} mismatch{barcodeComparison.summary.mismatched === 1 ? "" : "es"}, {barcodeComparison.summary.missing} missing.
+            </p>
+          )}
 
           {validation && (
             <p

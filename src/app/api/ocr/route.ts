@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { extractKvPairs } from '@/lib/ocrService';
-import { buildBarcodeValidation, extractBarcodes } from '@/lib/barcodeService';
+import {
+  buildBarcodeValidation,
+  compareBarcodeData,
+  extractBarcodes,
+} from '@/lib/barcodeService';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -37,10 +41,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error, providerInfo }, { status: 502 });
     }
 
-    const { barcodes, warnings: barcodeWarnings } = await extractBarcodes(tmpPath);
-    const validation = buildBarcodeValidation(kv, barcodes);
+    const barcodeExtraction = await extractBarcodes(tmpPath);
+    const barcodeComparison = await compareBarcodeData(kv ?? {}, barcodeExtraction);
+    const validation = buildBarcodeValidation(kv, barcodeExtraction, barcodeComparison);
+    const barcodes = barcodeExtraction.entries.map((entry) => entry.text).filter((text) => text.trim().length > 0);
+    const barcodeWarnings = barcodeExtraction.warnings;
     await fs.unlink(tmpPath);
-    return NextResponse.json({ kv, barcodes, barcodeWarnings, validation, providerInfo });
+    return NextResponse.json({
+      kv,
+      barcodes,
+      barcodeWarnings,
+      barcodeComparison,
+      validation,
+      providerInfo,
+    });
   } catch (err: any) {
     console.error('OCR endpoint error', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
