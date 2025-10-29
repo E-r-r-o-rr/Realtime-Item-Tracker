@@ -41,6 +41,190 @@ interface BarcodeValidation {
 
 type ValidationStatus = "match" | "mismatch" | "no_barcode" | "missing_item_code";
 
+type ComparisonStatus = "MATCH" | "MISMATCH" | "MISSING";
+
+interface BarcodeComparisonRow {
+  key: string;
+  ocr: string;
+  barcodeLabel: string;
+  barcodeValue: string;
+  status: ComparisonStatus;
+  contextLabel?: string;
+}
+
+interface BarcodeComparisonSummary {
+  matched: number;
+  mismatched: number;
+  missing: number;
+}
+
+interface BarcodeOnlyEntry {
+  class: string;
+  labels: string[];
+  value: string;
+  count: number;
+}
+
+interface BarcodeComparisonReport {
+  rows: BarcodeComparisonRow[];
+  summary: BarcodeComparisonSummary;
+  library: {
+    entriesCount: number;
+    missedByOcrCount: number;
+    missedByOcr: BarcodeOnlyEntry[];
+  };
+  barcodeText?: string;
+}
+
+const sanitizeBarcodeComparison = (value: unknown): BarcodeComparisonReport | null => {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+
+  const toStatus = (status: unknown): ComparisonStatus => {
+    const normalized = typeof status === "string" ? status.toUpperCase() : "MISSING";
+    return normalized === "MATCH" || normalized === "MISMATCH" || normalized === "MISSING"
+      ? normalized
+      : "MISSING";
+  };
+
+  const rowSource = Array.isArray(raw.rows)
+    ? raw.rows
+    : Array.isArray(raw.results)
+    ? raw.results
+    : [];
+
+  const rawRows = (rowSource as unknown[])
+    .map((row) => {
+        if (!row || typeof row !== "object") return null;
+        const entry = row as Record<string, unknown>;
+        return {
+          key: typeof entry.key === "string" ? entry.key : "",
+            ocr: typeof entry.ocr === "string" ? entry.ocr : "",
+            barcodeLabel: typeof entry.barcodeLabel === "string"
+              ? entry.barcodeLabel
+              : typeof entry.barcode_label === "string"
+              ? entry.barcode_label
+              : "",
+            barcodeValue: typeof entry.barcodeValue === "string"
+              ? entry.barcodeValue
+              : typeof entry.barcode_value === "string"
+              ? entry.barcode_value
+              : "",
+            status: toStatus(entry.status),
+            contextLabel: typeof entry.contextLabel === "string"
+              ? entry.contextLabel
+            : typeof entry.context_label === "string"
+            ? entry.context_label
+            : undefined,
+        } as BarcodeComparisonRow;
+    })
+    .filter((row): row is BarcodeComparisonRow => Boolean(row));
+
+  const rows = rawRows.map((row) => {
+    if (row.status === "MATCH") return row;
+    const barcodeValue = row.barcodeValue.trim();
+    if (!barcodeValue) {
+      return { ...row, status: "MISSING" as ComparisonStatus };
+    }
+    return row;
+  });
+
+  const summarySource =
+    raw.summary && typeof raw.summary === "object" ? (raw.summary as Record<string, unknown>) : {};
+  const toNumber = (input: unknown) => (typeof input === "number" && Number.isFinite(input) ? input : 0);
+  const baseSummary: BarcodeComparisonSummary = {
+    matched: toNumber(summarySource.matched),
+    mismatched: toNumber(summarySource.mismatched),
+    missing: toNumber(summarySource.missing),
+  };
+
+  const computedSummary = rows.reduce(
+    (acc, row) => {
+      switch (row.status) {
+        case "MATCH":
+          acc.matched += 1;
+          break;
+        case "MISSING":
+          acc.missing += 1;
+          break;
+        default:
+          acc.mismatched += 1;
+      }
+      return acc;
+    },
+    { matched: 0, mismatched: 0, missing: 0 } as BarcodeComparisonSummary,
+  );
+
+  const summary = rows.length > 0 ? computedSummary : baseSummary;
+
+  const librarySource =
+    raw.library && typeof raw.library === "object" ? (raw.library as Record<string, unknown>) : {};
+  const missedRaw =
+    Array.isArray(librarySource.missedByOcr)
+      ? librarySource.missedByOcr
+      : Array.isArray(librarySource.missed_by_ocr)
+      ? librarySource.missed_by_ocr
+      : [];
+  const missed: BarcodeOnlyEntry[] = missedRaw
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const item = entry as Record<string, unknown>;
+      return {
+        class: typeof item.class === "string" ? item.class : "unknown",
+        labels: Array.isArray(item.labels)
+          ? item.labels.filter((lbl): lbl is string => typeof lbl === "string")
+          : [],
+        value: typeof item.value === "string" ? item.value : "",
+        count: toNumber(item.count),
+      } as BarcodeOnlyEntry;
+    })
+    .filter((entry): entry is BarcodeOnlyEntry => Boolean(entry));
+
+  const library = {
+    entriesCount: toNumber(librarySource.entriesCount ?? librarySource.entries_count),
+    missedByOcrCount: toNumber(librarySource.missedByOcrCount ?? librarySource.missed_by_ocr_count),
+    missedByOcr: missed,
+  };
+
+  const barcodeTextValue =
+    typeof raw.barcodeText === "string"
+      ? raw.barcodeText
+      : typeof raw.barcode_text === "string"
+      ? raw.barcode_text
+      : undefined;
+
+  return { rows, summary, library, barcodeText: barcodeTextValue };
+};
+
+const COMPARISON_STATUS_META: Record<ComparisonStatus, { symbol: string; label: string; className: string }> = {
+  MATCH: { symbol: "✓", label: "Match", className: "text-emerald-400" },
+  MISMATCH: { symbol: "✕", label: "Mismatch", className: "text-rose-400" },
+  MISSING: { symbol: "–", label: "Missing", className: "text-amber-300" },
+};
+
+const DEMO_RECORDS: KvPairs[] = [
+  {
+    destination_warehouse_id: "R1-A",
+    item_name: "Widget Alpha",
+    tracking_id: "TRK900001",
+    truck_number: "301",
+    ship_date: "2025-09-16",
+    expected_departure_time: "10:15",
+    origin: "Dock 1",
+    item_code: "TRK900001",
+  },
+  {
+    destination_warehouse_id: "R2-B",
+    item_name: "Gizmo Max",
+    tracking_id: "TRK900002",
+    truck_number: "302",
+    ship_date: "2025-09-16",
+    expected_departure_time: "11:40",
+    origin: "Inbound A",
+    item_code: "TRK900002",
+  },
+];
+
 interface ApiValidation {
   status: ValidationStatus;
   message: string;
@@ -49,8 +233,10 @@ interface ApiValidation {
 
 interface ApiOcrResponse {
   kv?: KvPairs;
+  selectedKv?: KvPairs;
   barcodes?: string[];
   barcodeWarnings?: string[];
+  barcodeComparison?: BarcodeComparisonReport;
   validation?: ApiValidation;
   providerInfo?: ProviderInfo;
   error?: string;
@@ -204,135 +390,48 @@ const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
 
 const normalizeKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
-const BARCODE_FIELD_TITLES = [
-  "Product Name",
-  "Truck ID",
-  "Date",
-  "Current Warehouse ID",
-  "Destination Warehouse ID",
-  "Estimated Departure Time",
-  "Estimated Arrival Time",
-  "Loading Dock ID",
-  "Shipping Dock ID",
-  "Loading Bay",
-  "Priority Class",
-  "Order ID",
-  "Loading Time",
-  "Loading Priority",
-  "Stow Position",
-  "Order Reference",
-  "Shipping Carrier",
-];
-
-const PREFERRED_ID_KEYS = [
-  "order_id",
-  "orderid",
-  "tracking_id",
-  "trackingid",
-  "order_reference",
-  "orderreference",
-];
-
-const ID_LIKE_SET = new Set(
-  ["order_id", "orderid", "tracking_id", "trackingid", "item_code", "itemcode", "order_reference", "orderreference"].map(
-    normalizeKey,
-  ),
-);
-
-const COMPACT_BARCODE_KEYS = new Set(
-  [
-    "order_id",
-    "orderid",
-    "tracking_id",
-    "trackingid",
-    "truck_id",
-    "truckid",
-    "truck_number",
-    "trucknumber",
-    "destinationwarehouseid",
-    "currentwarehouseid",
-    "shippingdockid",
-    "loadingdockid",
-    "loadingbay",
-    "stowposition",
-    "orderreference",
-  ].map(normalizeKey),
-);
-
-type ParsedTime = { hour24: number; minute: number; second: number; hadSeconds: boolean };
-
-const parseTime = (value: string): ParsedTime | null => {
-  const match = value
-    .trim()
-    .toLowerCase()
-    .match(/^(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*([ap]m)?$/);
-  if (!match) return null;
-  let hour = parseInt(match[1] ?? "", 10);
-  const minute = parseInt(match[2] ?? "0", 10);
-  const second = parseInt(match[3] ?? "0", 10);
-  if (Number.isNaN(hour) || Number.isNaN(minute) || Number.isNaN(second)) return null;
-  const meridiem = match[4];
-  if (meridiem) {
-    const isPm = meridiem === "pm";
-    if (isPm && hour < 12) hour += 12;
-    if (!isPm && hour === 12) hour = 0;
+const toDisplayString = (value: unknown): string => {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => toDisplayString(entry))
+      .filter((segment) => segment.length > 0)
+      .join(", ");
   }
-  hour = hour % 24;
-  return { hour24: hour, minute, second, hadSeconds: Boolean(match[3]) };
-};
-
-const formatTimeForDisplay = (parts: ParsedTime): string => {
-  let hour = parts.hour24 % 12;
-  if (hour === 0) hour = 12;
-  const meridiem = parts.hour24 >= 12 ? "PM" : "AM";
-  const minute = parts.minute.toString().padStart(2, "0");
-  const includeSeconds = parts.hadSeconds || parts.second !== 0;
-  const second = parts.second.toString().padStart(2, "0");
-  return `${hour}:${minute}${includeSeconds ? `:${second}` : ""} ${meridiem}`;
-};
-
-const normalizeTimeForComparison = (parts: ParsedTime): string => {
-  const hour = parts.hour24.toString().padStart(2, "0");
-  const minute = parts.minute.toString().padStart(2, "0");
-  const second = parts.second.toString().padStart(2, "0");
-  return `${hour}:${minute}:${second}`;
-};
-
-type ParsedDate = { year: number; month: number; day: number };
-
-const parseDate = (value: string): ParsedDate | null => {
-  const trimmed = value.trim();
-  const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (iso) {
-    const year = parseInt(iso[1], 10);
-    const month = parseInt(iso[2], 10);
-    const day = parseInt(iso[3], 10);
-    if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) return null;
-    return { year, month, day };
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch (error) {
+      return String(value);
+    }
   }
-  const slash = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-  if (slash) {
-    let year = parseInt(slash[3], 10);
-    const month = parseInt(slash[1], 10);
-    const day = parseInt(slash[2], 10);
-    if (slash[3].length === 2) year += year >= 70 ? 1900 : 2000;
-    if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) return null;
-    return { year, month, day };
+  return String(value).trim();
+};
+
+const toNormalizedMap = (pairs: KvPairs | null): Map<string, string> => {
+  const map = new Map<string, string>();
+  if (!pairs) return map;
+  for (const [key, rawValue] of Object.entries(pairs)) {
+    if (typeof key !== "string") continue;
+    const normalizedKey = normalizeKey(key);
+    if (!normalizedKey) continue;
+    map.set(normalizedKey, toDisplayString(rawValue));
   }
-  return null;
+  return map;
 };
 
-const formatDateForDisplay = (parts: ParsedDate): string => {
-  const month = parts.month.toString().padStart(2, "0");
-  const day = parts.day.toString().padStart(2, "0");
-  return `${month}/${day}/${parts.year}`;
+const getValueFromMap = (map: Map<string, string>, keys: string[]): string => {
+  for (const key of keys) {
+    const candidate = map.get(normalizeKey(key));
+    if (candidate && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return "";
 };
 
-const normalizeDateForComparison = (parts: ParsedDate): string => {
-  const month = parts.month.toString().padStart(2, "0");
-  const day = parts.day.toString().padStart(2, "0");
-  return `${parts.year.toString().padStart(4, "0")}-${month}-${day}`;
-};
+
 
 const OCR_TO_BARCODE_KEY: Record<string, string> = (() => {
   const m: Record<string, string> = {};
@@ -365,14 +464,22 @@ const OCR_TO_BARCODE_KEY: Record<string, string> = (() => {
 })();
 
 const LIVE_BUFFER_FIELDS: Array<{ label: string; keys: string[] }> = [
-  { label: "Destination", keys: ["destinationwarehouseid", "destination_warehouse_id"] },
+  { label: "Destination", keys: ["destination", "destinationwarehouseid", "destination_warehouse_id"] },
   {
     label: "Item Name",
     keys: ["item_name", "itemname", "product_name", "productname", "product", "item"],
   },
   {
     label: "Tracking ID (Order ID)",
-    keys: ["order_id", "orderid", "tracking_id", "trackingid", "order_reference", "orderreference"],
+    keys: [
+      "order_id",
+      "orderid",
+      "tracking_id",
+      "trackingid",
+      "order_reference",
+      "orderreference",
+      "trackingorderid",
+    ],
   },
   {
     label: "Truck Number",
@@ -408,320 +515,6 @@ const BARCODE_ALIAS_GROUPS: string[][] = [
   ["Shipping Carrier", "Carrier"],
 ];
 
-const BARCODE_TITLE_SET = new Set(BARCODE_FIELD_TITLES.map((title) => normalizeKey(title)));
-
-const BARCODE_ALIAS_LOOKUP: Record<string, string> = (() => {
-  const map: Record<string, string> = {};
-  for (const group of BARCODE_ALIAS_GROUPS) {
-    const canonicalAlias = group.find((alias) => BARCODE_TITLE_SET.has(normalizeKey(alias))) ?? group[0];
-    const canonicalKey = normalizeKey(canonicalAlias);
-    for (const alias of group) {
-      map[normalizeKey(alias)] = canonicalKey;
-    }
-  }
-  return map;
-})();
-
-const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|\[\]\\]/g, "\\$&");
-
-const DEMO_RECORDS: KvPairs[] = [
-  {
-    destination_warehouse_id: "R1-A",
-    item_name: "Widget Alpha",
-    tracking_id: "TRK900001",
-    truck_number: "301",
-    ship_date: "2025-09-16",
-    expected_departure_time: "10:15",
-    origin: "Dock 1",
-    item_code: "TRK900001",
-  },
-  {
-    destination_warehouse_id: "R2-B",
-    item_name: "Gizmo Max",
-    tracking_id: "TRK900002",
-    truck_number: "302",
-    ship_date: "2025-09-16",
-    expected_departure_time: "11:40",
-    origin: "Inbound A",
-    item_code: "TRK900002",
-  },
-  {
-    destination_warehouse_id: "R3-C",
-    item_name: "Box Large",
-    tracking_id: "TRK900003",
-    truck_number: "305",
-    ship_date: "2025-09-17",
-    expected_departure_time: "09:05",
-    origin: "Dock 2",
-    item_code: "TRK900003",
-  },
-];
-
-const normalizeForSearch = (value: string): string =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const buildBarcodeSearchText = (barcodes: string[]): string | null => {
-  if (!Array.isArray(barcodes) || barcodes.length === 0) return null;
-  const combined = barcodes.join(" ");
-  const normalized = normalizeForSearch(combined);
-  return normalized.length > 0 ? normalized : null;
-};
-
-const hasKeyValueInBarcode = (barcodeText: string, key: string, value: string): boolean => {
-  const normalizedValue = normalizeForSearch(value);
-  if (!normalizedValue) return false;
-
-  const normalizedKeyWords = normalizeForSearch(key)
-    .split(" ")
-    .filter(Boolean);
-  const meaningfulWords = normalizedKeyWords.filter((word) => word.length > 2);
-  const windowRadius = 60;
-
-  let index = barcodeText.indexOf(normalizedValue);
-  while (index !== -1) {
-    const start = Math.max(0, index - windowRadius);
-    const end = Math.min(barcodeText.length, index + normalizedValue.length + windowRadius);
-    const context = barcodeText.slice(start, end);
-
-    if (meaningfulWords.length === 0 || meaningfulWords.some((word) => context.includes(word))) {
-      return true;
-    }
-
-    index = barcodeText.indexOf(normalizedValue, index + normalizedValue.length);
-  }
-
-  return false;
-};
-
-const MATCH_STATES = {
-  match: { symbol: "✓", label: "Match", className: "text-green-600" },
-  mismatch: { symbol: "✗", label: "Mismatch", className: "text-red-600" },
-  noBarcode: { symbol: "–", label: "No barcode", className: "text-slate-500" },
-  noValue: { symbol: "–", label: "No OCR value", className: "text-slate-500" },
-} as const;
-
-type MatchState = (typeof MATCH_STATES)[keyof typeof MATCH_STATES];
-
-interface RowComparison {
-  barcodeDisplay: string;
-  barcodeHasValue: boolean;
-  match: MatchState;
-}
-
-interface BarcodeFieldValue {
-  raw: string;
-  display: string;
-  comparable: string;
-}
-
-interface BarcodeKeyValueData {
-  kv: Map<string, string>;
-  rawValues: string[];
-}
-
-const formatBarcodeValue = (normalizedKey: string, value: string): BarcodeFieldValue => {
-  const raw = value;
-  const trimmed = value.trim();
-  const lowerKey = normalizedKey.toLowerCase();
-
-  if (!trimmed) {
-    return { raw, display: "", comparable: "" };
-  }
-
-  if (COMPACT_BARCODE_KEYS.has(lowerKey) || ID_LIKE_SET.has(lowerKey)) {
-    let displayValue = trimmed.toUpperCase();
-    displayValue = displayValue.replace(/\s*-\s*/g, "-");
-    displayValue = displayValue.replace(/\s+/g, "");
-    if (lowerKey.includes("truck")) {
-      const hasDigit = /\d/.test(displayValue);
-      if (hasDigit) displayValue = displayValue.replace(/^[A-Z]+/, "");
-    }
-    const comparable = displayValue.replace(/[^A-Z0-9]/g, "").toLowerCase();
-    return { raw, display: displayValue, comparable };
-  }
-
-  if (lowerKey.includes("time")) {
-    const parsed = parseTime(trimmed);
-    if (parsed) {
-      return {
-        raw,
-        display: formatTimeForDisplay(parsed),
-        comparable: normalizeTimeForComparison(parsed),
-      };
-    }
-  }
-
-  if (lowerKey.includes("date")) {
-    const parsed = parseDate(trimmed);
-    if (parsed) {
-      return {
-        raw,
-        display: formatDateForDisplay(parsed),
-        comparable: normalizeDateForComparison(parsed),
-      };
-    }
-  }
-
-  const normalized = trimmed.replace(/\s+/g, " ");
-  return { raw, display: normalized, comparable: normalized.toLowerCase() };
-};
-
-const getCanonicalBarcodeKey = (rawKey: string): string | null => {
-  const normalized = normalizeKey(rawKey);
-  if (!normalized) return null;
-  return BARCODE_ALIAS_LOOKUP[normalized] ?? (BARCODE_TITLE_SET.has(normalized) ? normalized : null);
-};
-
-const buildBarcodeKeyValueData = (barcodes: string[]): BarcodeKeyValueData => {
-  const kv = new Map<string, string>();
-  const rawValues = new Set<string>();
-
-  const addValue = (key: string, value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    const existing = kv.get(key);
-    if (!existing || trimmed.length > existing.length) {
-      kv.set(key, trimmed);
-    }
-    rawValues.add(trimmed);
-  };
-
-  const textBlocks = (Array.isArray(barcodes) ? barcodes : []).map((b) =>
-    typeof b === "string" ? b : String(b ?? ""),
-  );
-
-  const tryParseDelimitedBlock = (block: string) => {
-    const separators = ["|", ";", "‖"];
-    for (const separator of separators) {
-      if (!block.includes(separator)) continue;
-      const parts = block
-        .split(separator)
-        .map((part) => part.trim())
-        .filter(Boolean);
-      if (parts.length < 2) continue;
-
-      let extracted = false;
-      for (let i = 0; i < parts.length; i += 1) {
-        const possibleKey = parts[i];
-        const canonical = getCanonicalBarcodeKey(possibleKey);
-        if (!canonical) continue;
-
-        let valueParts: string[] = [];
-        for (let j = i + 1; j < parts.length; j += 1) {
-          const maybeKey = getCanonicalBarcodeKey(parts[j]);
-          if (maybeKey) break;
-          valueParts.push(parts[j]);
-          i = j;
-        }
-
-        const value = valueParts.join(" ").trim();
-        if (value) {
-          addValue(canonical, value);
-          extracted = true;
-        }
-      }
-
-      // Only early-return if we successfully extracted structured data.
-      if (extracted) {
-        return;
-      }
-    }
-  };
-
-  for (const block of textBlocks) {
-    if (!block) continue;
-    tryParseDelimitedBlock(block);
-    const lines = block.split(/\r?\n/);
-    for (const line of lines) {
-      const trimmedLine = line.trim();
-      if (!trimmedLine) continue;
-
-      const colonMatch = trimmedLine.match(/^(.+?)[\s]*[:=|]\s*(.+)$/);
-      if (colonMatch) {
-        const canonical = getCanonicalBarcodeKey(colonMatch[1]);
-        if (canonical) {
-          addValue(canonical, colonMatch[2]);
-          continue;
-        }
-      }
-
-      const dashMatch = trimmedLine.match(/^(.+?)\s+-\s+(.+)$/);
-      if (dashMatch) {
-        const canonical = getCanonicalBarcodeKey(dashMatch[1]);
-        if (canonical) {
-          addValue(canonical, dashMatch[2]);
-          continue;
-        }
-      }
-
-      const doubleSpaceMatch = trimmedLine.match(/^(.+?)\s{2,}(.+)$/);
-      if (doubleSpaceMatch) {
-        const canonical = getCanonicalBarcodeKey(doubleSpaceMatch[1]);
-        if (canonical) {
-          addValue(canonical, doubleSpaceMatch[2]);
-        }
-      }
-    }
-
-    const tokens = block.match(/[A-Za-z0-9]{4,}/g);
-    if (tokens) {
-      for (const token of tokens) {
-        rawValues.add(token);
-      }
-    }
-  }
-
-  const combinedText = textBlocks.join("\n");
-  for (const group of BARCODE_ALIAS_GROUPS) {
-    const canonicalAlias = group.find((alias) => BARCODE_TITLE_SET.has(normalizeKey(alias))) ?? group[0];
-    const canonicalKey = getCanonicalBarcodeKey(canonicalAlias);
-    if (!canonicalKey || kv.has(canonicalKey)) continue;
-    for (const alias of group) {
-      const aliasPattern = escapeRegex(alias);
-      const regex = new RegExp(`${aliasPattern}\\s*[#:;=\\|\\-]*\\s*([^\\n\\r]+)`, "i");
-      const match = combinedText.match(regex);
-      if (match) {
-        addValue(canonicalKey, match[1]);
-        break;
-      }
-    }
-  }
-
-  return { kv, rawValues: Array.from(rawValues) };
-};
-
-const pickBestBarcodeId = (kv: Map<string, string>, rawValues: string[]): string | null => {
-  for (const key of PREFERRED_ID_KEYS) {
-    const candidate = kv.get(normalizeKey(key));
-    if (candidate && candidate.trim()) {
-      return candidate.trim();
-    }
-  }
-
-  const candidates = new Set<string>();
-  for (const value of kv.values()) {
-    const trimmed = value.trim();
-    if (trimmed) candidates.add(trimmed);
-  }
-  for (const value of rawValues) {
-    const trimmed = String(value).trim();
-    if (trimmed) candidates.add(trimmed);
-  }
-
-  const ordered = Array.from(candidates).sort((a, b) => b.length - a.length);
-  for (const candidate of ordered) {
-    if (/\d/.test(candidate)) {
-      return candidate;
-    }
-  }
-
-  return ordered[0] ?? null;
-};
-
 const LABEL_TO_RECORD_KEY: Record<string, keyof LiveRecord> = {
   Destination: "destination",
   "Item Name": "itemName",
@@ -753,17 +546,40 @@ const buildLiveRecord = (getBufferValue: (keys: string[]) => string): LiveRecord
   return hasValue ? record : null;
 };
 
+const buildLiveRecordFromMap = (map: Map<string, string>): LiveRecord | null => {
+  if (!map || map.size === 0) return null;
+  return buildLiveRecord((keys) => getValueFromMap(map, keys));
+};
+
+const mergeLiveRecords = (primary: LiveRecord | null, secondary: LiveRecord | null): LiveRecord | null => {
+  if (!primary && !secondary) return null;
+  if (!secondary) return primary;
+  if (!primary) return secondary;
+
+  const merged: LiveRecord = { ...secondary };
+  (Object.keys(merged) as Array<keyof LiveRecord>).forEach((key) => {
+    const primaryValue = primary[key];
+    const fallbackValue = secondary[key];
+    merged[key] = primaryValue && primaryValue.trim() ? primaryValue : fallbackValue;
+  });
+  const hasValue = Object.values(merged).some((value) => Boolean(value && value.trim()));
+  return hasValue ? merged : null;
+};
+
 export default function ScannerDashboard() {
   const [file, setFile] = useState<File | null>(null);
   const [kv, setKv] = useState<KvPairs | null>(null);
+  const [selectedKv, setSelectedKv] = useState<KvPairs | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [barcodes, setBarcodes] = useState<string[]>([]);
   const [barcodeWarnings, setBarcodeWarnings] = useState<string[]>([]);
+  const [barcodeComparison, setBarcodeComparison] = useState<BarcodeComparisonReport | null>(null);
   const [validation, setValidation] = useState<BarcodeValidation | null>(null);
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
   const [bookingWarning, setBookingWarning] = useState<string | null>(null);
   const [bookingSuccess, setBookingSuccess] = useState<string | null>(null);
+  const [bookingLocated, setBookingLocated] = useState(false);
   const [vlmInfo, setVlmInfo] = useState<ProviderInfo | null>(null);
   const [checkingBooking, setCheckingBooking] = useState(false);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState<number>(DEFAULT_REFRESH_MS);
@@ -780,10 +596,21 @@ export default function ScannerDashboard() {
         setStatus(typeof maybeStatus === "string" ? maybeStatus : null);
 
         const maybeWarning = (parsed as { bookingWarning?: unknown }).bookingWarning;
-        setBookingWarning(typeof maybeWarning === "string" ? maybeWarning : null);
+        const normalizedWarning = typeof maybeWarning === "string" ? maybeWarning : null;
+        setBookingWarning(normalizedWarning);
 
         const maybeSuccess = (parsed as { bookingSuccess?: unknown }).bookingSuccess;
-        setBookingSuccess(typeof maybeSuccess === "string" ? maybeSuccess : null);
+        const normalizedSuccess = typeof maybeSuccess === "string" ? maybeSuccess : null;
+        setBookingSuccess(normalizedSuccess);
+
+        const maybeLocated = (parsed as { bookingLocated?: unknown }).bookingLocated;
+        if (typeof maybeLocated === "boolean") {
+          setBookingLocated(maybeLocated);
+        } else if (normalizedSuccess && normalizedSuccess.trim().length > 0) {
+          setBookingLocated(true);
+        } else if (normalizedWarning && normalizedWarning.trim().length > 0) {
+          setBookingLocated(false);
+        }
 
         const maybeProviderInfo = (parsed as { providerInfo?: unknown }).providerInfo;
         setVlmInfo(sanitizeProviderInfo(maybeProviderInfo));
@@ -791,6 +618,18 @@ export default function ScannerDashboard() {
         const maybeKv = (parsed as { kv?: unknown }).kv;
         if (maybeKv && typeof maybeKv === "object" && !Array.isArray(maybeKv)) {
           setKv(maybeKv as KvPairs);
+        }
+
+        const maybeSelectedRaw =
+          (parsed as { selectedKv?: unknown }).selectedKv ??
+          (parsed as { selected_kv?: unknown }).selected_kv ??
+          (parsed as { selectedKeyValues?: unknown }).selectedKeyValues ??
+          (parsed as { selected_key_values?: unknown }).selected_key_values ??
+          null;
+        if (maybeSelectedRaw && typeof maybeSelectedRaw === "object" && !Array.isArray(maybeSelectedRaw)) {
+          setSelectedKv(maybeSelectedRaw as KvPairs);
+        } else {
+          setSelectedKv(null);
         }
 
         const maybeBarcodes = (parsed as { barcodes?: unknown }).barcodes;
@@ -802,6 +641,9 @@ export default function ScannerDashboard() {
             ? maybeBarcodeWarnings.filter((v) => typeof v === "string")
             : [],
         );
+
+        const maybeBarcodeComparison = (parsed as { barcodeComparison?: unknown }).barcodeComparison;
+        setBarcodeComparison(sanitizeBarcodeComparison(maybeBarcodeComparison));
 
         const maybeValidation = (parsed as { validation?: unknown }).validation;
         if (maybeValidation && typeof maybeValidation === "object") {
@@ -841,10 +683,13 @@ export default function ScannerDashboard() {
         bookingSuccess,
         providerInfo: vlmInfo,
         kv,
+        selectedKv,
         barcodes,
         barcodeWarnings,
+        barcodeComparison,
         validation,
         refreshIntervalMs,
+        bookingLocated,
       };
       window.localStorage.setItem(PERSISTED_STATE_KEY, JSON.stringify(payload));
     } catch (error) {
@@ -855,10 +700,13 @@ export default function ScannerDashboard() {
     bookingWarning,
     bookingSuccess,
     kv,
+    selectedKv,
     barcodes,
     barcodeWarnings,
+    barcodeComparison,
     validation,
     vlmInfo,
+    bookingLocated,
     refreshIntervalMs,
     hasHydrated,
   ]);
@@ -877,6 +725,34 @@ export default function ScannerDashboard() {
     setLiveRecordState(record);
   }, []);
 
+  const comparisonRows = useMemo(() => {
+    if (barcodeComparison && Array.isArray(barcodeComparison.rows) && barcodeComparison.rows.length > 0) {
+      return barcodeComparison.rows;
+    }
+    if (!kv) return [] as BarcodeComparisonRow[];
+    return Object.entries(kv).map(([rawKey, rawVal]) => ({
+      key: rawKey,
+      ocr: String(rawVal ?? ""),
+      barcodeLabel: "",
+      barcodeValue: "",
+      status: "MISSING" as ComparisonStatus,
+      contextLabel: undefined,
+    }));
+  }, [barcodeComparison, kv]);
+
+  const barcodeOnlyEntries = useMemo(() => {
+    if (!barcodeComparison) return [] as BarcodeOnlyEntry[];
+    const candidates = Array.isArray(barcodeComparison.library?.missedByOcr)
+      ? barcodeComparison.library.missedByOcr
+      : [];
+    return candidates.filter((entry) => {
+      if (!entry) return false;
+      const hasLabel = Array.isArray(entry.labels) && entry.labels.some((label) => typeof label === "string" && label.trim().length > 0);
+      const hasValue = typeof entry.value === "string" && entry.value.trim().length > 0;
+      return hasLabel || hasValue;
+    });
+  }, [barcodeComparison]);
+
   const fetchLiveBuffer = useCallback(async (options?: { sync?: boolean }) => {
     try {
       const query = options?.sync ? "?sync=true" : "";
@@ -894,100 +770,70 @@ export default function ScannerDashboard() {
         updateLiveRecord(mapApiRecordToLive(payload.record));
       } else {
         updateLiveRecord(null);
+        setBookingLocated(false);
       }
     } catch (error) {
       console.error("Failed to load live buffer", error);
     }
-  }, [mapApiRecordToLive, updateLiveRecord]);
+  }, [mapApiRecordToLive, updateLiveRecord, setBookingLocated]);
 
   useEffect(() => {
-    fetchLiveBuffer({ sync: true });
-  }, [fetchLiveBuffer]);
+    fetchLiveBuffer(bookingLocated ? { sync: true } : undefined);
+  }, [fetchLiveBuffer, bookingLocated]);
 
   useEffect(() => {
-    if (!refreshIntervalMs || typeof window === "undefined") return;
+    if (!bookingLocated || !refreshIntervalMs || typeof window === "undefined") return;
     const id = window.setInterval(() => {
       fetchLiveBuffer({ sync: true });
     }, refreshIntervalMs);
     return () => window.clearInterval(id);
-  }, [refreshIntervalMs, fetchLiveBuffer]);
+  }, [refreshIntervalMs, fetchLiveBuffer, bookingLocated]);
 
   const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "my-secret-api-key";
 
-  const ocrKv = useMemo(() => {
-    const m = new Map<string, string>();
-    if (!kv) return m;
-    const toStr = (v: any) =>
-      v == null ? "" : Array.isArray(v) ? v.join(", ") : typeof v === "object" ? JSON.stringify(v) : String(v);
-    for (const [k, v] of Object.entries(kv)) m.set(normalizeKey(k), toStr(v));
-    return m;
-  }, [kv]);
+  const allKvMap = useMemo(() => toNormalizedMap(kv), [kv]);
+  const selectedMap = useMemo(() => toNormalizedMap(selectedKv), [selectedKv]);
 
-  const barcodeSearchText = useMemo(() => buildBarcodeSearchText(barcodes), [barcodes]);
-  const { kv: barcodeKv, rawValues: barcodeValues } = useMemo(
-    () => buildBarcodeKeyValueData(barcodes),
-    [barcodes],
+  const getBufferValue = useCallback((keys: string[]) => getValueFromMap(allKvMap, keys), [allKvMap]);
+
+  const bufferDestination = useMemo(() => {
+    if (!LIVE_BUFFER_FIELDS[0]) return "";
+    return getBufferValue(LIVE_BUFFER_FIELDS[0].keys);
+  }, [getBufferValue]);
+
+  const selectedLiveRecord = useMemo(() => buildLiveRecordFromMap(selectedMap), [selectedMap]);
+  const fallbackLiveRecord = useMemo(() => buildLiveRecordFromMap(allKvMap), [allKvMap]);
+  const mergedLiveRecord = useMemo(
+    () => mergeLiveRecords(selectedLiveRecord, fallbackLiveRecord),
+    [selectedLiveRecord, fallbackLiveRecord],
   );
+  const hasSourceData = selectedMap.size > 0 || allKvMap.size > 0;
 
-  const getBarcodeValueForOcrKey = (normalizedOcrKey: string): BarcodeFieldValue | null => {
-    const mapped = OCR_TO_BARCODE_KEY[normalizedOcrKey];
-    if (mapped) {
-      const v = barcodeKv.get(mapped);
-      if (v && v.trim()) return formatBarcodeValue(normalizedOcrKey, v);
-    }
-    if (ID_LIKE_SET.has(normalizedOcrKey)) {
-      const id = pickBestBarcodeId(barcodeKv, barcodeValues);
-      if (id) return formatBarcodeValue(normalizedOcrKey, id);
-    }
-    return null;
-  };
-
-  const getRowMatch = (
-    normalizedKey: string,
-    ocrValue: string,
-    barcodeValue: BarcodeFieldValue | null,
-  ) => {
-    if (!barcodeValue) return { symbol: "–", label: "Not compared", className: "text-slate-500" };
-    const ocrComparable = formatBarcodeValue(normalizedKey, ocrValue).comparable;
-    if (ocrComparable && ocrComparable === barcodeValue.comparable) {
-      return { symbol: "✓", label: "Match", className: "text-green-600" };
-    }
-    return { symbol: "✗", label: "Mismatch", className: "text-red-600" };
-  };
-
-  const getBufferValue = (keys: string[]) => {
-    for (const k of keys) {
-      const v = ocrKv.get(normalizeKey(k));
-      if (v && v.trim()) return v.trim();
-    }
-    return "";
-  };
-
-  const bufferDestination = LIVE_BUFFER_FIELDS[0]
-    ? getBufferValue(LIVE_BUFFER_FIELDS[0].keys)
-    : "";
   const activeDestination =
     (liveRecord?.destination && liveRecord.destination.trim()) ||
     (bufferDestination && bufferDestination.trim()) ||
     "";
 
   useEffect(() => {
-    if (!kv) return;
-    const record = buildLiveRecord(getBufferValue);
-    if (record) {
-      updateLiveRecord(record);
+    if (!hasSourceData) return;
+    if (!mergedLiveRecord) {
+      updateLiveRecord(null);
+      return;
     }
-  }, [kv, updateLiveRecord]);
+    updateLiveRecord(mergedLiveRecord);
+  }, [hasSourceData, mergedLiveRecord, updateLiveRecord]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     setFile(f ?? null);
     setKv(null);
+    setSelectedKv(null);
     setStatus(null);
     setBarcodes([]);
     setBarcodeWarnings([]);
     setValidation(null);
     setBookingWarning(null);
+    setBookingLocated(false);
   };
 
   const scanDocument = async () => {
@@ -1022,8 +868,10 @@ export default function ScannerDashboard() {
       if (errorMessage) {
         setStatus(errorMessage);
         setKv(null);
+        setSelectedKv(null);
         setBarcodes([]);
         setBarcodeWarnings([]);
+        setBarcodeComparison(null);
         setValidation(null);
         setBookingWarning(null);
         setBookingSuccess(null);
@@ -1032,9 +880,16 @@ export default function ScannerDashboard() {
         return;
       }
 
-      setKv(data.kv || {});
+      const kvPayload = data.kv && typeof data.kv === "object" ? (data.kv as KvPairs) : {};
+      const rawSelected = data.selectedKv ?? (data as { selected_key_values?: unknown }).selected_key_values ?? null;
+      const selectedPayload =
+        rawSelected && typeof rawSelected === "object" && !Array.isArray(rawSelected) ? (rawSelected as KvPairs) : {};
+
+      setKv(kvPayload);
+      setSelectedKv(selectedPayload);
       setBarcodes(Array.isArray(data.barcodes) ? data.barcodes : []);
       setBarcodeWarnings(Array.isArray(data.barcodeWarnings) ? data.barcodeWarnings : []);
+      setBarcodeComparison(sanitizeBarcodeComparison(data.barcodeComparison));
       setValidation(toClientValidation(data.validation));
 
       const statusFromValidation: Record<ValidationStatus, string> = {
@@ -1047,31 +902,15 @@ export default function ScannerDashboard() {
       const vStatus = data.validation?.status;
       if (vStatus) setStatus(statusFromValidation[vStatus]);
 
-      const normalizedKv = new Map<string, string>();
-      if (data.kv) {
-        for (const [key, value] of Object.entries(data.kv)) {
-          const normalized = normalizeKey(key);
-          const formatted =
-            value == null
-              ? ""
-              : Array.isArray(value)
-              ? value.join(", ")
-              : typeof value === "object"
-              ? JSON.stringify(value)
-              : String(value);
-          normalizedKv.set(normalized, formatted.trim());
-        }
-      }
-
-      const recordCandidate = buildLiveRecord((keys) => {
-        for (const key of keys) {
-          const val = normalizedKv.get(normalizeKey(key));
-          if (val && val.trim()) return val.trim();
-        }
-        return "";
-      });
+      const normalizedAllMap = toNormalizedMap(kvPayload);
+      const normalizedSelectedMap = toNormalizedMap(selectedPayload);
+      const recordCandidate = mergeLiveRecords(
+        buildLiveRecordFromMap(normalizedSelectedMap),
+        buildLiveRecordFromMap(normalizedAllMap),
+      );
 
       if (recordCandidate) {
+        updateLiveRecord(recordCandidate);
         const missingField = (Object.entries(recordCandidate) as Array<[keyof LiveRecord, string]>).find(
           ([, value]) => !value || !value.trim(),
         );
@@ -1082,6 +921,7 @@ export default function ScannerDashboard() {
           setBookingWarning(null);
           setBookingSuccess(null);
           setVlmInfo(null);
+          setBookingLocated(false);
         } else {
           const trackingIdForStatus = recordCandidate.trackingId;
           setStatus(`Logging scan for ${trackingIdForStatus}…`);
@@ -1128,10 +968,13 @@ export default function ScannerDashboard() {
             const trackedId = record?.trackingId || recordCandidate.trackingId;
             if (warning) {
               setBookingSuccess(null);
+              setBookingLocated(false);
             } else if (trackedId) {
               setBookingSuccess(`Booked item found for ${trackedId}`);
+              setBookingLocated(true);
             } else {
               setBookingSuccess("Booked item found");
+              setBookingLocated(true);
             }
             if (record) {
               const nextRecord: LiveRecord = {
@@ -1161,6 +1004,8 @@ export default function ScannerDashboard() {
             setVlmInfo(nextProviderInfo ?? null);
           }
         }
+      } else {
+        updateLiveRecord(null);
       }
     } catch (err) {
       console.error(err);
@@ -1177,9 +1022,19 @@ export default function ScannerDashboard() {
     const sample = DEMO_RECORDS[Math.floor(Math.random() * DEMO_RECORDS.length)];
     setFile(null);
     setKv(sample);
+    setSelectedKv({
+      Destination: toDisplayString(sample.destination_warehouse_id),
+      "Item Name": toDisplayString(sample.item_name),
+      "Tracking/Order ID": toDisplayString(sample.tracking_id ?? sample.item_code),
+      "Truck Number": toDisplayString(sample.truck_number),
+      "Ship Date": toDisplayString(sample.ship_date),
+      "Expected Departure Time": toDisplayString(sample.expected_departure_time),
+      Origin: toDisplayString(sample.origin),
+    });
     setStatus("Demo scan loaded into the live buffer.");
     setBarcodes([]);
     setBarcodeWarnings([]);
+    setBarcodeComparison(null);
     setValidation(null);
     setBookingWarning(null);
     setBookingSuccess(null);
@@ -1223,6 +1078,7 @@ export default function ScannerDashboard() {
         const successCopy = message || `Booked item found for ${refreshedTrackingId}`;
         setBookingWarning(null);
         setBookingSuccess(successCopy);
+        setBookingLocated(true);
         const statusSegments: string[] = [];
         if (refreshedTrackingId) {
           statusSegments.push(`Order ${refreshedTrackingId} -`);
@@ -1233,6 +1089,7 @@ export default function ScannerDashboard() {
         const warningCopy = warningMessage || message || "Booked item not found";
         setBookingWarning(warningCopy);
         setBookingSuccess(null);
+        setBookingLocated(false);
         const statusSegments: string[] = [];
         if (refreshedTrackingId) {
           statusSegments.push(`Order ${refreshedTrackingId} -`);
@@ -1251,12 +1108,13 @@ export default function ScannerDashboard() {
   const handleRefreshIntervalChange = useCallback(
     (event: React.ChangeEvent<HTMLSelectElement>) => {
       const rawValue = Number(event.target.value);
+      if (!bookingLocated) return;
       if (Number.isFinite(rawValue) && rawValue > 0) {
         setRefreshIntervalMs(rawValue);
         fetchLiveBuffer({ sync: true });
       }
     },
-    [fetchLiveBuffer],
+    [fetchLiveBuffer, bookingLocated],
   );
 
   const handleWriteStorage = async () => {
@@ -1302,6 +1160,7 @@ export default function ScannerDashboard() {
         updateLiveRecord(null);
       }
       setKv(null);
+      setSelectedKv(null);
       setBarcodes([]);
       setBarcodeWarnings([]);
       setValidation(null);
@@ -1309,6 +1168,7 @@ export default function ScannerDashboard() {
       setBookingWarning(null);
       setBookingSuccess(null);
       setVlmInfo(null);
+      setBookingLocated(false);
     } catch (error) {
       console.error(error);
       setStatus(error instanceof Error ? error.message : "Failed to clear live buffer.");
@@ -1498,23 +1358,30 @@ export default function ScannerDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(kv).map(([rawKey, rawVal]) => {
-                  const ocrKey = normalizeKey(rawKey);
-                  const ocrValue = String(rawVal ?? "");
-                  const barcodeValue = getBarcodeValueForOcrKey(ocrKey);
-                  const match = getRowMatch(ocrKey, ocrValue, barcodeValue);
-
+                {comparisonRows.map((row, index) => {
+                  const meta = COMPARISON_STATUS_META[row.status] ?? COMPARISON_STATUS_META.MISSING;
+                  const hasBarcodeValue = row.barcodeValue && row.barcodeValue.trim().length > 0;
+                  const contextLabel = row.contextLabel || row.barcodeLabel;
                   return (
-                    <tr key={rawKey} className="border-b border-white/10 last:border-0">
-                      <td className="px-4 py-3 font-medium text-slate-100">{rawKey}</td>
-                      <td className="px-4 py-3 text-slate-200">{ocrValue}</td>
-                      <td className={`px-4 py-3 ${barcodeValue ? "text-slate-200" : "text-slate-500"}`}>
-                        {barcodeValue?.display ?? "—"}
+                    <tr key={`${row.key}-${index}`} className="border-b border-white/10 last:border-0">
+                      <td className="px-4 py-3 font-medium text-slate-100">{row.key}</td>
+                      <td className="px-4 py-3 text-slate-200">{row.ocr}</td>
+                      <td className={`px-4 py-3 ${hasBarcodeValue ? "text-slate-200" : "text-slate-500"}`}>
+                        {hasBarcodeValue ? (
+                          <div className="flex flex-col">
+                            <span>{row.barcodeValue}</span>
+                            {contextLabel && (
+                              <span className="text-xs uppercase tracking-wide text-slate-400/80">{contextLabel}</span>
+                            )}
+                          </div>
+                        ) : (
+                          "—"
+                        )}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <span className={`inline-flex items-center justify-end gap-2 text-sm ${match.className}`}>
-                          <span aria-hidden>{match.symbol}</span>
-                          <span className="text-xs uppercase tracking-wide">{match.label}</span>
+                        <span className={`inline-flex items-center justify-end gap-2 text-sm ${meta.className}`}>
+                          <span aria-hidden>{meta.symbol}</span>
+                          <span className="text-xs uppercase tracking-wide">{meta.label}</span>
                         </span>
                       </td>
                     </tr>
@@ -1523,6 +1390,53 @@ export default function ScannerDashboard() {
               </tbody>
             </table>
           </div>
+
+          {barcodeComparison && (
+            <p className="mt-4 text-xs text-slate-300">
+              Comparison summary: {barcodeComparison.summary.matched} match{barcodeComparison.summary.matched === 1 ? "" : "es"}, {barcodeComparison.summary.mismatched} mismatch{barcodeComparison.summary.mismatched === 1 ? "" : "es"}, {barcodeComparison.summary.missing} missing.
+            </p>
+          )}
+
+          {barcodeOnlyEntries.length > 0 && (
+            <div className="mt-6 rounded-2xl border border-indigo-400/20 bg-indigo-500/5 p-4">
+              <div className="flex flex-col gap-1 text-sm text-slate-100">
+                <span className="font-semibold uppercase tracking-[0.3em] text-indigo-200/80">
+                  Barcode-only values
+                </span>
+                <p className="text-xs text-slate-300/90">
+                  These values were detected in the barcode payload but were not matched to any OCR keys. Review them to see if
+                  the OCR output is missing required fields.
+                </p>
+              </div>
+              <div className="mt-3 overflow-x-auto">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-white/5 text-left font-medium uppercase tracking-wide text-slate-300/80">
+                    <tr>
+                      <th className="px-3 py-2">Labels</th>
+                      <th className="px-3 py-2">Value</th>
+                      <th className="px-3 py-2">Class</th>
+                      <th className="px-3 py-2 text-right">Count</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {barcodeOnlyEntries.map((entry, index) => {
+                      const displayLabels = entry.labels && entry.labels.length > 0
+                        ? entry.labels.filter((label) => label.trim().length > 0).join(", ") || "(unlabeled)"
+                        : "(unlabeled)";
+                      return (
+                        <tr key={`${entry.value}-${index}`} className="border-b border-white/10 last:border-0">
+                          <td className="px-3 py-2 text-slate-200">{displayLabels}</td>
+                          <td className="px-3 py-2 text-slate-100">{entry.value && entry.value.trim().length > 0 ? entry.value : "—"}</td>
+                          <td className="px-3 py-2 text-slate-300/90">{entry.class?.trim() || "unknown"}</td>
+                          <td className="px-3 py-2 text-right text-slate-200">{entry.count && entry.count > 0 ? entry.count : 1}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {validation && (
             <p
@@ -1594,20 +1508,22 @@ export default function ScannerDashboard() {
                   </span>
                 )}
               </div>
-              <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-slate-300/70 sm:flex-row sm:items-center sm:gap-3">
-                <span className="font-semibold text-slate-300/80">Auto refresh</span>
-                <select
-                  value={refreshIntervalMs}
-                  onChange={handleRefreshIntervalChange}
-                  className="rounded-full border border-white/15 bg-slate-900/70 px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-slate-100 shadow-sm transition focus:border-indigo-400 focus:outline-none focus:ring-0"
-                >
-                  {REFRESH_INTERVAL_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value} className="text-slate-900">
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {bookingLocated && (
+                <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-slate-300/70 sm:flex-row sm:items-center sm:gap-3">
+                  <span className="font-semibold text-slate-300/80">Auto refresh</span>
+                  <select
+                    value={refreshIntervalMs}
+                    onChange={handleRefreshIntervalChange}
+                    className="rounded-full border border-white/15 bg-slate-900/70 px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-slate-100 shadow-sm transition focus:border-indigo-400 focus:outline-none focus:ring-0"
+                  >
+                    {REFRESH_INTERVAL_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value} className="text-slate-900">
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
             </div>
           }
           footer={

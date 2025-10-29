@@ -201,8 +201,10 @@ def build_vlm_messages(
     img_b64 = encode_image_to_base64(image_path)
     instruction = (
         "You are given a shipping/order IMAGE and its OCR transcript.\n"
-        "Extract all visible header key/value pairs (ignore item rows). "
-        "Return a single flat JSON object. Do not wrap in code fences."
+        "Extract all the key values and return two JSON bodies.\n"
+        "1. A JSON (\"all_key_values\") containing all the key values on the order sheet without missing any.\n"
+        "2. A JSON (\"selected_key_values\") returning these key values: Destination, Item Name, Tracking/Order ID, Truck Number, Ship Date, Expected Departure Time, Origin.\n"
+        "Respond with a single JSON object that includes both keys. Do not wrap the output in code fences."
     )
     user_content = [
         {"type": "text", "text": instruction},
@@ -601,7 +603,51 @@ def maybe_zero_pad_dates(val: str, normalize_dates: bool) -> str:
         return f"{mm}/{dd}/{yyyy}"
     return DATE_RE.sub(repl, _trim(val))
 
-def parse_universal_kv(llm_raw: str, normalize_dates: bool=True) -> Dict[str, str]:
+def _coerce_kv_dict(value: Any, normalize_dates: bool) -> Dict[str, str]:
+    out = OrderedDict()
+
+    def assign(k: Any, v: Any):
+        if k is None:
+            return
+        key = _trim(str(k))
+        if not key:
+            return
+        val = "" if v is None else str(v)
+        out[key] = maybe_zero_pad_dates(val, normalize_dates)
+
+    if isinstance(value, dict):
+        for k, v in value.items():
+            assign(k, v)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                for k, v in item.items():
+                    assign(k, v)
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                k, v = item
+                assign(k, v)
+
+    return dict(out)
+
+
+def _normalize_structured_payload(obj: Dict[str, Any], normalize_dates: bool) -> Dict[str, Dict[str, str]]:
+    lowered = {str(k).lower(): k for k in obj.keys()}
+    all_key = lowered.get("all_key_values")
+    selected_key = lowered.get("selected_key_values")
+
+    all_dict = _coerce_kv_dict(obj.get(all_key), normalize_dates) if all_key else {}
+    selected_dict = _coerce_kv_dict(obj.get(selected_key), normalize_dates) if selected_key else {}
+
+    if not all_dict:
+        all_dict = _coerce_kv_dict(obj, normalize_dates)
+
+    return {
+        "all_key_values": all_dict,
+        "selected_key_values": selected_dict,
+    }
+
+
+def parse_universal_kv(llm_raw: str, normalize_dates: bool=True) -> Dict[str, Dict[str, str]]:
     """
     - Try strict JSON
     - Else, regex-extract pairs from the first object-like region or entire text
@@ -609,11 +655,13 @@ def parse_universal_kv(llm_raw: str, normalize_dates: bool=True) -> Dict[str, st
     """
     j = try_json_load(llm_raw)
     if isinstance(j, dict):
-        out = OrderedDict()
-        for k, v in j.items():
-            out[_trim(str(k))] = maybe_zero_pad_dates(_trim(str(v)), normalize_dates)
-        return dict(out)
+        return _normalize_structured_payload(j, normalize_dates)
     if isinstance(j, list):
+        for item in j:
+            if isinstance(item, dict):
+                lowered = {str(k).lower(): k for k in item.keys()}
+                if "all_key_values" in lowered or "selected_key_values" in lowered:
+                    return _normalize_structured_payload(item, normalize_dates)
         # Merge list of dicts or [key,value] pairs
         out = OrderedDict()
         for item in j:
@@ -624,7 +672,10 @@ def parse_universal_kv(llm_raw: str, normalize_dates: bool=True) -> Dict[str, st
                 k, v = item
                 out[_trim(str(k))] = maybe_zero_pad_dates(_trim(str(v)), normalize_dates)
         if out:
-            return dict(out)
+            return {
+                "all_key_values": dict(out),
+                "selected_key_values": {},
+            }
 
     t = _preclean(llm_raw)
     region = t
@@ -657,7 +708,10 @@ def parse_universal_kv(llm_raw: str, normalize_dates: bool=True) -> Dict[str, st
         v = re.sub(r"[}\]]\s*$", "", v).strip()
         out[_trim(k)] = maybe_zero_pad_dates(v, normalize_dates)
 
-    return dict(out)
+    return {
+        "all_key_values": dict(out),
+        "selected_key_values": {},
+    }
 
 def write_json_array(recs: List[dict], path: str):
     safe_mkdir(Path(path).parent.as_posix())
