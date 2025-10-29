@@ -641,6 +641,19 @@ export default function ScannerDashboard() {
     }));
   }, [barcodeComparison, kv]);
 
+  const barcodeOnlyEntries = useMemo(() => {
+    if (!barcodeComparison) return [] as BarcodeOnlyEntry[];
+    const candidates = Array.isArray(barcodeComparison.library?.missedByOcr)
+      ? barcodeComparison.library.missedByOcr
+      : [];
+    return candidates.filter((entry) => {
+      if (!entry) return false;
+      const hasLabel = Array.isArray(entry.labels) && entry.labels.some((label) => typeof label === "string" && label.trim().length > 0);
+      const hasValue = typeof entry.value === "string" && entry.value.trim().length > 0;
+      return hasLabel || hasValue;
+    });
+  }, [barcodeComparison]);
+
   const fetchLiveBuffer = useCallback(async (options?: { sync?: boolean }) => {
     try {
       const query = options?.sync ? "?sync=true" : "";
@@ -1270,6 +1283,47 @@ export default function ScannerDashboard() {
             <p className="mt-4 text-xs text-slate-300">
               Comparison summary: {barcodeComparison.summary.matched} match{barcodeComparison.summary.matched === 1 ? "" : "es"}, {barcodeComparison.summary.mismatched} mismatch{barcodeComparison.summary.mismatched === 1 ? "" : "es"}, {barcodeComparison.summary.missing} missing.
             </p>
+          )}
+
+          {barcodeOnlyEntries.length > 0 && (
+            <div className="mt-6 rounded-2xl border border-indigo-400/20 bg-indigo-500/5 p-4">
+              <div className="flex flex-col gap-1 text-sm text-slate-100">
+                <span className="font-semibold uppercase tracking-[0.3em] text-indigo-200/80">
+                  Barcode-only values
+                </span>
+                <p className="text-xs text-slate-300/90">
+                  These values were detected in the barcode payload but were not matched to any OCR keys. Review them to see if
+                  the OCR output is missing required fields.
+                </p>
+              </div>
+              <div className="mt-3 overflow-x-auto">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-white/5 text-left font-medium uppercase tracking-wide text-slate-300/80">
+                    <tr>
+                      <th className="px-3 py-2">Labels</th>
+                      <th className="px-3 py-2">Value</th>
+                      <th className="px-3 py-2">Class</th>
+                      <th className="px-3 py-2 text-right">Count</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {barcodeOnlyEntries.map((entry, index) => {
+                      const displayLabels = entry.labels && entry.labels.length > 0
+                        ? entry.labels.filter((label) => label.trim().length > 0).join(", ") || "(unlabeled)"
+                        : "(unlabeled)";
+                      return (
+                        <tr key={`${entry.value}-${index}`} className="border-b border-white/10 last:border-0">
+                          <td className="px-3 py-2 text-slate-200">{displayLabels}</td>
+                          <td className="px-3 py-2 text-slate-100">{entry.value && entry.value.trim().length > 0 ? entry.value : "—"}</td>
+                          <td className="px-3 py-2 text-slate-300/90">{entry.class?.trim() || "unknown"}</td>
+                          <td className="px-3 py-2 text-right text-slate-200">{entry.count && entry.count > 0 ? entry.count : 1}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
 
           {validation && (
