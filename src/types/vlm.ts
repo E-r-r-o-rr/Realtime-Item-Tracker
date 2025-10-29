@@ -87,6 +87,10 @@ export interface VlmCostTrackingConfig {
   currency: string;
 }
 
+export interface VlmLocalSettings {
+  modelId: string;
+}
+
 export interface VlmLoggingConfig {
   promptLogging: VlmPromptLoggingLevel;
   piiRedaction: boolean;
@@ -131,5 +135,6 @@ export interface VlmRemoteSettings {
 
 export interface VlmSettings {
   mode: VlmMode;
+  local: VlmLocalSettings;
   remote: VlmRemoteSettings;
 }

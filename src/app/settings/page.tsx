@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { DEFAULT_VLM_SETTINGS } from "@/config/vlm";
 import { Card } from "@/components/ui/card";
@@ -13,6 +13,29 @@ const providerOptions: Array<{ value: VlmProviderType; label: string }> = [
   { value: "huggingface", label: "Hugging Face Inference" },
   { value: "generic-http", label: "Generic HTTP (Custom)" },
 ];
+
+const localModelOptions = [
+  { value: "Qwen/Qwen3-VL-2B-Instruct", label: "Qwen/Qwen3-VL-2B-Instruct" },
+  { value: "Qwen/Qwen3-VL-4B-Instruct", label: "Qwen/Qwen3-VL-4B-Instruct" },
+];
+
+type LocalRunnerStatus = "unknown" | "stopped" | "starting" | "running" | "stopping" | "error";
+
+const localStatusLabels: Record<LocalRunnerStatus, string> = {
+  unknown: "Status unknown",
+  stopped: "Stopped",
+  starting: "Starting…",
+  running: "Running",
+  stopping: "Stopping…",
+  error: "Error",
+};
+
+const normalizeLocalStatus = (value: unknown): LocalRunnerStatus => {
+  if (typeof value === "string" && value in localStatusLabels) {
+    return value as LocalRunnerStatus;
+  }
+  return "unknown";
+};
 
 const sectionTitleClass = "text-sm font-semibold uppercase tracking-wide text-slate-300";
 const fieldLabelClass = "text-sm font-medium text-slate-200";
@@ -32,6 +55,8 @@ export default function SettingsPage() {
   const [statusTone, setStatusTone] = useState<"info" | "success" | "error">("info");
   const [testMessage, setTestMessage] = useState<string | null>(null);
   const [testTone, setTestTone] = useState<"idle" | "success" | "error">("idle");
+  const [localStatus, setLocalStatus] = useState<LocalRunnerStatus>("unknown");
+  const [localStatusMessage, setLocalStatusMessage] = useState<string | null>(null);
   const statusTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const showStatus = (message: string, tone: "info" | "success" | "error" = "info") => {
@@ -42,6 +67,25 @@ export default function SettingsPage() {
     }
     statusTimeoutRef.current = setTimeout(() => setStatusMessage(null), 3600);
   };
+
+  const fetchLocalRunnerStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/vlm/local/status", { cache: "no-store" });
+      const payload = await response.json();
+      if (response.ok) {
+        const status = normalizeLocalStatus(payload.status);
+        setLocalStatus(status);
+        setLocalStatusMessage(payload.message ?? payload.error ?? null);
+      } else {
+        setLocalStatus("error");
+        setLocalStatusMessage(payload.message ?? payload.error ?? "Unable to determine local service status.");
+      }
+    } catch (error) {
+      console.error("Failed to load local runner status", error);
+      setLocalStatus("error");
+      setLocalStatusMessage("Unable to contact local runner status endpoint.");
+    }
+  }, []);
 
   useEffect(() => {
     const fetchSettings = async () => {
@@ -71,6 +115,13 @@ export default function SettingsPage() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (settings.mode === "local") {
+      fetchLocalRunnerStatus();
+    }
+  }, [fetchLocalRunnerStatus, hydrated, settings.mode]);
 
   const updateSettings = (mutator: (draft: VlmSettings) => void) => {
     setSettings((prev) => {
@@ -144,6 +195,81 @@ export default function SettingsPage() {
       }
       (draft.remote.defaults as any)[key] = value;
     });
+  };
+
+  const handleLocalModelSelectChange = (value: string) => {
+    updateSettings((draft) => {
+      if (value === "custom") {
+        const isPreset = localModelOptions.some((option) => option.value === draft.local.modelId);
+        if (isPreset) {
+          draft.local.modelId = "";
+        }
+        return;
+      }
+      draft.local.modelId = value;
+    });
+  };
+
+  const handleLocalModelInputChange = (value: string) => {
+    updateSettings((draft) => {
+      draft.local.modelId = value;
+    });
+  };
+
+  const handleStartLocalService = async () => {
+    setLocalStatus((prev) => (prev === "running" ? prev : "starting"));
+    setLocalStatusMessage(null);
+    try {
+      const response = await fetch("/api/vlm/local/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelId: settings.local.modelId }),
+      });
+      const payload = await response.json();
+      const status = normalizeLocalStatus(payload.status);
+      if (!response.ok || payload.ok === false) {
+        const message = payload.message ?? payload.error ?? "Unable to start local service.";
+        setLocalStatus(status === "unknown" ? "error" : status);
+        setLocalStatusMessage(message);
+        showStatus(message, "error");
+        return;
+      }
+      setLocalStatus(status);
+      setLocalStatusMessage(payload.message ?? payload.error ?? null);
+      showStatus(payload.message ?? "Local VLM service is running.", "success");
+      await fetchLocalRunnerStatus();
+    } catch (error) {
+      console.error("Failed to start local VLM service", error);
+      setLocalStatus("error");
+      setLocalStatusMessage("Unable to start the local service. Check server logs.");
+      showStatus("Unable to start the local service. Check server logs.", "error");
+    }
+  };
+
+  const handleStopLocalService = async () => {
+    setLocalStatus((prev) => (prev === "stopped" ? prev : "stopping"));
+    setLocalStatusMessage(null);
+    try {
+      const response = await fetch("/api/vlm/local/stop", { method: "POST" });
+      const payload = await response.json();
+      const status = normalizeLocalStatus(payload.status);
+      if (!response.ok || payload.ok === false) {
+        const message = payload.message ?? payload.error ?? "Unable to stop local service.";
+        setLocalStatus(status === "unknown" ? "error" : status);
+        setLocalStatusMessage(message);
+        showStatus(message, "error");
+        return;
+      }
+      setLocalStatus(status);
+      setLocalStatusMessage(payload.message ?? payload.error ?? null);
+      showStatus(payload.message ?? "Local VLM service stopped.", "success");
+      await fetchLocalRunnerStatus();
+    } catch (error) {
+      console.error("Failed to stop local VLM service", error);
+      setLocalStatus("error");
+      setLocalStatusMessage("Unable to stop the local service. Check server logs.");
+      showStatus("Unable to stop the local service. Check server logs.", "error");
+    }
   };
 
   const handleSave = async () => {
@@ -250,6 +376,23 @@ export default function SettingsPage() {
   const providerFieldDescription = showProviderField
     ? "Required when routing through Hugging Face Inference. Use the slug from your provider (e.g. mistralai, hyperbolic)."
     : "";
+
+  const localModelId = settings.local.modelId;
+  const presetMatch = localModelOptions.some((option) => option.value === localModelId);
+  const localPresetValue = presetMatch ? localModelId : "custom";
+  const isCustomLocalModel = localPresetValue === "custom";
+  const hasLocalModelId = settings.local.modelId.trim().length > 0;
+  const localStatusText = localStatusMessage ?? localStatusLabels[localStatus];
+  const localStatusTextClass =
+    localStatus === "running"
+      ? "text-emerald-300"
+      : localStatus === "error"
+      ? "text-rose-300"
+      : localStatus === "starting" || localStatus === "stopping"
+      ? "text-amber-200"
+      : "text-slate-300/80";
+  const startDisabled = localStatus === "starting" || localStatus === "running" || !hasLocalModelId;
+  const stopDisabled = localStatus === "stopping" || localStatus === "stopped" || localStatus === "starting";
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-8 px-4 py-10 sm:px-6 lg:px-8">
@@ -495,12 +638,79 @@ export default function SettingsPage() {
             </section>
           )}
           {settings.mode === "local" && (
-            <section className="space-y-3 rounded-2xl border border-amber-400/60 bg-amber-500/10 px-5 py-4">
-              <h3 className="text-base font-semibold text-amber-200">Local runtime reminder</h3>
-              <p className="text-sm text-amber-100/80">
-                Start the local VLM service before scanning orders. The scanner will communicate with your workstation via the
-                configured loopback ports and will not attempt any remote calls in this mode.
-              </p>
+            <section className="space-y-6 rounded-2xl border border-white/10 bg-white/5 p-5">
+              <div className="space-y-3 rounded-2xl border border-amber-400/60 bg-amber-500/10 px-4 py-3">
+                <h3 className="text-base font-semibold text-amber-200">Local runtime reminder</h3>
+                <p className="text-sm text-amber-100/80">
+                  Start the local VLM service before scanning orders. The scanner will communicate with your workstation via
+                  the configured loopback ports and will not attempt any remote calls in this mode.
+                </p>
+              </div>
+
+              <div className="grid gap-5 md:grid-cols-2">
+                <div className="space-y-2">
+                  <label className={fieldLabelClass} htmlFor="local-model-preset">
+                    Model preset
+                  </label>
+                  <select
+                    id="local-model-preset"
+                    className={selectClass}
+                    value={localPresetValue}
+                    onChange={(event) => handleLocalModelSelectChange(event.target.value)}
+                  >
+                    {localModelOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                    <option value="custom">Custom…</option>
+                  </select>
+                  <p className={fieldDescriptionClass}>
+                    Choose an optimized preset or supply your own model identifier for the local runner.
+                  </p>
+                </div>
+                {isCustomLocalModel && (
+                  <div className="space-y-2 md:col-span-2">
+                    <label className={fieldLabelClass} htmlFor="local-custom-model">
+                      Custom model ID
+                    </label>
+                    <Input
+                      id="local-custom-model"
+                      placeholder="user/your-vlm-model"
+                      value={settings.local.modelId}
+                      onChange={(event) => handleLocalModelInputChange(event.target.value)}
+                      spellCheck={false}
+                    />
+                    <p className={fieldDescriptionClass}>
+                      Enter the identifier expected by your local service (for example, <code>user/Qwen3-VL-4B-GGUF</code>).
+                    </p>
+                    {!settings.local.modelId.trim() && (
+                      <p className="text-xs text-rose-300">Model ID is required to launch the local service.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="space-y-1">
+                  <p className={fieldLabelClass}>Service status</p>
+                  <p className={`text-sm ${localStatusTextClass}`}>{localStatusText}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button type="button" variant="secondary" onClick={handleStartLocalService} disabled={startDisabled}>
+                    {localStatus === "starting" ? "Starting…" : "Start local service"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="border-white/10 bg-transparent text-slate-200 hover:border-rose-400/60 hover:bg-rose-500/10 hover:text-rose-200"
+                    onClick={handleStopLocalService}
+                    disabled={stopDisabled}
+                  >
+                    {localStatus === "stopping" ? "Stopping…" : "Stop local service"}
+                  </Button>
+                </div>
+              </div>
             </section>
           )}
         </div>
