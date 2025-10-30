@@ -5,6 +5,10 @@ import os from 'os';
 import { randomUUID } from 'crypto';
 
 import { loadPersistedVlmSettings } from './settingsStore';
+import {
+  getLocalVlmServiceStatus,
+  invokeLocalService,
+} from './localVlmService';
 
 export type VlmProviderInfo = {
   mode: 'remote' | 'local';
@@ -212,6 +216,45 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     providerInfo.providerType = 'local';
     providerInfo.modelId = configuredModel;
     providerInfo.baseUrl = '';
+  }
+
+  if (vlmSettings.mode === 'local') {
+    const serviceStatus = getLocalVlmServiceStatus();
+    if (serviceStatus.state === 'running') {
+      try {
+        const inference = await invokeLocalService(filePath, {
+          normalizeDates: true,
+        });
+        if (inference.ok && inference.result?.llm_parsed) {
+          const parsed = inference.result.llm_parsed as Record<string, unknown>;
+          const allRaw =
+            (parsed as { all_key_values?: unknown }).all_key_values ??
+            (parsed as { allKeyValues?: unknown }).allKeyValues ??
+            parsed;
+          const selectedRaw =
+            (parsed as { selected_key_values?: unknown }).selected_key_values ??
+            (parsed as { selectedKeyValues?: unknown }).selectedKeyValues ??
+            {};
+
+          const kv = sanitizeKvRecord(allRaw);
+          const selectedKv = deriveSelectedKv(kv, selectedRaw);
+
+          return {
+            kv,
+            selectedKv,
+            providerInfo,
+          };
+        }
+
+        if (!inference.ok) {
+          console.warn('[ocrService] Local service inference failed:', inference.message);
+        } else {
+          console.warn('[ocrService] Local service returned no parsed payload.');
+        }
+      } catch (error) {
+        console.warn('[ocrService] Local service call failed; falling back to CLI.', error);
+      }
+    }
   }
 
   if (!fs.existsSync(OCR_SCRIPT)) {

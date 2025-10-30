@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { DEFAULT_VLM_SETTINGS } from "@/config/vlm";
 import { Card } from "@/components/ui/card";
@@ -35,6 +35,14 @@ const localModelOptions: Array<{ value: LocalModelPreset; label: string }> = [
   { value: "__custom__", label: "Custom" },
 ];
 
+type LocalServiceState = {
+  state: "unknown" | "stopped" | "starting" | "running" | "error";
+  modelId?: string;
+  port?: number;
+  startedAt?: number;
+  message?: string;
+};
+
 const detectLocalModelPreset = (modelId: string): LocalModelPreset => {
   if (modelId === "Qwen/Qwen3-VL-2B-Instruct") return "Qwen/Qwen3-VL-2B-Instruct";
   if (modelId === "Qwen/Qwen3-VL-4B-Instruct") return "Qwen/Qwen3-VL-4B-Instruct";
@@ -67,6 +75,9 @@ export default function SettingsPage() {
   const [checkingLocalModel, setCheckingLocalModel] = useState(false);
   const [localCheckStatus, setLocalCheckStatus] = useState<"idle" | "success" | "error">("idle");
   const [localCheckMessage, setLocalCheckMessage] = useState<string | null>(null);
+  const [localServiceState, setLocalServiceState] = useState<LocalServiceState>({ state: "unknown" });
+  const [startingLocalService, setStartingLocalService] = useState(false);
+  const [stoppingLocalService, setStoppingLocalService] = useState(false);
 
   const showStatus = (message: string, tone: "info" | "success" | "error" = "info") => {
     setStatusMessage(message);
@@ -105,6 +116,152 @@ export default function SettingsPage() {
       }
     };
   }, []);
+
+  const refreshLocalServiceStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/settings/vlm/local/service", { cache: "no-store" });
+      const payload = await response.json().catch(() => null);
+      if (response.ok && payload?.ok) {
+        const status = payload.status as {
+          state?: "stopped" | "starting" | "running";
+          modelId?: string;
+          port?: number;
+          startedAt?: number;
+        } | null;
+        if (status) {
+          setLocalServiceState({
+            state: status.state ?? "stopped",
+            modelId: status.modelId ?? undefined,
+            port: typeof status.port === "number" ? status.port : undefined,
+            startedAt: typeof status.startedAt === "number" ? status.startedAt : undefined,
+            message: undefined,
+          });
+        } else {
+          setLocalServiceState({ state: "stopped" });
+        }
+      } else {
+        setLocalServiceState({
+          state: "error",
+          message:
+            typeof payload?.message === "string"
+              ? payload.message
+              : "Unable to determine local model service status.",
+        });
+      }
+    } catch (error) {
+      console.error("Failed to load local service status", error);
+      setLocalServiceState({
+        state: "error",
+        message: "Unable to reach the local model service status endpoint.",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshLocalServiceStatus();
+  }, [refreshLocalServiceStatus]);
+
+  useEffect(() => {
+    if (settings.mode === "local") {
+      refreshLocalServiceStatus();
+    } else {
+      setLocalServiceState({ state: "stopped" });
+    }
+  }, [settings.mode, refreshLocalServiceStatus]);
+
+  const handleStartLocalService = async () => {
+    if (localCheckStatus !== "success") {
+      setLocalServiceState({
+        state: "error",
+        message: "Verify the model cache before starting the local service.",
+      });
+      return;
+    }
+
+    setStartingLocalService(true);
+
+    try {
+      const response = await fetch("/api/settings/vlm/local/service", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          modelId: settings.local.modelId,
+          dtype: settings.local.dtype,
+          deviceMap: settings.local.deviceMap,
+          maxNewTokens: settings.local.maxNewTokens,
+          enableFlashAttention2: settings.local.enableFlashAttention2,
+          systemPrompt: settings.remote.defaults.systemPrompt,
+        }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (response.ok && payload?.ok) {
+        const status = payload.status as {
+          state?: "stopped" | "starting" | "running";
+          modelId?: string;
+          port?: number;
+          startedAt?: number;
+        } | null;
+        if (status) {
+          setLocalServiceState({
+            state: status.state ?? "running",
+            modelId: status.modelId ?? settings.local.modelId,
+            port: typeof status.port === "number" ? status.port : undefined,
+            startedAt: typeof status.startedAt === "number" ? status.startedAt : undefined,
+          });
+          await refreshLocalServiceStatus();
+        } else {
+          setLocalServiceState({ state: "starting" });
+        }
+      } else {
+        setLocalServiceState({
+          state: "error",
+          message:
+            typeof payload?.message === "string"
+              ? payload.message
+              : "Failed to start the local model service.",
+        });
+      }
+    } catch (error) {
+      console.error("Failed to start local model service", error);
+      setLocalServiceState({
+        state: "error",
+        message: "Unable to start the local model service.",
+      });
+    } finally {
+      setStartingLocalService(false);
+    }
+  };
+
+  const handleStopLocalService = async () => {
+    setStoppingLocalService(true);
+    try {
+      const response = await fetch("/api/settings/vlm/local/service", { method: "DELETE" });
+      const payload = await response.json().catch(() => null);
+      if (response.ok && payload?.ok) {
+        setLocalServiceState({ state: "stopped" });
+        await refreshLocalServiceStatus();
+      } else if (!response.ok) {
+        setLocalServiceState({
+          state: "error",
+          message:
+            typeof payload?.message === "string"
+              ? payload.message
+              : "Failed to stop the local model service.",
+        });
+      } else {
+        setLocalServiceState({ state: "stopped" });
+        await refreshLocalServiceStatus();
+      }
+    } catch (error) {
+      console.error("Failed to stop local model service", error);
+      setLocalServiceState({
+        state: "error",
+        message: "Unable to stop the local model service.",
+      });
+    } finally {
+      setStoppingLocalService(false);
+    }
+  };
 
   useEffect(() => {
     const preset = detectLocalModelPreset(settings.local.modelId);
@@ -358,6 +515,46 @@ export default function SettingsPage() {
   const providerFieldDescription = showProviderField
     ? "Required when routing through Hugging Face Inference. Use the slug from your provider (e.g. mistralai, hyperbolic)."
     : "";
+
+  const serviceTone =
+    localServiceState.state === "running"
+      ? "text-emerald-300"
+      : localServiceState.state === "error"
+      ? "text-rose-300"
+      : localServiceState.state === "starting"
+      ? "text-indigo-300"
+      : "text-slate-300/80";
+
+  const serviceMessage = (() => {
+    switch (localServiceState.state) {
+      case "running": {
+        const port = localServiceState.port;
+        const since =
+          localServiceState.startedAt && Number.isFinite(localServiceState.startedAt)
+            ? new Date(localServiceState.startedAt).toLocaleTimeString()
+            : null;
+        const base = port
+          ? `Running on http://127.0.0.1:${port}.`
+          : "Local model service is running.";
+        return since ? `${base} Started at ${since}.` : base;
+      }
+      case "starting":
+        return "Starting the local model service…";
+      case "stopped":
+        return "Service is currently stopped.";
+      case "error":
+        return localServiceState.message || "Unable to reach the local model service.";
+      case "unknown":
+      default:
+        return "Checking local model service status…";
+    }
+  })();
+
+  const startDisabled =
+    localCheckStatus !== "success" || startingLocalService || stoppingLocalService;
+  const stopDisabled = stoppingLocalService || startingLocalService;
+  const startLabel = startingLocalService ? "Starting…" : "Start model";
+  const stopLabel = stoppingLocalService ? "Stopping…" : "Stop service";
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-8 px-4 py-10 sm:px-6 lg:px-8">
@@ -665,6 +862,35 @@ export default function SettingsPage() {
                       {localCheckMessage}
                     </div>
                   )}
+                </div>
+                <div className="space-y-2 rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className={fieldLabelClass}>Local model service</p>
+                      <p className={fieldDescriptionClass}>
+                        Run the background HTTP server to keep the model warm for faster inference.
+                      </p>
+                    </div>
+                    {localServiceState.state === "running" ? (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={handleStopLocalService}
+                        disabled={stopDisabled}
+                      >
+                        {stopLabel}
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        onClick={handleStartLocalService}
+                        disabled={startDisabled}
+                      >
+                        {startLabel}
+                      </Button>
+                    )}
+                  </div>
+                  <p className={`text-xs ${serviceTone}`}>{serviceMessage}</p>
                 </div>
               </div>
               {localCheckStatus === "success" ? (
