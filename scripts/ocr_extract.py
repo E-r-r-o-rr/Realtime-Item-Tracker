@@ -328,14 +328,134 @@ def local_transformer_generate(
     return output_text[0]
 
 
-def warmup_local_transformer(model_id: str):
+def warmup_local_transformer(model_id: str, *, quiet: bool = False):
     model, _ = load_transformer_model(model_id)
+    if quiet:
+        return
     try:
         device_repr = getattr(model, "device", None)
         if device_repr is not None:
             print(f"[warmup] Loaded model on device: {device_repr}")
     except Exception:
         pass
+
+
+def _write_server_json(payload: Dict[str, Any]):
+    try:
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except Exception:
+        # If stdout is broken there's not much we can do; swallow to avoid crashes.
+        pass
+
+
+def run_stdio_server(
+    model_id: str,
+    defaults: Dict[str, Any],
+    system_prompt: Optional[str],
+):
+    base_defaults: Dict[str, Any] = dict(defaults or {})
+    base_defaults.pop("systemPrompt", None)
+    clean_system_prompt: Optional[str] = None
+    if isinstance(system_prompt, str) and system_prompt.strip():
+        clean_system_prompt = system_prompt.strip()
+
+    _write_server_json({"event": "starting", "model": model_id})
+    try:
+        warmup_local_transformer(model_id, quiet=True)
+    except Exception as exc:  # pragma: no cover - initialization failure
+        _write_server_json({"event": "error", "error": f"Warmup failed: {exc}"})
+        return
+
+    _write_server_json({"event": "ready", "model": model_id})
+
+    while True:
+        try:
+            raw_line = sys.stdin.readline()
+        except Exception as exc:  # pragma: no cover - stdin failure
+            _write_server_json({"event": "error", "error": f"stdin read failed: {exc}"})
+            break
+
+        if not raw_line:
+            # EOF from parent process -> exit gracefully
+            break
+
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        try:
+            request = json.loads(line)
+        except Exception as exc:
+            _write_server_json({"event": "error", "error": "invalid_json", "detail": str(exc)})
+            continue
+
+        req_id = request.get("id")
+        action = (request.get("action") or "infer").strip().lower()
+
+        if action == "shutdown":
+            _write_server_json({"event": "stopped", "id": req_id, "ok": True})
+            break
+
+        if action == "warmup":
+            try:
+                warmup_local_transformer(model_id, quiet=True)
+                _write_server_json({"id": req_id, "ok": True, "event": "warmed"})
+            except Exception as exc:  # pragma: no cover - warmup failure
+                _write_server_json({"id": req_id, "ok": False, "error": str(exc)})
+            continue
+
+        if action != "infer":
+            _write_server_json({"id": req_id, "ok": False, "error": f"Unknown action: {action}"})
+            continue
+
+        image_path = request.get("image")
+        if not isinstance(image_path, str) or not image_path.strip():
+            _write_server_json({"id": req_id, "ok": False, "error": "Image path is required."})
+            continue
+        image_path = image_path.strip()
+        if not Path(image_path).exists():
+            _write_server_json({"id": req_id, "ok": False, "error": f"Image not found: {image_path}"})
+            continue
+
+        normalize_dates = request.get("normalize_dates")
+        normalize_flag = True if normalize_dates is None else bool(normalize_dates)
+
+        ocr_hint = request.get("ocr_hint")
+        if not isinstance(ocr_hint, str) or not ocr_hint.strip():
+            ocr_hint = None
+        else:
+            ocr_hint = ocr_hint.strip()
+
+        req_defaults = request.get("defaults")
+        merged_defaults = dict(base_defaults)
+        if isinstance(req_defaults, dict):
+            for key, value in req_defaults.items():
+                if value is None:
+                    continue
+                merged_defaults[key] = value
+
+        req_system_prompt = request.get("system_prompt")
+        if isinstance(req_system_prompt, str) and req_system_prompt.strip():
+            system_prompt_value = req_system_prompt.strip()
+        else:
+            system_prompt_value = clean_system_prompt
+
+        try:
+            def vlm_call(image_path_inner: str, ocr_txt: Optional[str]) -> str:
+                messages = build_vlm_messages(image_path_inner, ocr_txt, system_prompt_value)
+                return local_transformer_generate(model_id, image_path_inner, messages, merged_defaults)
+
+            record = process_one(
+                vlm_call,
+                image_path,
+                normalize_dates=normalize_flag,
+                ocr_hint=ocr_hint,
+            )
+            _write_server_json({"id": req_id, "ok": True, "result": record})
+        except Exception as exc:  # pragma: no cover - inference failure
+            _write_server_json({"id": req_id, "ok": False, "error": str(exc)})
+
 
 # --------------------------
 # JSON path helpers
@@ -943,6 +1063,7 @@ def main():
     ap.add_argument("--model", default=DEFAULT_MODEL, help="Model id or deployment (provider-specific)")
     ap.add_argument("--no_normalize_dates", action="store_true", help="Disable date zero-padding normalization")
     ap.add_argument("--warmup_only", action="store_true", help="Load the local transformers model and exit")
+    ap.add_argument("--stdio_server", action="store_true", help="Run a persistent stdio server for local inference")
     args = ap.parse_args()
 
     remote_cfg = load_remote_config()
@@ -959,6 +1080,9 @@ def main():
     if provider_type not in allowed:
         provider_type = "huggingface"
     remote_cfg["providerType"] = provider_type
+
+    if args.stdio_server and provider_type != LOCAL_PROVIDER:
+        sys.exit("[FATAL] --stdio_server is only supported in local mode")
 
     token = args.hf_token or os.environ.get("HF_TOKEN")
 
@@ -1016,6 +1140,10 @@ def main():
         if args.warmup_only:
             warmup_local_transformer(local_model)
             print(json.dumps({"ok": True, "model": local_model}))
+            return
+
+        if args.stdio_server:
+            run_stdio_server(local_model, defaults, system_prompt)
             return
 
     elif provider_type == "huggingface":

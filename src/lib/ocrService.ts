@@ -5,7 +5,7 @@ import os from 'os';
 import { randomUUID } from 'crypto';
 
 import { loadPersistedVlmSettings } from './settingsStore';
-import { startLocalRunner } from './localRunner';
+import { startLocalRunner, runLocalInference } from './localRunner';
 
 export type VlmProviderInfo = {
   mode: 'remote' | 'local';
@@ -35,6 +35,27 @@ const OCR_TIMEOUT_MS = Number(process.env.OCR_TIMEOUT_MS || 180_000);
 
 // Set OCR_KEEP=1 to keep tmp output for debugging
 const KEEP_TMP = process.env.OCR_KEEP === '1';
+
+function resolveOcrHint(settings: ReturnType<typeof loadPersistedVlmSettings>): string | undefined {
+  const envHint = process.env.OCR_HINT_TEXT;
+  if (typeof envHint === 'string' && envHint.trim()) {
+    return envHint.trim();
+  }
+
+  const ocrSettings = settings.remote?.ocr;
+  if (ocrSettings) {
+    const transcript = typeof ocrSettings.prefillTranscript === 'string' ? ocrSettings.prefillTranscript.trim() : '';
+    if (transcript) {
+      return transcript;
+    }
+    const hint = typeof ocrSettings.ocrHint === 'string' ? ocrSettings.ocrHint.trim() : '';
+    if (hint) {
+      return hint;
+    }
+  }
+
+  return undefined;
+}
 
 function rmrf(p: string) {
   try {
@@ -112,6 +133,18 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     return { kv: stubFromFilename(filePath), providerInfo };
   }
 
+  const ocrHint = resolveOcrHint(vlmSettings);
+
+  const defaultsSource = (remoteConfigPayload?.defaults ?? vlmSettings.remote?.defaults ?? {}) as Record<string, unknown>;
+  const rawSystemPrompt = defaultsSource['systemPrompt'];
+  const systemPrompt = typeof rawSystemPrompt === 'string' && rawSystemPrompt.trim() ? rawSystemPrompt.trim() : undefined;
+  const generationDefaults: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(defaultsSource || {})) {
+    if (key === 'systemPrompt') continue;
+    if (value === undefined || typeof value === 'function') continue;
+    generationDefaults[key] = value;
+  }
+
   if (vlmSettings.mode === 'local') {
     try {
       const runnerState = await startLocalRunner(configuredModel);
@@ -119,10 +152,24 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
         const message = runnerState.error || runnerState.message || 'Local VLM runner is not ready.';
         return { kv: {}, providerInfo, error: message };
       }
+
+      const inference = await runLocalInference({
+        imagePath: filePath,
+        normalizeDates: true,
+        ocrHint,
+        defaults: generationDefaults,
+        systemPrompt,
+      });
+
+      if (!inference.ok || !inference.result?.llm_parsed) {
+        const message = inference.error || 'Local transformers inference failed.';
+        return { kv: {}, providerInfo, error: message };
+      }
+
+      return { kv: inference.result.llm_parsed, providerInfo };
     } catch (error: any) {
-      const message =
-        error instanceof Error ? error.message : 'Failed to start the local VLM runner.';
-      console.error('[ocrService] Unable to start local VLM runner', error);
+      const message = error instanceof Error ? error.message : 'Local transformers runner failed.';
+      console.error('[ocrService] Local inference error', error);
       return { kv: {}, providerInfo, error: message };
     }
   }
@@ -134,11 +181,6 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     '--image', filePath,
     '--out_dir', outDir,
     '--model', configuredModel,
-    // Optional tuning (uncomment if you want explicit control)
-    // '--device', process.env.OCR_DEVICE || (process.env.CUDA_VISIBLE_DEVICES ? 'cuda' : 'cpu'),
-    // '--dtype', process.env.OCR_DTYPE || 'auto',
-    // '--max_pixels', String(process.env.OCR_MAX_PIXELS || 384*384),
-    // '--max_new_tokens', String(process.env.OCR_MAX_NEW_TOKENS || 600),
   ];
 
   const env = { ...process.env };
@@ -154,15 +196,25 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     const fallbackRetry = vlmSettings.remote.retryPolicy?.maxRetries ?? 0;
     env.OCR_RETRY_MAX = String(typeof retryCandidate === 'number' ? retryCandidate : fallbackRetry);
 
-    const defaults = remoteConfigPayload.defaults ?? vlmSettings.remote.defaults ?? {};
-    env.OCR_STREAMING = defaults.streaming ? '1' : '0';
-    env.OCR_SYSTEM_PROMPT = defaults.systemPrompt || '';
+    const streamingFlag = generationDefaults['streaming'];
+    env.OCR_STREAMING = streamingFlag ? '1' : '0';
   } else {
     delete env.VLM_REMOTE_CONFIG;
     delete env.OCR_REQUEST_TIMEOUT_MS;
     delete env.OCR_RETRY_MAX;
     delete env.OCR_STREAMING;
+  }
+
+  if (systemPrompt) {
+    env.OCR_SYSTEM_PROMPT = systemPrompt;
+  } else {
     delete env.OCR_SYSTEM_PROMPT;
+  }
+
+  if (ocrHint) {
+    env.OCR_HINT_TEXT = ocrHint;
+  } else {
+    delete env.OCR_HINT_TEXT;
   }
 
   if (vlmSettings.mode === 'remote') {
@@ -183,7 +235,7 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     } else {
       delete env.VLM_LOCAL_PROVIDER;
     }
-    const maxTokens = remoteConfigPayload?.defaults?.maxOutputTokens ?? vlmSettings.remote.defaults?.maxOutputTokens;
+    const maxTokens = generationDefaults['maxOutputTokens'];
     if (typeof maxTokens === 'number' && maxTokens > 0) {
       env.LOCAL_VLM_MAX_NEW_TOKENS = String(maxTokens);
     } else {

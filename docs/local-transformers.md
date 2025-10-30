@@ -1,8 +1,8 @@
 # Local transformers setup
 
 The OCR pipeline can run fully offline using [Hugging Face Transformers](https://huggingface.co/docs/transformers/index) instead
-of vLLM. When **Local** mode is selected the Next.js backend performs a lightweight warm-up step (loading the configured
-model once) and the Python OCR script executes the inference directly via the Transformers API on each scan.
+of vLLM. When **Local** mode is selected the Next.js backend launches a persistent stdio worker that keeps the configured
+model resident in memory and streams OCR jobs to it, so the heavy model load happens only once.
 
 ## Prerequisites
 
@@ -30,10 +30,10 @@ huggingface-cli login
 
 ## Runtime behaviour
 
-- `npm run dev` / `npm start` will continue to spawn the Python OCR script for every scan. When local mode is active the script
-  loads the configured Transformers model and executes it directly (no background HTTP server is required).
-- The `/api/vlm/local/start` endpoint simply preloads the model once (handy for cold starts). There is no long-lived child
-  process; the warm-up just ensures the weights are cached locally.
+- The `/api/vlm/local/start` endpoint launches `python scripts/ocr_extract.py --stdio_server`, which loads the selected model
+  and waits for JSON requests over stdin/stdout. The child process stays alive until you press **Stop** or shut down Next.js.
+- Each OCR scan pushes a request payload to the running worker; the worker performs Transformers inference and returns the parsed
+  payload without reloading weights.
 - Model/device options can be tuned using environment variables:
   | Variable | Description | Default |
   | --- | --- | --- |
