@@ -1,55 +1,79 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getFloorMapById, listMapPoints, updateFloorMap } from '@/lib/db';
 
-const parseNumber = (value: unknown): number | null => {
-  if (value == null) return null;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    const num = Number(trimmed);
-    return Number.isFinite(num) ? num : null;
-  }
-  return null;
+import { getFloorMapById, getFloorMapWithPoints, updateFloorMap } from '@/lib/db';
+import { readJsonBody } from '@/lib/json';
+
+type RouteParams = { id: string };
+
+const parseId = async (context: { params: Promise<RouteParams> }) => {
+  const { id } = await context.params;
+  const numericId = Number(id);
+  return Number.isFinite(numericId) ? numericId : NaN;
 };
 
-const serializeMap = (map: ReturnType<typeof getFloorMapById>) => {
-  if (!map) return null;
-  return {
-    ...map,
-    image_url: `/api/floor-maps/${map.id}/image`,
-  };
-};
+const toClientMap = (map: NonNullable<ReturnType<typeof getFloorMapById>>) => ({
+  ...map,
+  imageUrl: `/api/floor-maps/${map.id}/image`,
+});
 
-export function GET(_: NextRequest, { params }: { params: { id: string } }) {
-  const id = Number(params.id);
+export async function GET(request: NextRequest, context: { params: Promise<RouteParams> }) {
+  const id = await parseId(context);
   if (!Number.isFinite(id)) {
     return NextResponse.json({ error: 'Invalid map id' }, { status: 400 });
   }
-  const map = getFloorMapById(id);
+  const includePoints = request.nextUrl.searchParams.get('includePoints') === 'true';
+  const map = includePoints ? getFloorMapWithPoints(id) : getFloorMapById(id);
   if (!map) {
     return NextResponse.json({ error: 'Map not found' }, { status: 404 });
   }
-  const points = listMapPoints(id);
-  return NextResponse.json({ map: serializeMap(map), points });
+  const base = toClientMap(map as NonNullable<ReturnType<typeof getFloorMapById>>);
+  return NextResponse.json({ map: includePoints && 'points' in map ? { ...base, points: map.points } : base });
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
-  const id = Number(params.id);
+export async function PUT(request: NextRequest, context: { params: Promise<RouteParams> }) {
+  const id = await parseId(context);
   if (!Number.isFinite(id)) {
     return NextResponse.json({ error: 'Invalid map id' }, { status: 400 });
   }
-  const payload = await request.json();
-  const updated = updateFloorMap(id, {
-    name: typeof payload.name === 'string' ? payload.name : undefined,
-    floor: typeof payload.floor === 'string' ? payload.floor : undefined,
-    georefOriginLat: parseNumber(payload.georef_origin_lat),
-    georefOriginLon: parseNumber(payload.georef_origin_lon),
-    georefRotationDeg: parseNumber(payload.georef_rotation_deg),
-    georefScaleMetersPerPixel: parseNumber(payload.georef_scale_m_per_px),
-  });
-  if (!updated) {
-    return NextResponse.json({ error: 'Map not found' }, { status: 404 });
+  try {
+    const body = await readJsonBody<any>(request, {}, 'floor map update');
+    const updates = {
+      name: typeof body.name === 'string' ? body.name.trim() : undefined,
+      floor: typeof body.floor === 'string' ? body.floor.trim() : body.floor === null ? null : undefined,
+      destinationTag:
+        typeof body.destinationTag === 'string'
+          ? body.destinationTag.trim() || null
+          : body.destinationTag === null
+            ? null
+            : undefined,
+      georefOriginLat:
+        body.georefOriginLat === null || body.georefOriginLat === undefined || body.georefOriginLat === ''
+          ? null
+          : Number(body.georefOriginLat),
+      georefOriginLon:
+        body.georefOriginLon === null || body.georefOriginLon === undefined || body.georefOriginLon === ''
+          ? null
+          : Number(body.georefOriginLon),
+      georefRotationDeg: Number.isFinite(Number(body.georefRotationDeg)) ? Number(body.georefRotationDeg) : undefined,
+      georefScaleMPx: Number.isFinite(Number(body.georefScaleMPx)) ? Number(body.georefScaleMPx) : undefined,
+      width: Number.isFinite(Number(body.width)) ? Number(body.width) : undefined,
+      height: Number.isFinite(Number(body.height)) ? Number(body.height) : undefined,
+    } as const;
+    const map = updateFloorMap(id, updates);
+    if (!map) {
+      return NextResponse.json({ error: 'Map not found' }, { status: 404 });
+    }
+    const includePoints = Boolean(body.includePoints);
+    const enriched = includePoints ? getFloorMapWithPoints(id) : map;
+    if (!enriched) {
+      return NextResponse.json({ error: 'Map not found' }, { status: 404 });
+    }
+    const base = toClientMap(enriched as NonNullable<ReturnType<typeof getFloorMapById>>);
+    const responsePayload = includePoints && 'points' in enriched ? { ...base, points: enriched.points } : base;
+    return NextResponse.json({ map: responsePayload });
+  } catch (error: any) {
+    console.error('Failed to update floor map', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
-  return NextResponse.json({ map: serializeMap(updated) });
 }
+

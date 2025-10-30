@@ -1,130 +1,108 @@
 #!/usr/bin/env python3
-"""Utility script to extract barcodes from an image.
+"""Decode barcodes from an image using zxing-cpp.
 
-Uses zxing-cpp (via the `zxingcpp` Python bindings) + Pillow for robust
-multi-pass decoding. If dependencies are unavailable or decoding fails,
-falls back to a filename heuristic so local dev stubs still work.
-
-Stdout JSON schema:
-{
-  "barcodes": string[],
-  "warnings": string[]
-}
+This script mirrors the standalone helper provided by the customer so the
+Node.js layer can invoke it directly. It accepts the image path as either a
+positional argument or via ``--image`` for backwards compatibility and prints a
+JSON array with one entry per detected barcode. Each entry exposes the decoded
+text along with metadata such as format and position coordinates when
+available.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
-from typing import List, Tuple
-
-# Optional deps
-try:  # pragma: no cover - optional
-    from PIL import Image, ImageOps  # type: ignore
-except Exception:  # pragma: no cover - optional
-    Image = None  # type: ignore
-    ImageOps = None  # type: ignore
-
-try:  # pragma: no cover - optional
-    import zxingcpp  # type: ignore
-except Exception:  # pragma: no cover - optional
-    zxingcpp = None  # type: ignore
+from typing import Any, Dict, List, Optional, Tuple
 
 
-def _filename_stub(image_path: Path) -> Tuple[List[str], List[str]]:
-    """Cheap heuristic: longest alphanumeric token from filename."""
-    tokens = re.findall(r"[A-Za-z0-9]{4,}", image_path.stem)
-    if not tokens:
-        return [], ["Unable to infer barcode value from filename"]
-    token = max(tokens, key=len).upper()
-    return [token], ["Barcode decoder unavailable or failed. Using filename heuristic result."]
-
-
-def _zxing_decode_passes(pil_img) -> List[str]:
-    """Run several sensible passes to improve robustness."""
-    results: List[str] = []
-
-    # pass 1: original
-    decoded = zxingcpp.read_barcodes(pil_img)
-    results.extend([d.text for d in decoded if getattr(d, "text", None)])
-
-    if results:
-        return results
-
-    # pass 2: grayscale
-    if ImageOps is not None:
-        gray = ImageOps.grayscale(pil_img)
-        decoded = zxingcpp.read_barcodes(gray)
-        results.extend([d.text for d in decoded if getattr(d, "text", None)])
-        if results:
-            return results
-
-    # pass 3: bottom crop (often used on documents with barcode near footer)
-    w, h = pil_img.size
-    crop = pil_img.crop((0, int(h * 0.60), w, h))
-    decoded = zxingcpp.read_barcodes(crop)
-    results.extend([d.text for d in decoded if getattr(d, "text", None)])
-
-    return results
-
-
-def _decode_with_zxing(image_path: Path) -> Tuple[List[str], List[str]]:
-    warnings: List[str] = []
-    if Image is None or zxingcpp is None:
-        missing = []
-        if Image is None:
-            missing.append("Pillow")
-        if zxingcpp is None:
-            missing.append("zxing-cpp")
-        warnings.append(
-            "Barcode decoder dependencies missing: {}".format(", ".join(missing) or "unknown")
-        )
-        return [], warnings
+def _load_dependencies() -> Tuple[Any, Any]:
+    try:
+        from PIL import Image  # type: ignore
+    except Exception as exc:  # pragma: no cover - import guard
+        raise RuntimeError(f"Pillow dependency missing or failed to import: {exc}") from exc
 
     try:
-        pil_img = Image.open(image_path)
-    except Exception as exc:  # pragma: no cover - passthrough
-        warnings.append(f"Unable to open image with Pillow: {exc}")
-        return [], warnings
+        import zxingcpp  # type: ignore
+    except Exception as exc:  # pragma: no cover - import guard
+        raise RuntimeError(f"zxing-cpp dependency missing or failed to import: {exc}") from exc
 
-    try:
-        barcodes = _zxing_decode_passes(pil_img)
-    except Exception as exc:  # pragma: no cover - passthrough
-        warnings.append(f"zxingcpp.read_barcodes failed: {exc}")
-        return [], warnings
-
-    if not barcodes:
-        warnings.append("No barcodes detected by zxing-cpp")
-    return barcodes, warnings
+    return Image, zxingcpp
 
 
-def decode_barcodes(image_path: Path) -> Tuple[List[str], List[str]]:
-    # Try real decoder first
-    barcodes, warnings = _decode_with_zxing(image_path)
-    if barcodes:
-        return barcodes, warnings
+def _position_dict(position: Any) -> Optional[Dict[str, Tuple[float, float]]]:
+    if position is None:
+        return None
 
-    # Fall back to filename heuristic so downstream code keeps working.
-    stub_codes, stub_warnings = _filename_stub(image_path)
-    return stub_codes, warnings + stub_warnings
+    corners = (
+        getattr(position, "top_left", None),
+        getattr(position, "top_right", None),
+        getattr(position, "bottom_right", None),
+        getattr(position, "bottom_left", None),
+    )
+    if not all(corners):
+        try:
+            return json.loads(str(position))  # type: ignore[arg-type]
+        except Exception:
+            return None
+
+    return {
+        "top_left": (position.top_left.x, position.top_left.y),
+        "top_right": (position.top_right.x, position.top_right.y),
+        "bottom_right": (position.bottom_right.x, position.bottom_right.y),
+        "bottom_left": (position.bottom_left.x, position.bottom_left.y),
+    }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Extract barcodes from image")
-    parser.add_argument("--image", required=True, help="Path to the input image")
+def decode_barcodes(image_path: Path) -> List[Dict[str, Any]]:
+    Image, zxingcpp = _load_dependencies()
+
+    with Image.open(image_path) as img:
+        results = zxingcpp.read_barcodes(img)
+
+    output: List[Dict[str, Any]] = []
+    for result in results:
+        entry: Dict[str, Any] = {
+            "text": getattr(result, "text", ""),
+            "format": str(getattr(result, "format", "")),
+        }
+        symbology = getattr(result, "symbology_identifier", None)
+        if symbology is not None:
+            entry["symbology_identifier"] = symbology
+        is_gs1 = getattr(result, "is_gs1", None)
+        if is_gs1 is not None:
+            entry["is_gs1"] = bool(is_gs1)
+        position = _position_dict(getattr(result, "position", None))
+        if position is not None:
+            entry["position"] = position
+        output.append(entry)
+
+    return output
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Decode barcodes from an image")
+    parser.add_argument("image", nargs="?", help="Path to the image to decode")
+    parser.add_argument("--image", dest="image_flag", help="Alternate flag form for the image path")
     args = parser.parse_args()
 
-    image_path = Path(args.image)
+    image_arg = args.image_flag or args.image or "2_page-0001.jpg"
+    image_path = Path(image_arg)
     if not image_path.exists():
-        print(json.dumps({"barcodes": [], "warnings": [f"Image not found: {image_path}"]}))
-        sys.exit(1)
+        print(json.dumps([]))
+        return 1
 
-    barcodes, warnings = decode_barcodes(image_path)
-    print(json.dumps({"barcodes": barcodes, "warnings": warnings}))
+    try:
+        barcodes = decode_barcodes(image_path)
+    except Exception as exc:  # pragma: no cover - passthrough
+        print(json.dumps({"error": str(exc)}))
+        return 2
+
+    print(json.dumps(barcodes, ensure_ascii=False, indent=2))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

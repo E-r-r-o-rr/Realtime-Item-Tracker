@@ -1,52 +1,49 @@
-import fs from 'fs';
-import path from 'path';
-import { NextResponse } from 'next/server';
-import { getFloorMapById } from '@/lib/db';
+import { NextRequest, NextResponse } from "next/server";
+import path from "path";
+import { promises as fs } from "fs";
 
-const DATA_DIR = path.join(process.cwd(), 'data', 'maps');
-const PUBLIC_DIR = path.join(process.cwd(), 'public', 'maps');
+import { getFloorMapById } from "@/lib/db";
 
-const resolveImagePath = (fileName: string) => {
-  const dataPath = path.join(DATA_DIR, fileName);
-  if (fs.existsSync(dataPath)) return dataPath;
-  const publicPath = path.join(PUBLIC_DIR, fileName);
-  if (fs.existsSync(publicPath)) return publicPath;
-  return null;
+type RouteParams = { id: string };
+
+const parseId = async (context: { params: Promise<RouteParams> }) => {
+  const { id } = await context.params;
+  const numericId = Number(id);
+  return Number.isFinite(numericId) ? numericId : NaN;
 };
 
-const lookupContentType = (fileName: string) => {
-  const ext = path.extname(fileName).toLowerCase();
-  switch (ext) {
-    case '.svg':
-      return 'image/svg+xml';
-    case '.jpg':
-    case '.jpeg':
-      return 'image/jpeg';
-    case '.webp':
-      return 'image/webp';
-    default:
-      return 'image/png';
-  }
+const extensionToMime: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  svg: "image/svg+xml",
 };
 
-export function GET(_: Request, { params }: { params: { id: string } }) {
-  const id = Number(params.id);
+export async function GET(_: NextRequest, context: { params: Promise<RouteParams> }) {
+  const id = await parseId(context);
   if (!Number.isFinite(id)) {
-    return NextResponse.json({ error: 'Invalid map id' }, { status: 400 });
+    return NextResponse.json({ error: "Invalid map id" }, { status: 400 });
   }
   const map = getFloorMapById(id);
   if (!map) {
-    return NextResponse.json({ error: 'Map not found' }, { status: 404 });
+    return NextResponse.json({ error: "Map not found" }, { status: 404 });
   }
-  const filePath = resolveImagePath(map.image_path);
-  if (!filePath) {
-    return NextResponse.json({ error: 'Image not found' }, { status: 404 });
+  const absolutePath = path.join(process.cwd(), "data", map.imagePath);
+  try {
+    const data = await fs.readFile(absolutePath);
+    const extension = map.imagePath.split(".").pop()?.toLowerCase() ?? "png";
+    const contentType = extensionToMime[extension] ?? "application/octet-stream";
+    const body = new Uint8Array(data);
+    return new NextResponse(body, {
+      status: 200,
+      headers: {
+        "Content-Type": contentType,
+        "Cache-Control": "public, max-age=60",
+      },
+    });
+  } catch (error) {
+    console.error("Failed to read map image", error);
+    return NextResponse.json({ error: "Map image not found" }, { status: 404 });
   }
-  const buffer = fs.readFileSync(filePath);
-  return new NextResponse(buffer, {
-    headers: {
-      'Content-Type': lookupContentType(map.image_path),
-      'Cache-Control': 'no-store',
-    },
-  });
 }

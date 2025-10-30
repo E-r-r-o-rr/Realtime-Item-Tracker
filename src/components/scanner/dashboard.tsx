@@ -4,26 +4,32 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
-import FloorMapModule from "@/components/maps/floor-map-module";
-import {
-  LiveRecord,
-  loadLiveRecord,
-  persistLiveRecord,
-  pushHistoryRecord,
-  writeRecordToStorage,
-} from "@/lib/localStorage";
+import { FloorMapViewer } from "@/components/scanner/floor-map-viewer";
+
+interface LiveRecord {
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  origin: string;
+}
+
+interface ApiLiveBufferRecord {
+  id: number;
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  originLocation: string;
+  lastSyncedAt: string;
+}
 
 interface KvPairs {
   [key: string]: any;
-}
-
-interface Order {
-  id: number;
-  code: string;
-  data: any;
-  collected: number;
-  floor: string;
-  section: string;
 }
 
 interface BarcodeValidation {
@@ -35,6 +41,190 @@ interface BarcodeValidation {
 
 type ValidationStatus = "match" | "mismatch" | "no_barcode" | "missing_item_code";
 
+type ComparisonStatus = "MATCH" | "MISMATCH" | "MISSING";
+
+interface BarcodeComparisonRow {
+  key: string;
+  ocr: string;
+  barcodeLabel: string;
+  barcodeValue: string;
+  status: ComparisonStatus;
+  contextLabel?: string;
+}
+
+interface BarcodeComparisonSummary {
+  matched: number;
+  mismatched: number;
+  missing: number;
+}
+
+interface BarcodeOnlyEntry {
+  class: string;
+  labels: string[];
+  value: string;
+  count: number;
+}
+
+interface BarcodeComparisonReport {
+  rows: BarcodeComparisonRow[];
+  summary: BarcodeComparisonSummary;
+  library: {
+    entriesCount: number;
+    missedByOcrCount: number;
+    missedByOcr: BarcodeOnlyEntry[];
+  };
+  barcodeText?: string;
+}
+
+const sanitizeBarcodeComparison = (value: unknown): BarcodeComparisonReport | null => {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+
+  const toStatus = (status: unknown): ComparisonStatus => {
+    const normalized = typeof status === "string" ? status.toUpperCase() : "MISSING";
+    return normalized === "MATCH" || normalized === "MISMATCH" || normalized === "MISSING"
+      ? normalized
+      : "MISSING";
+  };
+
+  const rowSource = Array.isArray(raw.rows)
+    ? raw.rows
+    : Array.isArray(raw.results)
+    ? raw.results
+    : [];
+
+  const rawRows = (rowSource as unknown[])
+    .map((row) => {
+        if (!row || typeof row !== "object") return null;
+        const entry = row as Record<string, unknown>;
+        return {
+          key: typeof entry.key === "string" ? entry.key : "",
+            ocr: typeof entry.ocr === "string" ? entry.ocr : "",
+            barcodeLabel: typeof entry.barcodeLabel === "string"
+              ? entry.barcodeLabel
+              : typeof entry.barcode_label === "string"
+              ? entry.barcode_label
+              : "",
+            barcodeValue: typeof entry.barcodeValue === "string"
+              ? entry.barcodeValue
+              : typeof entry.barcode_value === "string"
+              ? entry.barcode_value
+              : "",
+            status: toStatus(entry.status),
+            contextLabel: typeof entry.contextLabel === "string"
+              ? entry.contextLabel
+            : typeof entry.context_label === "string"
+            ? entry.context_label
+            : undefined,
+        } as BarcodeComparisonRow;
+    })
+    .filter((row): row is BarcodeComparisonRow => Boolean(row));
+
+  const rows = rawRows.map((row) => {
+    if (row.status === "MATCH") return row;
+    const barcodeValue = row.barcodeValue.trim();
+    if (!barcodeValue) {
+      return { ...row, status: "MISSING" as ComparisonStatus };
+    }
+    return row;
+  });
+
+  const summarySource =
+    raw.summary && typeof raw.summary === "object" ? (raw.summary as Record<string, unknown>) : {};
+  const toNumber = (input: unknown) => (typeof input === "number" && Number.isFinite(input) ? input : 0);
+  const baseSummary: BarcodeComparisonSummary = {
+    matched: toNumber(summarySource.matched),
+    mismatched: toNumber(summarySource.mismatched),
+    missing: toNumber(summarySource.missing),
+  };
+
+  const computedSummary = rows.reduce(
+    (acc, row) => {
+      switch (row.status) {
+        case "MATCH":
+          acc.matched += 1;
+          break;
+        case "MISSING":
+          acc.missing += 1;
+          break;
+        default:
+          acc.mismatched += 1;
+      }
+      return acc;
+    },
+    { matched: 0, mismatched: 0, missing: 0 } as BarcodeComparisonSummary,
+  );
+
+  const summary = rows.length > 0 ? computedSummary : baseSummary;
+
+  const librarySource =
+    raw.library && typeof raw.library === "object" ? (raw.library as Record<string, unknown>) : {};
+  const missedRaw =
+    Array.isArray(librarySource.missedByOcr)
+      ? librarySource.missedByOcr
+      : Array.isArray(librarySource.missed_by_ocr)
+      ? librarySource.missed_by_ocr
+      : [];
+  const missed: BarcodeOnlyEntry[] = missedRaw
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const item = entry as Record<string, unknown>;
+      return {
+        class: typeof item.class === "string" ? item.class : "unknown",
+        labels: Array.isArray(item.labels)
+          ? item.labels.filter((lbl): lbl is string => typeof lbl === "string")
+          : [],
+        value: typeof item.value === "string" ? item.value : "",
+        count: toNumber(item.count),
+      } as BarcodeOnlyEntry;
+    })
+    .filter((entry): entry is BarcodeOnlyEntry => Boolean(entry));
+
+  const library = {
+    entriesCount: toNumber(librarySource.entriesCount ?? librarySource.entries_count),
+    missedByOcrCount: toNumber(librarySource.missedByOcrCount ?? librarySource.missed_by_ocr_count),
+    missedByOcr: missed,
+  };
+
+  const barcodeTextValue =
+    typeof raw.barcodeText === "string"
+      ? raw.barcodeText
+      : typeof raw.barcode_text === "string"
+      ? raw.barcode_text
+      : undefined;
+
+  return { rows, summary, library, barcodeText: barcodeTextValue };
+};
+
+const COMPARISON_STATUS_META: Record<ComparisonStatus, { symbol: string; label: string; className: string }> = {
+  MATCH: { symbol: "✓", label: "Match", className: "text-emerald-400" },
+  MISMATCH: { symbol: "✕", label: "Mismatch", className: "text-rose-400" },
+  MISSING: { symbol: "–", label: "Missing", className: "text-amber-300" },
+};
+
+const DEMO_RECORDS: KvPairs[] = [
+  {
+    destination_warehouse_id: "R1-A",
+    item_name: "Widget Alpha",
+    tracking_id: "TRK900001",
+    truck_number: "301",
+    ship_date: "2025-09-16",
+    expected_departure_time: "10:15",
+    origin: "Dock 1",
+    item_code: "TRK900001",
+  },
+  {
+    destination_warehouse_id: "R2-B",
+    item_name: "Gizmo Max",
+    tracking_id: "TRK900002",
+    truck_number: "302",
+    ship_date: "2025-09-16",
+    expected_departure_time: "11:40",
+    origin: "Inbound A",
+    item_code: "TRK900002",
+  },
+];
+
 interface ApiValidation {
   status: ValidationStatus;
   message: string;
@@ -43,10 +233,150 @@ interface ApiValidation {
 
 interface ApiOcrResponse {
   kv?: KvPairs;
+  selectedKv?: KvPairs;
   barcodes?: string[];
   barcodeWarnings?: string[];
+  barcodeComparison?: BarcodeComparisonReport;
   validation?: ApiValidation;
+  providerInfo?: ProviderInfo;
+  error?: string;
 }
+
+interface ApiHistoryEntry {
+  id: number;
+  scanId: string;
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  originLocation: string;
+  recordedAt: string;
+}
+
+type ProviderMode = "remote" | "local";
+
+interface ProviderInfo {
+  mode: ProviderMode;
+  providerType?: string;
+  modelId?: string;
+  baseUrl?: string;
+}
+
+const PROVIDER_TYPE_LABELS: Record<string, string> = {
+  "openai-compatible": "OpenAI-compatible",
+  huggingface: "Hugging Face Inference",
+  "generic-http": "Generic HTTP",
+  local: "Local OCR pipeline",
+};
+
+const PERSISTED_STATE_KEY = "scanner.dashboard.ui_state.v1";
+const DEFAULT_REFRESH_MS = 300_000;
+const REFRESH_INTERVAL_OPTIONS: { label: string; value: number }[] = [
+  { label: "Every 30 seconds", value: 30_000 },
+  { label: "Every 1 minute", value: 60_000 },
+  { label: "Every 5 minutes", value: 300_000 },
+];
+
+const trimString = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const DEFAULT_SCAN_ERROR_MESSAGE = "Error scanning document.";
+
+const parseErrorPayload = (raw: string): string => {
+  if (!raw) return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === "object") {
+      const asRecord = parsed as Record<string, unknown>;
+      const errorMessage = asRecord.error;
+      if (typeof errorMessage === "string" && errorMessage.trim()) {
+        return errorMessage.trim();
+      }
+      const message = asRecord.message;
+      if (typeof message === "string" && message.trim()) {
+        return message.trim();
+      }
+    }
+  } catch (error) {
+    // Ignore JSON parse failures and fall back to the raw string
+  }
+  return trimmed;
+};
+
+const formatStatusError = (error: unknown): string => {
+  if (!error) return DEFAULT_SCAN_ERROR_MESSAGE;
+
+  if (error instanceof Error) {
+    const parsed = parseErrorPayload(error.message);
+    if (parsed) return parsed;
+    const cause = (error as Error & { cause?: unknown }).cause;
+    if (cause && cause !== error) {
+      const causeMessage = formatStatusError(cause);
+      if (causeMessage && causeMessage !== DEFAULT_SCAN_ERROR_MESSAGE) {
+        return causeMessage;
+      }
+    }
+  }
+
+  if (typeof error === "string") {
+    const parsed = parseErrorPayload(error);
+    if (parsed) return parsed;
+  }
+
+  if (error && typeof (error as { message?: unknown }).message === "string") {
+    const parsed = parseErrorPayload((error as { message: string }).message);
+    if (parsed) return parsed;
+  }
+
+  return DEFAULT_SCAN_ERROR_MESSAGE;
+};
+
+const sanitizeProviderInfo = (value: unknown): ProviderInfo | null => {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const rawMode = trimString(raw.mode);
+  const normalizedMode = rawMode === "remote" || rawMode === "local" ? (rawMode as ProviderMode) : null;
+  if (!normalizedMode) return null;
+
+  return {
+    mode: normalizedMode,
+    providerType: trimString(raw.providerType),
+    modelId: trimString(raw.modelId),
+    baseUrl: trimString(raw.baseUrl),
+  };
+};
+
+const describeProviderType = (info: ProviderInfo): string => {
+  if (info.mode === "local") {
+    return PROVIDER_TYPE_LABELS.local;
+  }
+  if (info.providerType && PROVIDER_TYPE_LABELS[info.providerType]) {
+    return PROVIDER_TYPE_LABELS[info.providerType];
+  }
+  return info.providerType ? info.providerType : "Remote provider";
+};
+
+const describeProviderLink = (info: ProviderInfo): { label: string; href?: string } => {
+  if (info.mode === "local") {
+    return { label: "Local pipeline" };
+  }
+  const base = info.baseUrl?.trim();
+  if (!base) {
+    if (info.providerType === "huggingface") {
+      return { label: "https://router.huggingface.co", href: "https://router.huggingface.co" };
+    }
+    return { label: "No endpoint configured" };
+  }
+  const href = /^https?:\/\//i.test(base) ? base : undefined;
+  return { label: base, href };
+};
 
 const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
   if (!v) return null;
@@ -60,135 +390,48 @@ const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
 
 const normalizeKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
-const BARCODE_FIELD_TITLES = [
-  "Product Name",
-  "Truck ID",
-  "Date",
-  "Current Warehouse ID",
-  "Destination Warehouse ID",
-  "Estimated Departure Time",
-  "Estimated Arrival Time",
-  "Loading Dock ID",
-  "Shipping Dock ID",
-  "Loading Bay",
-  "Priority Class",
-  "Order ID",
-  "Loading Time",
-  "Loading Priority",
-  "Stow Position",
-  "Order Reference",
-  "Shipping Carrier",
-];
-
-const PREFERRED_ID_KEYS = [
-  "order_id",
-  "orderid",
-  "tracking_id",
-  "trackingid",
-  "order_reference",
-  "orderreference",
-];
-
-const ID_LIKE_SET = new Set(
-  ["order_id", "orderid", "tracking_id", "trackingid", "item_code", "itemcode", "order_reference", "orderreference"].map(
-    normalizeKey,
-  ),
-);
-
-const COMPACT_BARCODE_KEYS = new Set(
-  [
-    "order_id",
-    "orderid",
-    "tracking_id",
-    "trackingid",
-    "truck_id",
-    "truckid",
-    "truck_number",
-    "trucknumber",
-    "destinationwarehouseid",
-    "currentwarehouseid",
-    "shippingdockid",
-    "loadingdockid",
-    "loadingbay",
-    "stowposition",
-    "orderreference",
-  ].map(normalizeKey),
-);
-
-type ParsedTime = { hour24: number; minute: number; second: number; hadSeconds: boolean };
-
-const parseTime = (value: string): ParsedTime | null => {
-  const match = value
-    .trim()
-    .toLowerCase()
-    .match(/^(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*([ap]m)?$/);
-  if (!match) return null;
-  let hour = parseInt(match[1] ?? "", 10);
-  const minute = parseInt(match[2] ?? "0", 10);
-  const second = parseInt(match[3] ?? "0", 10);
-  if (Number.isNaN(hour) || Number.isNaN(minute) || Number.isNaN(second)) return null;
-  const meridiem = match[4];
-  if (meridiem) {
-    const isPm = meridiem === "pm";
-    if (isPm && hour < 12) hour += 12;
-    if (!isPm && hour === 12) hour = 0;
+const toDisplayString = (value: unknown): string => {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => toDisplayString(entry))
+      .filter((segment) => segment.length > 0)
+      .join(", ");
   }
-  hour = hour % 24;
-  return { hour24: hour, minute, second, hadSeconds: Boolean(match[3]) };
-};
-
-const formatTimeForDisplay = (parts: ParsedTime): string => {
-  let hour = parts.hour24 % 12;
-  if (hour === 0) hour = 12;
-  const meridiem = parts.hour24 >= 12 ? "PM" : "AM";
-  const minute = parts.minute.toString().padStart(2, "0");
-  const includeSeconds = parts.hadSeconds || parts.second !== 0;
-  const second = parts.second.toString().padStart(2, "0");
-  return `${hour}:${minute}${includeSeconds ? `:${second}` : ""} ${meridiem}`;
-};
-
-const normalizeTimeForComparison = (parts: ParsedTime): string => {
-  const hour = parts.hour24.toString().padStart(2, "0");
-  const minute = parts.minute.toString().padStart(2, "0");
-  const second = parts.second.toString().padStart(2, "0");
-  return `${hour}:${minute}:${second}`;
-};
-
-type ParsedDate = { year: number; month: number; day: number };
-
-const parseDate = (value: string): ParsedDate | null => {
-  const trimmed = value.trim();
-  const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (iso) {
-    const year = parseInt(iso[1], 10);
-    const month = parseInt(iso[2], 10);
-    const day = parseInt(iso[3], 10);
-    if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) return null;
-    return { year, month, day };
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch (error) {
+      return String(value);
+    }
   }
-  const slash = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-  if (slash) {
-    let year = parseInt(slash[3], 10);
-    const month = parseInt(slash[1], 10);
-    const day = parseInt(slash[2], 10);
-    if (slash[3].length === 2) year += year >= 70 ? 1900 : 2000;
-    if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) return null;
-    return { year, month, day };
+  return String(value).trim();
+};
+
+const toNormalizedMap = (pairs: KvPairs | null): Map<string, string> => {
+  const map = new Map<string, string>();
+  if (!pairs) return map;
+  for (const [key, rawValue] of Object.entries(pairs)) {
+    if (typeof key !== "string") continue;
+    const normalizedKey = normalizeKey(key);
+    if (!normalizedKey) continue;
+    map.set(normalizedKey, toDisplayString(rawValue));
   }
-  return null;
+  return map;
 };
 
-const formatDateForDisplay = (parts: ParsedDate): string => {
-  const month = parts.month.toString().padStart(2, "0");
-  const day = parts.day.toString().padStart(2, "0");
-  return `${month}/${day}/${parts.year}`;
+const getValueFromMap = (map: Map<string, string>, keys: string[]): string => {
+  for (const key of keys) {
+    const candidate = map.get(normalizeKey(key));
+    if (candidate && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return "";
 };
 
-const normalizeDateForComparison = (parts: ParsedDate): string => {
-  const month = parts.month.toString().padStart(2, "0");
-  const day = parts.day.toString().padStart(2, "0");
-  return `${parts.year.toString().padStart(4, "0")}-${month}-${day}`;
-};
+
 
 const OCR_TO_BARCODE_KEY: Record<string, string> = (() => {
   const m: Record<string, string> = {};
@@ -221,14 +464,22 @@ const OCR_TO_BARCODE_KEY: Record<string, string> = (() => {
 })();
 
 const LIVE_BUFFER_FIELDS: Array<{ label: string; keys: string[] }> = [
-  { label: "Destination", keys: ["destinationwarehouseid", "destination_warehouse_id"] },
+  { label: "Destination", keys: ["destination", "destinationwarehouseid", "destination_warehouse_id"] },
   {
     label: "Item Name",
     keys: ["item_name", "itemname", "product_name", "productname", "product", "item"],
   },
   {
     label: "Tracking ID (Order ID)",
-    keys: ["order_id", "orderid", "tracking_id", "trackingid", "order_reference", "orderreference"],
+    keys: [
+      "order_id",
+      "orderid",
+      "tracking_id",
+      "trackingid",
+      "order_reference",
+      "orderreference",
+      "trackingorderid",
+    ],
   },
   {
     label: "Truck Number",
@@ -264,320 +515,6 @@ const BARCODE_ALIAS_GROUPS: string[][] = [
   ["Shipping Carrier", "Carrier"],
 ];
 
-const BARCODE_TITLE_SET = new Set(BARCODE_FIELD_TITLES.map((title) => normalizeKey(title)));
-
-const BARCODE_ALIAS_LOOKUP: Record<string, string> = (() => {
-  const map: Record<string, string> = {};
-  for (const group of BARCODE_ALIAS_GROUPS) {
-    const canonicalAlias = group.find((alias) => BARCODE_TITLE_SET.has(normalizeKey(alias))) ?? group[0];
-    const canonicalKey = normalizeKey(canonicalAlias);
-    for (const alias of group) {
-      map[normalizeKey(alias)] = canonicalKey;
-    }
-  }
-  return map;
-})();
-
-const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|\[\]\\]/g, "\\$&");
-
-const DEMO_RECORDS: KvPairs[] = [
-  {
-    destination_warehouse_id: "R1-A",
-    item_name: "Widget Alpha",
-    tracking_id: "TRK900001",
-    truck_number: "301",
-    ship_date: "2025-09-16",
-    expected_departure_time: "10:15",
-    origin: "Dock 1",
-    item_code: "TRK900001",
-  },
-  {
-    destination_warehouse_id: "R2-B",
-    item_name: "Gizmo Max",
-    tracking_id: "TRK900002",
-    truck_number: "302",
-    ship_date: "2025-09-16",
-    expected_departure_time: "11:40",
-    origin: "Inbound A",
-    item_code: "TRK900002",
-  },
-  {
-    destination_warehouse_id: "R3-C",
-    item_name: "Box Large",
-    tracking_id: "TRK900003",
-    truck_number: "305",
-    ship_date: "2025-09-17",
-    expected_departure_time: "09:05",
-    origin: "Dock 2",
-    item_code: "TRK900003",
-  },
-];
-
-const normalizeForSearch = (value: string): string =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const buildBarcodeSearchText = (barcodes: string[]): string | null => {
-  if (!Array.isArray(barcodes) || barcodes.length === 0) return null;
-  const combined = barcodes.join(" ");
-  const normalized = normalizeForSearch(combined);
-  return normalized.length > 0 ? normalized : null;
-};
-
-const hasKeyValueInBarcode = (barcodeText: string, key: string, value: string): boolean => {
-  const normalizedValue = normalizeForSearch(value);
-  if (!normalizedValue) return false;
-
-  const normalizedKeyWords = normalizeForSearch(key)
-    .split(" ")
-    .filter(Boolean);
-  const meaningfulWords = normalizedKeyWords.filter((word) => word.length > 2);
-  const windowRadius = 60;
-
-  let index = barcodeText.indexOf(normalizedValue);
-  while (index !== -1) {
-    const start = Math.max(0, index - windowRadius);
-    const end = Math.min(barcodeText.length, index + normalizedValue.length + windowRadius);
-    const context = barcodeText.slice(start, end);
-
-    if (meaningfulWords.length === 0 || meaningfulWords.some((word) => context.includes(word))) {
-      return true;
-    }
-
-    index = barcodeText.indexOf(normalizedValue, index + normalizedValue.length);
-  }
-
-  return false;
-};
-
-const MATCH_STATES = {
-  match: { symbol: "✓", label: "Match", className: "text-green-600" },
-  mismatch: { symbol: "✗", label: "Mismatch", className: "text-red-600" },
-  noBarcode: { symbol: "–", label: "No barcode", className: "text-slate-500" },
-  noValue: { symbol: "–", label: "No OCR value", className: "text-slate-500" },
-} as const;
-
-type MatchState = (typeof MATCH_STATES)[keyof typeof MATCH_STATES];
-
-interface RowComparison {
-  barcodeDisplay: string;
-  barcodeHasValue: boolean;
-  match: MatchState;
-}
-
-interface BarcodeFieldValue {
-  raw: string;
-  display: string;
-  comparable: string;
-}
-
-interface BarcodeKeyValueData {
-  kv: Map<string, string>;
-  rawValues: string[];
-}
-
-const formatBarcodeValue = (normalizedKey: string, value: string): BarcodeFieldValue => {
-  const raw = value;
-  const trimmed = value.trim();
-  const lowerKey = normalizedKey.toLowerCase();
-
-  if (!trimmed) {
-    return { raw, display: "", comparable: "" };
-  }
-
-  if (COMPACT_BARCODE_KEYS.has(lowerKey) || ID_LIKE_SET.has(lowerKey)) {
-    let displayValue = trimmed.toUpperCase();
-    displayValue = displayValue.replace(/\s*-\s*/g, "-");
-    displayValue = displayValue.replace(/\s+/g, "");
-    if (lowerKey.includes("truck")) {
-      const hasDigit = /\d/.test(displayValue);
-      if (hasDigit) displayValue = displayValue.replace(/^[A-Z]+/, "");
-    }
-    const comparable = displayValue.replace(/[^A-Z0-9]/g, "").toLowerCase();
-    return { raw, display: displayValue, comparable };
-  }
-
-  if (lowerKey.includes("time")) {
-    const parsed = parseTime(trimmed);
-    if (parsed) {
-      return {
-        raw,
-        display: formatTimeForDisplay(parsed),
-        comparable: normalizeTimeForComparison(parsed),
-      };
-    }
-  }
-
-  if (lowerKey.includes("date")) {
-    const parsed = parseDate(trimmed);
-    if (parsed) {
-      return {
-        raw,
-        display: formatDateForDisplay(parsed),
-        comparable: normalizeDateForComparison(parsed),
-      };
-    }
-  }
-
-  const normalized = trimmed.replace(/\s+/g, " ");
-  return { raw, display: normalized, comparable: normalized.toLowerCase() };
-};
-
-const getCanonicalBarcodeKey = (rawKey: string): string | null => {
-  const normalized = normalizeKey(rawKey);
-  if (!normalized) return null;
-  return BARCODE_ALIAS_LOOKUP[normalized] ?? (BARCODE_TITLE_SET.has(normalized) ? normalized : null);
-};
-
-const buildBarcodeKeyValueData = (barcodes: string[]): BarcodeKeyValueData => {
-  const kv = new Map<string, string>();
-  const rawValues = new Set<string>();
-
-  const addValue = (key: string, value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    const existing = kv.get(key);
-    if (!existing || trimmed.length > existing.length) {
-      kv.set(key, trimmed);
-    }
-    rawValues.add(trimmed);
-  };
-
-  const textBlocks = (Array.isArray(barcodes) ? barcodes : []).map((b) =>
-    typeof b === "string" ? b : String(b ?? ""),
-  );
-
-  const tryParseDelimitedBlock = (block: string) => {
-    const separators = ["|", ";", "‖"];
-    for (const separator of separators) {
-      if (!block.includes(separator)) continue;
-      const parts = block
-        .split(separator)
-        .map((part) => part.trim())
-        .filter(Boolean);
-      if (parts.length < 2) continue;
-
-      let extracted = false;
-      for (let i = 0; i < parts.length; i += 1) {
-        const possibleKey = parts[i];
-        const canonical = getCanonicalBarcodeKey(possibleKey);
-        if (!canonical) continue;
-
-        let valueParts: string[] = [];
-        for (let j = i + 1; j < parts.length; j += 1) {
-          const maybeKey = getCanonicalBarcodeKey(parts[j]);
-          if (maybeKey) break;
-          valueParts.push(parts[j]);
-          i = j;
-        }
-
-        const value = valueParts.join(" ").trim();
-        if (value) {
-          addValue(canonical, value);
-          extracted = true;
-        }
-      }
-
-      // Only early-return if we successfully extracted structured data.
-      if (extracted) {
-        return;
-      }
-    }
-  };
-
-  for (const block of textBlocks) {
-    if (!block) continue;
-    tryParseDelimitedBlock(block);
-    const lines = block.split(/\r?\n/);
-    for (const line of lines) {
-      const trimmedLine = line.trim();
-      if (!trimmedLine) continue;
-
-      const colonMatch = trimmedLine.match(/^(.+?)[\s]*[:=|]\s*(.+)$/);
-      if (colonMatch) {
-        const canonical = getCanonicalBarcodeKey(colonMatch[1]);
-        if (canonical) {
-          addValue(canonical, colonMatch[2]);
-          continue;
-        }
-      }
-
-      const dashMatch = trimmedLine.match(/^(.+?)\s+-\s+(.+)$/);
-      if (dashMatch) {
-        const canonical = getCanonicalBarcodeKey(dashMatch[1]);
-        if (canonical) {
-          addValue(canonical, dashMatch[2]);
-          continue;
-        }
-      }
-
-      const doubleSpaceMatch = trimmedLine.match(/^(.+?)\s{2,}(.+)$/);
-      if (doubleSpaceMatch) {
-        const canonical = getCanonicalBarcodeKey(doubleSpaceMatch[1]);
-        if (canonical) {
-          addValue(canonical, doubleSpaceMatch[2]);
-        }
-      }
-    }
-
-    const tokens = block.match(/[A-Za-z0-9]{4,}/g);
-    if (tokens) {
-      for (const token of tokens) {
-        rawValues.add(token);
-      }
-    }
-  }
-
-  const combinedText = textBlocks.join("\n");
-  for (const group of BARCODE_ALIAS_GROUPS) {
-    const canonicalAlias = group.find((alias) => BARCODE_TITLE_SET.has(normalizeKey(alias))) ?? group[0];
-    const canonicalKey = getCanonicalBarcodeKey(canonicalAlias);
-    if (!canonicalKey || kv.has(canonicalKey)) continue;
-    for (const alias of group) {
-      const aliasPattern = escapeRegex(alias);
-      const regex = new RegExp(`${aliasPattern}\\s*[#:;=\\|\\-]*\\s*([^\\n\\r]+)`, "i");
-      const match = combinedText.match(regex);
-      if (match) {
-        addValue(canonicalKey, match[1]);
-        break;
-      }
-    }
-  }
-
-  return { kv, rawValues: Array.from(rawValues) };
-};
-
-const pickBestBarcodeId = (kv: Map<string, string>, rawValues: string[]): string | null => {
-  for (const key of PREFERRED_ID_KEYS) {
-    const candidate = kv.get(normalizeKey(key));
-    if (candidate && candidate.trim()) {
-      return candidate.trim();
-    }
-  }
-
-  const candidates = new Set<string>();
-  for (const value of kv.values()) {
-    const trimmed = value.trim();
-    if (trimmed) candidates.add(trimmed);
-  }
-  for (const value of rawValues) {
-    const trimmed = String(value).trim();
-    if (trimmed) candidates.add(trimmed);
-  }
-
-  const ordered = Array.from(candidates).sort((a, b) => b.length - a.length);
-  for (const candidate of ordered) {
-    if (/\d/.test(candidate)) {
-      return candidate;
-    }
-  }
-
-  return ordered[0] ?? null;
-};
-
 const LABEL_TO_RECORD_KEY: Record<string, keyof LiveRecord> = {
   Destination: "destination",
   "Item Name": "itemName",
@@ -609,104 +546,301 @@ const buildLiveRecord = (getBufferValue: (keys: string[]) => string): LiveRecord
   return hasValue ? record : null;
 };
 
+const buildLiveRecordFromMap = (map: Map<string, string>): LiveRecord | null => {
+  if (!map || map.size === 0) return null;
+  return buildLiveRecord((keys) => getValueFromMap(map, keys));
+};
+
+const mergeLiveRecords = (primary: LiveRecord | null, secondary: LiveRecord | null): LiveRecord | null => {
+  if (!primary && !secondary) return null;
+  if (!secondary) return primary;
+  if (!primary) return secondary;
+
+  const merged: LiveRecord = { ...secondary };
+  (Object.keys(merged) as Array<keyof LiveRecord>).forEach((key) => {
+    const primaryValue = primary[key];
+    const fallbackValue = secondary[key];
+    merged[key] = primaryValue && primaryValue.trim() ? primaryValue : fallbackValue;
+  });
+  const hasValue = Object.values(merged).some((value) => Boolean(value && value.trim()));
+  return hasValue ? merged : null;
+};
+
 export default function ScannerDashboard() {
   const [file, setFile] = useState<File | null>(null);
   const [kv, setKv] = useState<KvPairs | null>(null);
-  const [order, setOrder] = useState<Order | null>(null);
-  const [floor, setFloor] = useState("");
-  const [section, setSection] = useState("");
-  const [creating, setCreating] = useState(false);
+  const [selectedKv, setSelectedKv] = useState<KvPairs | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [barcodes, setBarcodes] = useState<string[]>([]);
   const [barcodeWarnings, setBarcodeWarnings] = useState<string[]>([]);
+  const [barcodeComparison, setBarcodeComparison] = useState<BarcodeComparisonReport | null>(null);
   const [validation, setValidation] = useState<BarcodeValidation | null>(null);
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
-  const [scanToken, setScanToken] = useState(0);
+  const [bookingWarning, setBookingWarning] = useState<string | null>(null);
+  const [bookingSuccess, setBookingSuccess] = useState<string | null>(null);
+  const [bookingLocated, setBookingLocated] = useState(false);
+  const [vlmInfo, setVlmInfo] = useState<ProviderInfo | null>(null);
+  const [checkingBooking, setCheckingBooking] = useState(false);
+  const [refreshIntervalMs, setRefreshIntervalMs] = useState<number>(DEFAULT_REFRESH_MS);
+  const [hasHydrated, setHasHydrated] = useState(false);
 
   useEffect(() => {
-    setLiveRecordState(loadLiveRecord());
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(PERSISTED_STATE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        const maybeStatus = (parsed as { status?: unknown }).status;
+        setStatus(typeof maybeStatus === "string" ? maybeStatus : null);
+
+        const maybeWarning = (parsed as { bookingWarning?: unknown }).bookingWarning;
+        const normalizedWarning = typeof maybeWarning === "string" ? maybeWarning : null;
+        setBookingWarning(normalizedWarning);
+
+        const maybeSuccess = (parsed as { bookingSuccess?: unknown }).bookingSuccess;
+        const normalizedSuccess = typeof maybeSuccess === "string" ? maybeSuccess : null;
+        setBookingSuccess(normalizedSuccess);
+
+        const maybeLocated = (parsed as { bookingLocated?: unknown }).bookingLocated;
+        if (typeof maybeLocated === "boolean") {
+          setBookingLocated(maybeLocated);
+        } else if (normalizedSuccess && normalizedSuccess.trim().length > 0) {
+          setBookingLocated(true);
+        } else if (normalizedWarning && normalizedWarning.trim().length > 0) {
+          setBookingLocated(false);
+        }
+
+        const maybeProviderInfo = (parsed as { providerInfo?: unknown }).providerInfo;
+        setVlmInfo(sanitizeProviderInfo(maybeProviderInfo));
+
+        const maybeKv = (parsed as { kv?: unknown }).kv;
+        if (maybeKv && typeof maybeKv === "object" && !Array.isArray(maybeKv)) {
+          setKv(maybeKv as KvPairs);
+        }
+
+        const maybeSelectedRaw =
+          (parsed as { selectedKv?: unknown }).selectedKv ??
+          (parsed as { selected_kv?: unknown }).selected_kv ??
+          (parsed as { selectedKeyValues?: unknown }).selectedKeyValues ??
+          (parsed as { selected_key_values?: unknown }).selected_key_values ??
+          null;
+        if (maybeSelectedRaw && typeof maybeSelectedRaw === "object" && !Array.isArray(maybeSelectedRaw)) {
+          setSelectedKv(maybeSelectedRaw as KvPairs);
+        } else {
+          setSelectedKv(null);
+        }
+
+        const maybeBarcodes = (parsed as { barcodes?: unknown }).barcodes;
+        setBarcodes(Array.isArray(maybeBarcodes) ? maybeBarcodes.filter((v) => typeof v === "string") : []);
+
+        const maybeBarcodeWarnings = (parsed as { barcodeWarnings?: unknown }).barcodeWarnings;
+        setBarcodeWarnings(
+          Array.isArray(maybeBarcodeWarnings)
+            ? maybeBarcodeWarnings.filter((v) => typeof v === "string")
+            : [],
+        );
+
+        const maybeBarcodeComparison = (parsed as { barcodeComparison?: unknown }).barcodeComparison;
+        setBarcodeComparison(sanitizeBarcodeComparison(maybeBarcodeComparison));
+
+        const maybeValidation = (parsed as { validation?: unknown }).validation;
+        if (maybeValidation && typeof maybeValidation === "object") {
+          const val = maybeValidation as Partial<BarcodeValidation>;
+          const status = val.status;
+          const message = val.message;
+          const matches = val.matches;
+          const comparedValue = val.comparedValue;
+          if (typeof status === "string" && typeof message === "string") {
+            setValidation({
+              status,
+              message,
+              matches: typeof matches === "boolean" ? matches : null,
+              comparedValue: typeof comparedValue === "string" ? comparedValue : undefined,
+            });
+          }
+        }
+
+        const maybeRefresh = (parsed as { refreshIntervalMs?: unknown }).refreshIntervalMs;
+        if (typeof maybeRefresh === "number" && Number.isFinite(maybeRefresh) && maybeRefresh > 0) {
+          setRefreshIntervalMs(maybeRefresh);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to load persisted scanner state", error);
+    } finally {
+      setHasHydrated(true);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!hasHydrated || typeof window === "undefined") return;
+    try {
+      const payload = {
+        status,
+        bookingWarning,
+        bookingSuccess,
+        providerInfo: vlmInfo,
+        kv,
+        selectedKv,
+        barcodes,
+        barcodeWarnings,
+        barcodeComparison,
+        validation,
+        refreshIntervalMs,
+        bookingLocated,
+      };
+      window.localStorage.setItem(PERSISTED_STATE_KEY, JSON.stringify(payload));
+    } catch (error) {
+      console.error("Failed to persist scanner state", error);
+    }
+  }, [
+    status,
+    bookingWarning,
+    bookingSuccess,
+    kv,
+    selectedKv,
+    barcodes,
+    barcodeWarnings,
+    barcodeComparison,
+    validation,
+    vlmInfo,
+    bookingLocated,
+    refreshIntervalMs,
+    hasHydrated,
+  ]);
+
+  const mapApiRecordToLive = useCallback((record: ApiLiveBufferRecord): LiveRecord => ({
+    destination: record.destination,
+    itemName: record.itemName,
+    trackingId: record.trackingId,
+    truckNumber: record.truckNumber,
+    shipDate: record.shipDate,
+    expectedDepartureTime: record.expectedDepartureTime,
+    origin: record.originLocation,
+  }), []);
 
   const updateLiveRecord = useCallback((record: LiveRecord | null) => {
     setLiveRecordState(record);
-    persistLiveRecord(record);
   }, []);
+
+  const comparisonRows = useMemo(() => {
+    if (barcodeComparison && Array.isArray(barcodeComparison.rows) && barcodeComparison.rows.length > 0) {
+      return barcodeComparison.rows;
+    }
+    if (!kv) return [] as BarcodeComparisonRow[];
+    return Object.entries(kv).map(([rawKey, rawVal]) => ({
+      key: rawKey,
+      ocr: String(rawVal ?? ""),
+      barcodeLabel: "",
+      barcodeValue: "",
+      status: "MISSING" as ComparisonStatus,
+      contextLabel: undefined,
+    }));
+  }, [barcodeComparison, kv]);
+
+  const barcodeOnlyEntries = useMemo(() => {
+    if (!barcodeComparison) return [] as BarcodeOnlyEntry[];
+    const candidates = Array.isArray(barcodeComparison.library?.missedByOcr)
+      ? barcodeComparison.library.missedByOcr
+      : [];
+    return candidates.filter((entry) => {
+      if (!entry) return false;
+      const hasLabel = Array.isArray(entry.labels) && entry.labels.some((label) => typeof label === "string" && label.trim().length > 0);
+      const hasValue = typeof entry.value === "string" && entry.value.trim().length > 0;
+      return hasLabel || hasValue;
+    });
+  }, [barcodeComparison]);
+
+  const fetchLiveBuffer = useCallback(async (options?: { sync?: boolean }) => {
+    try {
+      const query = options?.sync ? "?sync=true" : "";
+      const response = await fetch(`/api/orders${query}`, { cache: "no-store" });
+      const payload: { liveBuffer?: ApiLiveBufferRecord[]; record?: ApiLiveBufferRecord; error?: string } = await response
+        .json()
+        .catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+      const records = Array.isArray(payload.liveBuffer) ? payload.liveBuffer : [];
+      if (records.length > 0) {
+        updateLiveRecord(mapApiRecordToLive(records[0]));
+      } else if (payload.record) {
+        updateLiveRecord(mapApiRecordToLive(payload.record));
+      } else {
+        updateLiveRecord(null);
+        setBookingLocated(false);
+      }
+    } catch (error) {
+      console.error("Failed to load live buffer", error);
+    }
+  }, [mapApiRecordToLive, updateLiveRecord, setBookingLocated]);
+
+  useEffect(() => {
+    fetchLiveBuffer(bookingLocated ? { sync: true } : undefined);
+  }, [fetchLiveBuffer, bookingLocated]);
+
+  useEffect(() => {
+    if (!bookingLocated || !refreshIntervalMs || typeof window === "undefined") return;
+    const id = window.setInterval(() => {
+      fetchLiveBuffer({ sync: true });
+    }, refreshIntervalMs);
+    return () => window.clearInterval(id);
+  }, [refreshIntervalMs, fetchLiveBuffer, bookingLocated]);
 
   const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "my-secret-api-key";
 
-  const ocrKv = useMemo(() => {
-    const m = new Map<string, string>();
-    if (!kv) return m;
-    const toStr = (v: any) =>
-      v == null ? "" : Array.isArray(v) ? v.join(", ") : typeof v === "object" ? JSON.stringify(v) : String(v);
-    for (const [k, v] of Object.entries(kv)) m.set(normalizeKey(k), toStr(v));
-    return m;
-  }, [kv]);
+  const allKvMap = useMemo(() => toNormalizedMap(kv), [kv]);
+  const selectedMap = useMemo(() => toNormalizedMap(selectedKv), [selectedKv]);
 
-  const barcodeSearchText = useMemo(() => buildBarcodeSearchText(barcodes), [barcodes]);
-  const { kv: barcodeKv, rawValues: barcodeValues } = useMemo(
-    () => buildBarcodeKeyValueData(barcodes),
-    [barcodes],
+  const getBufferValue = useCallback((keys: string[]) => getValueFromMap(allKvMap, keys), [allKvMap]);
+
+  const bufferDestination = useMemo(() => {
+    if (!LIVE_BUFFER_FIELDS[0]) return "";
+    return getBufferValue(LIVE_BUFFER_FIELDS[0].keys);
+  }, [getBufferValue]);
+
+  const selectedLiveRecord = useMemo(() => buildLiveRecordFromMap(selectedMap), [selectedMap]);
+  const fallbackLiveRecord = useMemo(() => buildLiveRecordFromMap(allKvMap), [allKvMap]);
+  const mergedLiveRecord = useMemo(
+    () => mergeLiveRecords(selectedLiveRecord, fallbackLiveRecord),
+    [selectedLiveRecord, fallbackLiveRecord],
   );
+  const hasSourceData = selectedMap.size > 0 || allKvMap.size > 0;
 
-  const getBarcodeValueForOcrKey = (normalizedOcrKey: string): BarcodeFieldValue | null => {
-    const mapped = OCR_TO_BARCODE_KEY[normalizedOcrKey];
-    if (mapped) {
-      const v = barcodeKv.get(mapped);
-      if (v && v.trim()) return formatBarcodeValue(normalizedOcrKey, v);
-    }
-    if (ID_LIKE_SET.has(normalizedOcrKey)) {
-      const id = pickBestBarcodeId(barcodeKv, barcodeValues);
-      if (id) return formatBarcodeValue(normalizedOcrKey, id);
-    }
-    return null;
-  };
-
-  const getRowMatch = (
-    normalizedKey: string,
-    ocrValue: string,
-    barcodeValue: BarcodeFieldValue | null,
-  ) => {
-    if (!barcodeValue) return { symbol: "–", label: "Not compared", className: "text-slate-500" };
-    const ocrComparable = formatBarcodeValue(normalizedKey, ocrValue).comparable;
-    if (ocrComparable && ocrComparable === barcodeValue.comparable) {
-      return { symbol: "✓", label: "Match", className: "text-green-600" };
-    }
-    return { symbol: "✗", label: "Mismatch", className: "text-red-600" };
-  };
-
-  const getBufferValue = (keys: string[]) => {
-    for (const k of keys) {
-      const v = ocrKv.get(normalizeKey(k));
-      if (v && v.trim()) return v.trim();
-    }
-    return "";
-  };
+  const activeDestination =
+    (liveRecord?.destination && liveRecord.destination.trim()) ||
+    (bufferDestination && bufferDestination.trim()) ||
+    "";
 
   useEffect(() => {
-    if (!kv) return;
-    const record = buildLiveRecord(getBufferValue);
-    if (record) {
-      updateLiveRecord(record);
+    if (!hasSourceData) return;
+    if (!mergedLiveRecord) {
+      updateLiveRecord(null);
+      return;
     }
-  }, [kv, updateLiveRecord]);
+    updateLiveRecord(mergedLiveRecord);
+  }, [hasSourceData, mergedLiveRecord, updateLiveRecord]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     setFile(f ?? null);
     setKv(null);
-    setOrder(null);
+    setSelectedKv(null);
     setStatus(null);
     setBarcodes([]);
     setBarcodeWarnings([]);
     setValidation(null);
+    setBookingWarning(null);
+    setBookingLocated(false);
   };
 
   const scanDocument = async () => {
     if (!file) return;
     setLoading(true);
     setStatus("Uploading file and scanning…");
+    setVlmInfo(null);
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -716,14 +850,46 @@ export default function ScannerDashboard() {
         headers: { "x-api-key": API_KEY },
         body: formData,
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        let text = "";
+        try {
+          text = await res.text();
+        } catch (error) {
+          text = "";
+        }
+        const reason = parseErrorPayload(text) || res.statusText || DEFAULT_SCAN_ERROR_MESSAGE;
+        throw new Error(reason);
+      }
 
       const data: ApiOcrResponse = await res.json();
+      const nextProviderInfo = sanitizeProviderInfo(data.providerInfo);
 
-      setKv(data.kv || {});
-      setScanToken((token) => token + 1);
+      const errorMessage = typeof data.error === "string" ? data.error.trim() : "";
+      if (errorMessage) {
+        setStatus(errorMessage);
+        setKv(null);
+        setSelectedKv(null);
+        setBarcodes([]);
+        setBarcodeWarnings([]);
+        setBarcodeComparison(null);
+        setValidation(null);
+        setBookingWarning(null);
+        setBookingSuccess(null);
+        setVlmInfo(nextProviderInfo ?? null);
+        updateLiveRecord(null);
+        return;
+      }
+
+      const kvPayload = data.kv && typeof data.kv === "object" ? (data.kv as KvPairs) : {};
+      const rawSelected = data.selectedKv ?? (data as { selected_key_values?: unknown }).selected_key_values ?? null;
+      const selectedPayload =
+        rawSelected && typeof rawSelected === "object" && !Array.isArray(rawSelected) ? (rawSelected as KvPairs) : {};
+
+      setKv(kvPayload);
+      setSelectedKv(selectedPayload);
       setBarcodes(Array.isArray(data.barcodes) ? data.barcodes : []);
       setBarcodeWarnings(Array.isArray(data.barcodeWarnings) ? data.barcodeWarnings : []);
+      setBarcodeComparison(sanitizeBarcodeComparison(data.barcodeComparison));
       setValidation(toClientValidation(data.validation));
 
       const statusFromValidation: Record<ValidationStatus, string> = {
@@ -736,34 +902,117 @@ export default function ScannerDashboard() {
       const vStatus = data.validation?.status;
       if (vStatus) setStatus(statusFromValidation[vStatus]);
 
-      const code = data.kv?.item_code;
-      if (code && (!vStatus || vStatus === "match")) {
-        setStatus(`Extracted item code ${code}. Checking database…`);
-        const resOrder = await fetch(`/api/orders?code=${encodeURIComponent(code)}`, {
-          headers: { "x-api-key": API_KEY },
-        });
-        if (resOrder.ok) {
-          const json = await resOrder.json();
-          if (json.order) {
-            setOrder(json.order as Order);
-            setFloor(json.order.floor);
-            setSection(json.order.section);
-            setStatus(`Order ${code} found.`);
+      const normalizedAllMap = toNormalizedMap(kvPayload);
+      const normalizedSelectedMap = toNormalizedMap(selectedPayload);
+      const recordCandidate = mergeLiveRecords(
+        buildLiveRecordFromMap(normalizedSelectedMap),
+        buildLiveRecordFromMap(normalizedAllMap),
+      );
+
+      if (recordCandidate) {
+        updateLiveRecord(recordCandidate);
+        const missingField = (Object.entries(recordCandidate) as Array<[keyof LiveRecord, string]>).find(
+          ([, value]) => !value || !value.trim(),
+        );
+        if (missingField) {
+          setStatus(
+            `Live buffer updated locally but missing "${missingField[0]}" to sync with the history log.`,
+          );
+          setBookingWarning(null);
+          setBookingSuccess(null);
+          setVlmInfo(null);
+          setBookingLocated(false);
+        } else {
+          const trackingIdForStatus = recordCandidate.trackingId;
+          setStatus(`Logging scan for ${trackingIdForStatus}…`);
+          setBookingWarning(null);
+          setBookingSuccess(null);
+          const response = await fetch(`/api/orders`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
+            body: JSON.stringify({
+              destination: recordCandidate.destination,
+              itemName: recordCandidate.itemName,
+              trackingId: recordCandidate.trackingId,
+              truckNumber: recordCandidate.truckNumber,
+              shipDate: recordCandidate.shipDate,
+              expectedDepartureTime: recordCandidate.expectedDepartureTime,
+              originLocation: recordCandidate.origin,
+            }),
+          });
+          const payload: {
+            record?: {
+              destination: string;
+              itemName: string;
+              trackingId: string;
+              truckNumber: string;
+              shipDate: string;
+              expectedDepartureTime: string;
+              originLocation: string;
+            };
+            historyEntry?: ApiHistoryEntry;
+            warning?: string;
+            error?: string;
+          } = await response.json().catch(() => ({ error: "" }));
+          if (!response.ok) {
+            const reason = typeof payload.error === "string" && payload.error ? payload.error : response.statusText;
+            setStatus(reason || "Failed to log scan.");
+            setBookingWarning(null);
+            setBookingSuccess(null);
+            setVlmInfo(null);
           } else {
-            setOrder(null);
-            setFloor("");
-            setSection("");
-            setStatus(`Order ${code} not found. You can add it below.`);
+            const record = payload.record;
+            const warningRaw = typeof payload.warning === "string" ? payload.warning.trim() : "";
+            const warning = warningRaw.length > 0 ? warningRaw : null;
+            setBookingWarning(warning);
+            const trackedId = record?.trackingId || recordCandidate.trackingId;
+            if (warning) {
+              setBookingSuccess(null);
+              setBookingLocated(false);
+            } else if (trackedId) {
+              setBookingSuccess(`Booked item found for ${trackedId}`);
+              setBookingLocated(true);
+            } else {
+              setBookingSuccess("Booked item found");
+              setBookingLocated(true);
+            }
+            if (record) {
+              const nextRecord: LiveRecord = {
+                destination: record.destination,
+                itemName: record.itemName,
+                trackingId: record.trackingId,
+                truckNumber: record.truckNumber,
+                shipDate: record.shipDate,
+                expectedDepartureTime: record.expectedDepartureTime,
+                origin: record.originLocation,
+              };
+              updateLiveRecord(nextRecord);
+            }
+            const displayTrackingId = record?.trackingId || recordCandidate.trackingId;
+            const statusSegments: string[] = [];
+            if (displayTrackingId) {
+              statusSegments.push(`Order ${displayTrackingId} -`);
+            }
+            statusSegments.push("Saved to history.");
+            const trailingMessage = warning
+              ? warning.endsWith(".")
+                ? warning
+                : `${warning}.`
+              : "Booked item found.";
+            statusSegments.push(trailingMessage);
+            setStatus(statusSegments.join(" ").replace(/\s+/g, " ").trim());
+            setVlmInfo(nextProviderInfo ?? null);
           }
         }
-      }
-
-      if (!data.kv?.item_code && !vStatus) {
-        setStatus("No item code extracted.");
+      } else {
+        updateLiveRecord(null);
       }
     } catch (err) {
       console.error(err);
-      setStatus("Error scanning document.");
+      setStatus(formatStatusError(err));
+      setBookingWarning(null);
+      setBookingSuccess(null);
+      setVlmInfo(null);
     } finally {
       setLoading(false);
     }
@@ -773,79 +1022,157 @@ export default function ScannerDashboard() {
     const sample = DEMO_RECORDS[Math.floor(Math.random() * DEMO_RECORDS.length)];
     setFile(null);
     setKv(sample);
-    setOrder(null);
+    setSelectedKv({
+      Destination: toDisplayString(sample.destination_warehouse_id),
+      "Item Name": toDisplayString(sample.item_name),
+      "Tracking/Order ID": toDisplayString(sample.tracking_id ?? sample.item_code),
+      "Truck Number": toDisplayString(sample.truck_number),
+      "Ship Date": toDisplayString(sample.ship_date),
+      "Expected Departure Time": toDisplayString(sample.expected_departure_time),
+      Origin: toDisplayString(sample.origin),
+    });
     setStatus("Demo scan loaded into the live buffer.");
     setBarcodes([]);
     setBarcodeWarnings([]);
+    setBarcodeComparison(null);
     setValidation(null);
-    setScanToken((token) => token + 1);
+    setBookingWarning(null);
+    setBookingSuccess(null);
+    setVlmInfo(null);
   };
 
-  const createNewOrder = async () => {
-    if (!kv) return;
-    const code = kv.item_code;
-    if (!code || !floor || !section) {
-      setStatus("Please enter floor and section.");
+  const handleRecheckBooking = useCallback(async () => {
+    const activeTrackingId = liveRecord?.trackingId?.trim();
+    if (!activeTrackingId) {
+      setStatus("No tracking ID available to recheck.");
       return;
     }
-    if (validation?.status === "mismatch") {
-      setStatus("Resolve the barcode mismatch before creating a new order.");
-      return;
-    }
-    setCreating(true);
-    setStatus("Creating order…");
+
+    setCheckingBooking(true);
     try {
-      const res = await fetch("/api/orders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
-        body: JSON.stringify({ code, data: kv, floor, section }),
+      const params = new URLSearchParams({
+        trackingId: activeTrackingId,
+        verifyBooking: "true",
       });
-      if (!res.ok) throw new Error(await res.text());
-      const json = await res.json();
-      setOrder(json.order as Order);
-      setStatus(`Order ${code} created.`);
-    } catch (e) {
-      console.error(e);
-      setStatus("Failed to create order.");
+      const response = await fetch(`/api/orders?${params.toString()}`, { cache: "no-store" });
+      const payload: {
+        record?: ApiLiveBufferRecord;
+        bookingFound?: boolean;
+        warning?: string;
+        message?: string;
+        error?: string;
+      } = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+
+      if (payload.record) {
+        updateLiveRecord(mapApiRecordToLive(payload.record));
+      }
+
+      const refreshedTrackingId = payload.record?.trackingId?.trim() || activeTrackingId;
+      const warningMessage = typeof payload.warning === "string" ? payload.warning.trim() : "";
+      const message = typeof payload.message === "string" ? payload.message.trim() : "";
+
+      if (payload.bookingFound) {
+        const successCopy = message || `Booked item found for ${refreshedTrackingId}`;
+        setBookingWarning(null);
+        setBookingSuccess(successCopy);
+        setBookingLocated(true);
+        const statusSegments: string[] = [];
+        if (refreshedTrackingId) {
+          statusSegments.push(`Order ${refreshedTrackingId} -`);
+        }
+        statusSegments.push("Booked item found.");
+        setStatus(statusSegments.join(" ").replace(/\s+/g, " ").trim());
+      } else {
+        const warningCopy = warningMessage || message || "Booked item not found";
+        setBookingWarning(warningCopy);
+        setBookingSuccess(null);
+        setBookingLocated(false);
+        const statusSegments: string[] = [];
+        if (refreshedTrackingId) {
+          statusSegments.push(`Order ${refreshedTrackingId} -`);
+        }
+        statusSegments.push("Booked item not found.");
+        setStatus(statusSegments.join(" ").replace(/\s+/g, " ").trim());
+      }
+    } catch (error) {
+      console.error("Failed to recheck booking status", error);
+      setStatus("Failed to recheck booking status.");
     } finally {
-      setCreating(false);
+      setCheckingBooking(false);
     }
-  };
+  }, [liveRecord, mapApiRecordToLive, updateLiveRecord]);
 
-  const markCollected = async () => {
-    if (!order) return;
-    setStatus("Marking as collected…");
+  const handleRefreshIntervalChange = useCallback(
+    (event: React.ChangeEvent<HTMLSelectElement>) => {
+      const rawValue = Number(event.target.value);
+      if (!bookingLocated) return;
+      if (Number.isFinite(rawValue) && rawValue > 0) {
+        setRefreshIntervalMs(rawValue);
+        fetchLiveBuffer({ sync: true });
+      }
+    },
+    [fetchLiveBuffer, bookingLocated],
+  );
+
+  const handleWriteStorage = async () => {
+    if (!liveRecord) return;
     try {
-      const res = await fetch("/api/orders", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
-        body: JSON.stringify({ code: order.code, collected: true }),
+      const response = await fetch("/api/storage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          destination: liveRecord.destination,
+          itemName: liveRecord.itemName,
+          trackingId: liveRecord.trackingId,
+          truckNumber: liveRecord.truckNumber,
+          shipDate: liveRecord.shipDate,
+          expectedDepartureTime: liveRecord.expectedDepartureTime,
+          originLocation: liveRecord.origin,
+        }),
       });
-      if (!res.ok) throw new Error(await res.text());
-      const json = await res.json();
-      setOrder(json.order as Order);
-      setStatus(`Order ${order.code} marked as collected.`);
-    } catch (e) {
-      console.error(e);
-      setStatus("Failed to mark order.");
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+      setStatus(`Storage updated for ${liveRecord.trackingId}.`);
+    } catch (err) {
+      console.error(err);
+      setStatus(err instanceof Error ? err.message : "Failed to write storage.");
     }
   };
 
-  const handleSaveHistory = () => {
-    if (!liveRecord) return;
-    pushHistoryRecord(liveRecord);
-    setStatus("Saved to history.");
-  };
-
-  const handleWriteStorage = () => {
-    if (!liveRecord) return;
-    writeRecordToStorage(liveRecord);
-    setStatus("Written to storage.");
-  };
-
-  const handleClearLive = () => {
-    updateLiveRecord(null);
-    setStatus("Live buffer cleared.");
+  const handleClearLive = async () => {
+    try {
+      const response = await fetch("/api/orders", { method: "DELETE" });
+      const payload: { liveBuffer?: ApiLiveBufferRecord[]; error?: string } = await response
+        .json()
+        .catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+      }
+      const records = Array.isArray(payload.liveBuffer) ? payload.liveBuffer : [];
+      if (records.length > 0) {
+        updateLiveRecord(mapApiRecordToLive(records[0]));
+      } else {
+        updateLiveRecord(null);
+      }
+      setKv(null);
+      setSelectedKv(null);
+      setBarcodes([]);
+      setBarcodeWarnings([]);
+      setValidation(null);
+      setStatus("Live buffer cleared.");
+      setBookingWarning(null);
+      setBookingSuccess(null);
+      setVlmInfo(null);
+      setBookingLocated(false);
+    } catch (error) {
+      console.error(error);
+      setStatus(error instanceof Error ? error.message : "Failed to clear live buffer.");
+    }
   };
 
   return (
@@ -925,6 +1252,99 @@ export default function ScannerDashboard() {
         </div>
       )}
 
+      {vlmInfo && (
+        <div className="glassy-panel rounded-2xl border border-white/10 bg-white/5 px-5 py-4 text-sm text-slate-100">
+          <span className="font-semibold uppercase tracking-[0.3em] text-slate-300/80">VLM configuration</span>
+          <dl className="mt-3 grid gap-4 sm:grid-cols-3">
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-300/70">Provider type</dt>
+              <dd className="mt-1 text-base text-slate-100/90">{describeProviderType(vlmInfo)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-300/70">Model ID / deployment</dt>
+              <dd className="mt-1 break-words text-base text-slate-100/90">{vlmInfo.modelId || "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-300/70">Endpoint</dt>
+              <dd className="mt-1 break-words text-base text-indigo-100/90">
+                {(() => {
+                  const endpoint = describeProviderLink(vlmInfo);
+                  if (endpoint.href) {
+                    return (
+                      <a
+                        href={endpoint.href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-indigo-200 hover:text-indigo-100 hover:underline"
+                      >
+                        {endpoint.label}
+                      </a>
+                    );
+                  }
+                  return <span className="text-slate-100/90">{endpoint.label || "—"}</span>;
+                })()}
+              </dd>
+            </div>
+          </dl>
+        </div>
+      )}
+
+      {bookingWarning && (
+        <div className="glassy-panel flex items-start gap-3 rounded-2xl border border-rose-400/40 bg-rose-500/10 px-5 py-4 text-sm text-rose-100">
+          <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-rose-400/15">
+            <svg
+              className="h-5 w-5 text-rose-300"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v5m0 4h.01" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 3.75a8.25 8.25 0 110 16.5 8.25 8.25 0 010-16.5z"
+              />
+            </svg>
+          </span>
+          <div className="flex w-full flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <span className="font-semibold uppercase tracking-[0.3em] text-rose-200/80">Booking alert</span>
+              <p className="mt-2 text-base text-rose-100/90">{bookingWarning}</p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleRecheckBooking}
+              disabled={checkingBooking}
+              className="shrink-0 border-rose-400/60 px-4 py-2 text-xs text-rose-100 hover:bg-rose-500/10 hover:text-rose-50"
+            >
+              {checkingBooking ? "Checking…" : "Check again"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {bookingSuccess && (
+        <div className="glassy-panel flex items-start gap-3 rounded-2xl border border-emerald-400/40 bg-emerald-500/10 px-5 py-4 text-sm text-emerald-100">
+          <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-400/15">
+            <svg
+              className="h-5 w-5 text-emerald-300"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+            </svg>
+          </span>
+          <div>
+            <span className="font-semibold uppercase tracking-[0.3em] text-emerald-200/80">Booking status</span>
+            <p className="mt-2 text-base text-emerald-100/90">{bookingSuccess}</p>
+          </div>
+        </div>
+      )}
+
       {kv && (
         <Card header={<span className="text-lg font-semibold text-slate-100">Extracted OCR &amp; barcode data</span>}>
           <div className="overflow-x-auto">
@@ -938,23 +1358,30 @@ export default function ScannerDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(kv).map(([rawKey, rawVal]) => {
-                  const ocrKey = normalizeKey(rawKey);
-                  const ocrValue = String(rawVal ?? "");
-                  const barcodeValue = getBarcodeValueForOcrKey(ocrKey);
-                  const match = getRowMatch(ocrKey, ocrValue, barcodeValue);
-
+                {comparisonRows.map((row, index) => {
+                  const meta = COMPARISON_STATUS_META[row.status] ?? COMPARISON_STATUS_META.MISSING;
+                  const hasBarcodeValue = row.barcodeValue && row.barcodeValue.trim().length > 0;
+                  const contextLabel = row.contextLabel || row.barcodeLabel;
                   return (
-                    <tr key={rawKey} className="border-b border-white/10 last:border-0">
-                      <td className="px-4 py-3 font-medium text-slate-100">{rawKey}</td>
-                      <td className="px-4 py-3 text-slate-200">{ocrValue}</td>
-                      <td className={`px-4 py-3 ${barcodeValue ? "text-slate-200" : "text-slate-500"}`}>
-                        {barcodeValue?.display ?? "—"}
+                    <tr key={`${row.key}-${index}`} className="border-b border-white/10 last:border-0">
+                      <td className="px-4 py-3 font-medium text-slate-100">{row.key}</td>
+                      <td className="px-4 py-3 text-slate-200">{row.ocr}</td>
+                      <td className={`px-4 py-3 ${hasBarcodeValue ? "text-slate-200" : "text-slate-500"}`}>
+                        {hasBarcodeValue ? (
+                          <div className="flex flex-col">
+                            <span>{row.barcodeValue}</span>
+                            {contextLabel && (
+                              <span className="text-xs uppercase tracking-wide text-slate-400/80">{contextLabel}</span>
+                            )}
+                          </div>
+                        ) : (
+                          "—"
+                        )}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <span className={`inline-flex items-center justify-end gap-2 text-sm ${match.className}`}>
-                          <span aria-hidden>{match.symbol}</span>
-                          <span className="text-xs uppercase tracking-wide">{match.label}</span>
+                        <span className={`inline-flex items-center justify-end gap-2 text-sm ${meta.className}`}>
+                          <span aria-hidden>{meta.symbol}</span>
+                          <span className="text-xs uppercase tracking-wide">{meta.label}</span>
                         </span>
                       </td>
                     </tr>
@@ -963,6 +1390,53 @@ export default function ScannerDashboard() {
               </tbody>
             </table>
           </div>
+
+          {barcodeComparison && (
+            <p className="mt-4 text-xs text-slate-300">
+              Comparison summary: {barcodeComparison.summary.matched} match{barcodeComparison.summary.matched === 1 ? "" : "es"}, {barcodeComparison.summary.mismatched} mismatch{barcodeComparison.summary.mismatched === 1 ? "" : "es"}, {barcodeComparison.summary.missing} missing.
+            </p>
+          )}
+
+          {barcodeOnlyEntries.length > 0 && (
+            <div className="mt-6 rounded-2xl border border-indigo-400/20 bg-indigo-500/5 p-4">
+              <div className="flex flex-col gap-1 text-sm text-slate-100">
+                <span className="font-semibold uppercase tracking-[0.3em] text-indigo-200/80">
+                  Barcode-only values
+                </span>
+                <p className="text-xs text-slate-300/90">
+                  These values were detected in the barcode payload but were not matched to any OCR keys. Review them to see if
+                  the OCR output is missing required fields.
+                </p>
+              </div>
+              <div className="mt-3 overflow-x-auto">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-white/5 text-left font-medium uppercase tracking-wide text-slate-300/80">
+                    <tr>
+                      <th className="px-3 py-2">Labels</th>
+                      <th className="px-3 py-2">Value</th>
+                      <th className="px-3 py-2">Class</th>
+                      <th className="px-3 py-2 text-right">Count</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {barcodeOnlyEntries.map((entry, index) => {
+                      const displayLabels = entry.labels && entry.labels.length > 0
+                        ? entry.labels.filter((label) => label.trim().length > 0).join(", ") || "(unlabeled)"
+                        : "(unlabeled)";
+                      return (
+                        <tr key={`${entry.value}-${index}`} className="border-b border-white/10 last:border-0">
+                          <td className="px-3 py-2 text-slate-200">{displayLabels}</td>
+                          <td className="px-3 py-2 text-slate-100">{entry.value && entry.value.trim().length > 0 ? entry.value : "—"}</td>
+                          <td className="px-3 py-2 text-slate-300/90">{entry.class?.trim() || "unknown"}</td>
+                          <td className="px-3 py-2 text-right text-slate-200">{entry.count && entry.count > 0 ? entry.count : 1}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {validation && (
             <p
@@ -993,13 +1467,68 @@ export default function ScannerDashboard() {
 
       {liveRecord && (
         <Card
-          header={<span className="text-lg font-semibold text-slate-100">Live buffer (latest scan)</span>}
+          header={
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-lg font-semibold text-slate-100">Live buffer (latest scan)</span>
+                {(bookingWarning || bookingSuccess) && (
+                  <span
+                    className={`inline-flex h-6 w-6 items-center justify-center rounded-full ${
+                      bookingWarning ? "bg-rose-500/15" : "bg-emerald-500/15"
+                    }`}
+                    title={bookingWarning ?? bookingSuccess ?? undefined}
+                  >
+                    {bookingWarning ? (
+                      <svg
+                        className="h-4 w-4 text-rose-400"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v5m0 4h.01" />
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M12 3.75a8.25 8.25 0 110 16.5 8.25 8.25 0 010-16.5z"
+                        />
+                      </svg>
+                    ) : (
+                      <svg
+                        className="h-4 w-4 text-emerald-400"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                      </svg>
+                    )}
+                    <span className="sr-only">{bookingWarning ?? bookingSuccess}</span>
+                  </span>
+                )}
+              </div>
+              {bookingLocated && (
+                <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-slate-300/70 sm:flex-row sm:items-center sm:gap-3">
+                  <span className="font-semibold text-slate-300/80">Auto refresh</span>
+                  <select
+                    value={refreshIntervalMs}
+                    onChange={handleRefreshIntervalChange}
+                    className="rounded-full border border-white/15 bg-slate-900/70 px-3 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-slate-100 shadow-sm transition focus:border-indigo-400 focus:outline-none focus:ring-0"
+                  >
+                    {REFRESH_INTERVAL_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value} className="text-slate-900">
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+          }
           footer={
             <div className="flex flex-wrap justify-end gap-3">
               <Button onClick={handleWriteStorage}>Write to storage</Button>
-              <Button onClick={handleSaveHistory} variant="secondary">
-                Save to history
-              </Button>
               <Button onClick={handleClearLive} variant="outline">
                 Clear live buffer
               </Button>
@@ -1035,81 +1564,8 @@ export default function ScannerDashboard() {
         </Card>
       )}
 
-      {kv && (
-        <Card header={<span className="text-lg font-semibold text-slate-100">Live buffer fields</span>}>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-white/5 text-left text-xs font-medium uppercase tracking-wide text-slate-300/80">
-                <tr>
-                  <th className="px-4 py-3">Field</th>
-                  <th className="px-4 py-3">Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {LIVE_BUFFER_FIELDS.map(({ label, keys }) => {
-                  const v = getBufferValue(keys);
-                  const has = Boolean(v && v.trim());
-                  return (
-                    <tr key={label} className="border-b border-white/10 last:border-0">
-                      <td className="px-4 py-3 font-medium text-slate-100">{label}</td>
-                      <td className={`px-4 py-3 ${has ? "text-slate-200" : "text-slate-500"}`}>{has ? v : "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
 
-      {order && (
-        <Card header={<span className="text-lg font-semibold text-slate-100">Order information</span>}>
-          <div className="space-y-3 text-sm text-slate-200">
-            <p>
-              <span className="font-semibold text-slate-100">Code:</span> {order.code}
-            </p>
-            <p>
-              <span className="font-semibold text-slate-100">Floor:</span> {order.floor}
-            </p>
-            <p>
-              <span className="font-semibold text-slate-100">Section:</span> {order.section}
-            </p>
-            <p>
-              <span className="font-semibold text-slate-100">Collected:</span> {order.collected ? "Yes" : "No"}
-            </p>
-          </div>
-          <div className="mt-6 flex flex-wrap gap-3">
-            {!order.collected && (
-              <Button onClick={markCollected}>Mark as collected</Button>
-            )}
-          </div>
-        </Card>
-      )}
-
-      {kv && !order && (
-        <Card header={<span className="text-lg font-semibold text-slate-100">Create order</span>}>
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="text-sm text-slate-300/90">
-              <span className="mb-1 block font-medium text-slate-100">Floor</span>
-              <Input type="text" value={floor} onChange={(e) => setFloor(e.target.value)} placeholder="e.g. floor1" />
-            </label>
-            <label className="text-sm text-slate-300/90">
-              <span className="mb-1 block font-medium text-slate-100">Section</span>
-              <Input type="text" value={section} onChange={(e) => setSection(e.target.value)} placeholder="e.g. section-a" />
-            </label>
-          </div>
-          <Button className="mt-6" onClick={createNewOrder} disabled={creating || validation?.status === "mismatch"}>
-            {creating ? "Creating…" : "Create order"}
-          </Button>
-        </Card>
-      )}
-
-      <FloorMapModule
-        destinationLabel={liveRecord?.destination || kv?.destination_warehouse_id || ""}
-        floorHint={order?.floor || floor}
-        sectionHint={order?.section || section}
-        lastUpdatedKey={scanToken}
-      />
+      <FloorMapViewer activeDestination={activeDestination || undefined} />
     </div>
   );
 }
