@@ -11,8 +11,11 @@ import sys
 import tempfile
 import threading
 import time
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any, Dict
+from socketserver import ThreadingMixIn
+from typing import Any, Dict, Optional, Tuple
 
 try:
     import torch
@@ -78,11 +81,26 @@ def ensure_keepalive_image(tmp_dir: Path) -> Path:
 
 
 def verify_local_install(model_id: str) -> None:
+    common_kwargs = {"local_files_only": True, "trust_remote_code": True}
     if snapshot_download is not None:
-        snapshot_download(model_id, local_files_only=True)
+        snapshot_download(model_id, **common_kwargs)
     else:  # Fallback: ensure config + processor exist locally.
-        AutoConfig.from_pretrained(model_id, local_files_only=True)
-        AutoProcessor.from_pretrained(model_id, local_files_only=True)
+        AutoConfig.from_pretrained(model_id, **common_kwargs)
+        AutoProcessor.from_pretrained(model_id, **common_kwargs)
+
+
+def resolve_device_map(device: Optional[str]) -> Dict[str, str]:
+    if device is None:
+        if torch.cuda.is_available():
+            return {"": "cuda:0"}
+        return {"": "cpu"}
+
+    normalized = device.strip().lower()
+    if normalized in {"cpu", "cuda"}:
+        if normalized == "cuda" and ":" not in device:
+            return {"": "cuda:0"}
+        return {"": normalized}
+    return {"": device}
 
 
 def load_model(model_id: str, device: str | None, dtype: str | None):
@@ -91,38 +109,54 @@ def load_model(model_id: str, device: str | None, dtype: str | None):
     # We explicitly operate on pre-downloaded weights. Avoid attempting to fetch
     # files from the network again so that startup is deterministic when the
     # cache is incomplete.
-    load_kwargs: Dict[str, Any] = {"local_files_only": True}
-    if dtype == "float16":
+    load_kwargs: Dict[str, Any] = {
+        "local_files_only": True,
+        "trust_remote_code": True,
+        "attn_implementation": "sdpa",
+        "device_map": resolve_device_map(device),
+    }
+
+    chosen_dtype = dtype
+    if chosen_dtype is None:
+        if torch.cuda.is_available():
+            chosen_dtype = "float16"
+        else:
+            chosen_dtype = "float32"
+
+    if chosen_dtype == "float16":
         load_kwargs["torch_dtype"] = torch.float16
-    elif dtype == "bfloat16":
+    elif chosen_dtype == "bfloat16":
         load_kwargs["torch_dtype"] = torch.bfloat16
 
-    if device:
-        if device == "cpu":
-            load_kwargs["device_map"] = {"": "cpu"}
-        elif device == "cuda":
-            load_kwargs["device_map"] = "auto"
-        else:
-            load_kwargs["device_map"] = {"": device}
-    else:
-        load_kwargs["device_map"] = "auto"
-
     model = Qwen3VLForConditionalGeneration.from_pretrained(model_id, **load_kwargs)
-    processor = AutoProcessor.from_pretrained(model_id, local_files_only=True)
+    processor = AutoProcessor.from_pretrained(model_id, local_files_only=True, trust_remote_code=True)
+    model.eval()
     return model, processor
 
 
-def warmup(model, processor, keepalive_path: Path) -> None:
-    prompt = "Warm up the vision-language model."
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": str(keepalive_path)},
-                {"type": "text", "text": prompt},
-            ],
-        }
+def infer_device(model) -> torch.device:
+    if hasattr(model, "device"):
+        return model.device  # type: ignore[return-value]
+    for param in model.parameters():
+        return param.device
+    return torch.device("cpu")
+
+
+def build_messages(image_path: str, prompt: str, system_prompt: Optional[str] = None) -> list[dict[str, Any]]:
+    contents = [
+        {"type": "image", "image": image_path},
+        {"type": "text", "text": prompt},
     ]
+    messages: list[dict[str, Any]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": [{"type": "text", "text": system_prompt}]})
+    messages.append({"role": "user", "content": contents})
+    return messages
+
+
+def warmup(model, processor, keepalive_path: Path, system_prompt: Optional[str] = None) -> None:
+    prompt = "Warm up the vision-language model."
+    messages = build_messages(str(keepalive_path), prompt, system_prompt=system_prompt)
     inputs = processor.apply_chat_template(
         messages,
         tokenize=True,
@@ -130,7 +164,8 @@ def warmup(model, processor, keepalive_path: Path) -> None:
         return_dict=True,
         return_tensors="pt",
     )
-    inputs = {k: v.to(model.device, non_blocking=True) for k, v in inputs.items()}
+    model_device = infer_device(model)
+    inputs = {k: v.to(model_device, non_blocking=True) for k, v in inputs.items()}
     with torch.inference_mode():
         _ = model.generate(
             **inputs,
@@ -140,9 +175,135 @@ def warmup(model, processor, keepalive_path: Path) -> None:
         )
 
 
-def stay_alive(stop_event: threading.Event) -> None:
-    while not stop_event.is_set():
-        time.sleep(0.5)
+def ensure_image_path(image: str) -> str:
+    if image.startswith("http://") or image.startswith("https://"):
+        raise ValueError("Remote image URLs are not supported in local mode.")
+    path = Path(image)
+    if not path.exists():
+        raise FileNotFoundError(f"Image not found: {image}")
+    return str(path)
+
+
+def run_generation(
+    model,
+    processor,
+    payload: Dict[str, Any],
+) -> Tuple[str, Dict[str, Any]]:
+    image = payload.get("image")
+    prompt = payload.get("prompt")
+    system_prompt = payload.get("system_prompt")
+    extra_text = payload.get("extra_text")
+    ocr_text = payload.get("ocr_text")
+
+    if not isinstance(image, str) or not image.strip():
+        raise ValueError("'image' path is required in request payload")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("'prompt' text is required in request payload")
+
+    resolved_image = ensure_image_path(image.strip())
+    messages = build_messages(resolved_image, prompt.strip(), system_prompt=system_prompt if isinstance(system_prompt, str) else None)
+
+    if isinstance(extra_text, str) and extra_text.strip():
+        messages[-1]["content"].append({"type": "text", "text": extra_text.strip()})
+    if isinstance(ocr_text, str) and ocr_text.strip():
+        messages[-1]["content"].append({"type": "text", "text": f"OCR_TEXT_BEGIN\n{ocr_text.strip()}\nOCR_TEXT_END"})
+
+    inputs = processor.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_dict=True,
+        return_tensors="pt",
+    )
+
+    model_device = infer_device(model)
+    inputs = {k: v.to(model_device, non_blocking=True) for k, v in inputs.items()}
+
+    gen_kwargs: Dict[str, Any] = {
+        "max_new_tokens": int(payload.get("max_new_tokens") or 512),
+        "use_cache": True,
+    }
+
+    sampling = bool(payload.get("sampling"))
+    if sampling:
+        gen_kwargs.update(
+            do_sample=True,
+            temperature=float(payload.get("temperature") or 0.8),
+            top_p=float(payload.get("top_p") or 0.9),
+            top_k=int(payload.get("top_k") or 50),
+        )
+    else:
+        gen_kwargs.update(do_sample=False)
+
+    if "repetition_penalty" in payload:
+        try:
+            gen_kwargs["repetition_penalty"] = float(payload["repetition_penalty"])
+        except Exception:
+            pass
+
+    if "eos_token_id" not in gen_kwargs:
+        gen_kwargs["eos_token_id"] = processor.tokenizer.eos_token_id
+    if "pad_token_id" not in gen_kwargs:
+        gen_kwargs["pad_token_id"] = processor.tokenizer.eos_token_id
+
+    with torch.inference_mode():
+        outputs = model.generate(**inputs, **gen_kwargs)
+
+    trimmed = [o[len(i) :] for i, o in zip(inputs["input_ids"], outputs)]
+    text = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+    return text, gen_kwargs
+
+
+def create_http_server(host: str, port: int, model, processor):
+    class RequestHandler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:  # pragma: no cover - suppress noisy logs
+            sys.stderr.write("[local_vlm_runner] " + (format % args) + "\n")
+
+        def _send_json(self, payload: Dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):  # pragma: no cover - debug endpoint
+            if self.path not in {"/", "/status"}:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"ok": True, "status": "ready"})
+
+        def do_POST(self):
+            if self.path.rstrip("/") != "/generate":
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except Exception:
+                self.send_error(HTTPStatus.LENGTH_REQUIRED)
+                return
+
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except Exception as exc:
+                self._send_json({"ok": False, "error": f"Invalid JSON payload: {exc}"}, HTTPStatus.BAD_REQUEST)
+                return
+
+            try:
+                output, info = run_generation(model, processor, payload)
+            except Exception as exc:  # pragma: no cover - runtime error path
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+
+            self._send_json({"ok": True, "output": output, "info": info})
+
+    class Server(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+
+    server = Server((host, port), RequestHandler)
+    return server
 
 
 def main() -> None:
@@ -151,6 +312,9 @@ def main() -> None:
     parser.add_argument("--check-only", action="store_true", help="Only verify local installation")
     parser.add_argument("--device", default=None, help="Preferred device mapping (cpu/cuda/GPU id)")
     parser.add_argument("--dtype", default=None, choices=["float16", "bfloat16"], help="Preferred dtype")
+    parser.add_argument("--host", default=os.environ.get("LOCAL_VLM_HOST", "127.0.0.1"), help="HTTP host to bind")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("LOCAL_VLM_PORT", "8411")), help="HTTP port to bind")
+    parser.add_argument("--system-prompt", default=os.environ.get("LOCAL_VLM_SYSTEM_PROMPT", ""), help="Optional system prompt for warmup")
     args = parser.parse_args()
 
     model_id = args.model.strip()
@@ -176,12 +340,23 @@ def main() -> None:
     try:
         model, processor = load_model(model_id, args.device, args.dtype)
         keepalive_path = ensure_keepalive_image(tmp_dir)
-        warmup(model, processor, keepalive_path)
+        warmup(model, processor, keepalive_path, system_prompt=args.system_prompt or None)
     except Exception as exc:
         log_event("fatal", error=f"Failed to load {model_id}: {exc}")
         raise SystemExit(3)
 
-    log_event("ready", message=f"Local model '{model_id}' is ready.")
+    try:
+        server = create_http_server(args.host, args.port, model, processor)
+    except OSError as exc:
+        log_event("fatal", error=f"Failed to bind HTTP server on {args.host}:{args.port}: {exc}")
+        raise SystemExit(4)
+
+    log_event(
+        "ready",
+        message=f"Local model '{model_id}' is ready.",
+        host=args.host,
+        port=args.port,
+    )
 
     stop_event = threading.Event()
 
@@ -193,8 +368,17 @@ def main() -> None:
         signal.signal(sig, shutdown_handler)
 
     try:
-        stay_alive(stop_event)
+        server_thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.25})
+        server_thread.daemon = True
+        server_thread.start()
+        while not stop_event.is_set():
+            time.sleep(0.2)
     finally:
+        try:
+            server.shutdown()
+            server.server_close()
+        except Exception:
+            pass
         log_event("stopped", message="Local runner exiting.")
 
 

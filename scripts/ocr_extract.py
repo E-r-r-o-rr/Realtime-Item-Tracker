@@ -31,6 +31,8 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
 HF_ROUTER_BASE = "https://router.huggingface.co"  # kept for generic HTTP path if you ever need it
+LOCAL_DEFAULT_HOST = "127.0.0.1"
+LOCAL_DEFAULT_PORT = 8411
 
 # --------------------------
 # Config helpers
@@ -229,6 +231,97 @@ def build_vlm_messages(
 # --------------------------
 # Provider-dispatched VLM call
 # --------------------------
+def resolve_local_endpoint() -> Tuple[str, int]:
+    host = os.environ.get("LOCAL_VLM_HOST", LOCAL_DEFAULT_HOST).strip() or LOCAL_DEFAULT_HOST
+    port_raw = os.environ.get("LOCAL_VLM_PORT", str(LOCAL_DEFAULT_PORT)).strip()
+    try:
+        port_val = int(port_raw)
+    except Exception:
+        port_val = LOCAL_DEFAULT_PORT
+    if port_val <= 0 or port_val >= 65536:
+        port_val = LOCAL_DEFAULT_PORT
+    return host, port_val
+
+
+def build_local_prompt(ocr_txt: Optional[str]) -> str:
+    base = (
+        "You are given an image of a shipping or order document. "
+        "Identify all visible header-level key/value fields such as order number, customer, address, dates, and totals. "
+        "Return a single flat JSON object with string values. Do not include line items."
+    )
+    if ocr_txt and ocr_txt.strip():
+        base += (
+            "\nAn OCR transcript is provided separately as OCR_TEXT_BEGIN/END markers. "
+            "Prefer the visual content of the image when values disagree."
+        )
+    else:
+        base += "\nNo OCR transcript is available. Use only the image content."
+    base += "\nRespond with JSON only."
+    return base
+
+
+def call_local_vlm(
+    image_path: str,
+    ocr_txt: Optional[str],
+    defaults: Dict[str, Any],
+    system_prompt: Optional[str],
+) -> str:
+    host, port = resolve_local_endpoint()
+    timeout_raw = os.environ.get("LOCAL_VLM_HTTP_TIMEOUT", "180")
+    try:
+        timeout = float(timeout_raw)
+    except Exception:
+        timeout = 180.0
+
+    payload: Dict[str, Any] = {
+        "image": image_path,
+        "prompt": build_local_prompt(ocr_txt),
+        "system_prompt": system_prompt or None,
+        "ocr_text": ocr_txt or None,
+        "max_new_tokens": int(defaults.get("maxOutputTokens") or os.environ.get("LOCAL_VLM_MAX_NEW_TOKENS") or 768),
+        "sampling": False,
+        "repetition_penalty": float(defaults.get("repetitionPenalty") or 1.0),
+    }
+
+    temperature = defaults.get("temperature")
+    if isinstance(temperature, (int, float)):
+        payload["temperature"] = float(temperature)
+
+    top_p = defaults.get("topP")
+    if isinstance(top_p, (int, float)):
+        payload["top_p"] = float(top_p)
+
+    top_k = defaults.get("topK")
+    if isinstance(top_k, (int, float)):
+        payload["top_k"] = int(top_k)
+
+    data = json.dumps(payload).encode("utf-8")
+    url = f"http://{host}:{port}/generate"
+    req = urllib_request.Request(url, data=data, headers={"Content-Type": "application/json"})
+
+    try:
+        with urllib_request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
+        raise RuntimeError(f"Local runner HTTP error {exc.code}: {detail or exc.reason}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Local runner request failed: {exc}") from exc
+
+    try:
+        parsed = json.loads(body)
+    except Exception as exc:
+        raise RuntimeError(f"Invalid response from local runner: {exc}") from exc
+
+    if not isinstance(parsed, dict) or not parsed.get("ok"):
+        raise RuntimeError(str(parsed.get("error") if isinstance(parsed, dict) else "Local runner returned an error."))
+
+    output = parsed.get("output")
+    if not isinstance(output, str) or not output.strip():
+        raise RuntimeError("Local runner returned empty output")
+    return output
+
+
 def call_http_vlm(
     remote_cfg: Dict[str, Any],
     base_url: str,
@@ -725,7 +818,9 @@ def main():
     remote_cfg = load_remote_config()
     remote_cfg = remote_cfg if isinstance(remote_cfg, dict) else {}
 
-    # Accept a wider set of provider types
+    defaults = remote_cfg.get("defaults") if isinstance(remote_cfg.get("defaults"), dict) else {}
+
+    vlm_mode = str(os.environ.get("VLM_MODE", "remote") or "remote").strip().lower()
     provider_type = str(remote_cfg.get("providerType") or "").lower()
     allowed = {"openai-compatible", "huggingface", "generic-http", "openai", "azure-openai"}
     if provider_type not in allowed:
@@ -734,7 +829,6 @@ def main():
 
     token = args.hf_token or os.environ.get("HF_TOKEN")
 
-    defaults = remote_cfg.get("defaults") if isinstance(remote_cfg.get("defaults"), dict) else {}
     ocr_hint: Optional[str] = None
     ocr_cfg = remote_cfg.get("ocr") if isinstance(remote_cfg.get("ocr"), dict) else None
     if isinstance(ocr_cfg, dict):
@@ -745,7 +839,7 @@ def main():
     if isinstance(env_hint, str) and env_hint.strip():
         ocr_hint = env_hint.strip()
 
-    if remote_cfg:
+    if remote_cfg and vlm_mode != "local":
         model_override = remote_cfg.get("modelId")
         if isinstance(model_override, str) and model_override.strip():
             args.model = model_override.strip()
@@ -773,6 +867,31 @@ def main():
     system_prompt = defaults.get("systemPrompt") if isinstance(defaults.get("systemPrompt"), str) else None
     if isinstance(system_prompt, str):
         os.environ["OCR_SYSTEM_PROMPT"] = system_prompt
+
+    if vlm_mode == "local":
+        def vlm_call(image_path: str, ocr_txt: Optional[str]) -> str:
+            return call_local_vlm(image_path, ocr_txt, defaults, system_prompt)
+
+        safe_mkdir(args.out_dir)
+        normalize_dates = not args.no_normalize_dates
+        if args.image:
+            p = Path(args.image)
+            if not p.exists():
+                sys.exit(f"[FATAL] Image not found: {args.image}")
+            print(f"[proc] {p.name}")
+            rec = process_one(vlm_call, str(p), normalize_dates=normalize_dates, ocr_hint=ocr_hint)
+            write_json_array([rec], str(Path(args.out_dir) / "structured.json"))
+            print(json.dumps(rec, ensure_ascii=False, indent=2))
+            return
+
+        if args.data_dir:
+            if not Path(args.data_dir).exists():
+                sys.exit(f"[FATAL] Folder not found: {args.data_dir}")
+            process_folder(vlm_call, args.data_dir, args.out_dir, normalize_dates, ocr_hint)
+            return
+
+        print("Provide --image or --data_dir")
+        return
 
     # Provider-specific bootstrapping
     if provider_type == "huggingface":

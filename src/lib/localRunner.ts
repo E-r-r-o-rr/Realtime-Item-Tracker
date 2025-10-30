@@ -45,8 +45,39 @@ const PY_BIN =
 
 const RUNNER_SCRIPT = path.join(process.cwd(), "scripts", "local_vlm_runner.py");
 
+const DEFAULT_RUNNER_HOST = "127.0.0.1";
+const DEFAULT_RUNNER_PORT = 8411;
+
+const resolveHost = () => process.env.LOCAL_VLM_HOST?.trim() || DEFAULT_RUNNER_HOST;
+
+const resolvePort = (): number => {
+  const raw = process.env.LOCAL_VLM_PORT?.trim();
+  if (!raw) return DEFAULT_RUNNER_PORT;
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed > 0 && parsed < 65536) {
+    return Math.floor(parsed);
+  }
+  return DEFAULT_RUNNER_PORT;
+};
+
+const ensureRunnerEndpointEnv = () => {
+  const host = resolveHost();
+  const port = resolvePort();
+  if (!process.env.LOCAL_VLM_HOST) {
+    process.env.LOCAL_VLM_HOST = host;
+  }
+  if (!process.env.LOCAL_VLM_PORT) {
+    process.env.LOCAL_VLM_PORT = String(port);
+  }
+  return { host, port, portString: String(port) } as const;
+};
+
 const INSTALL_GUIDE = (modelId: string): string =>
-  `Model "${modelId}" is not installed locally. Install the weights with: pip install -U "transformers accelerate huggingface_hub" && huggingface-cli download "${modelId}". Afterwards press “Start local service” again.`;
+  [
+    `Model "${modelId}" is not installed locally.`,
+    'Install the weights with: pip install -U "transformers accelerate huggingface_hub"',
+    `&& huggingface-cli download "${modelId}". Afterwards press “Start local service” again.`,
+  ].join(" ");
 
 let runnerProcess: ChildProcessWithoutNullStreams | null = null;
 let runnerModelId: string | null = null;
@@ -126,8 +157,13 @@ type RunnerResult = { stdout: string; stderr: string; code: number | null; signa
 const runRunnerCommand = (args: string[]): Promise<RunnerResult> =>
   new Promise((resolve, reject) => {
     ensureRunnerScript();
+    const endpoint = ensureRunnerEndpointEnv();
     const child = spawn(PY_BIN, [RUNNER_SCRIPT, ...args], {
-      env: process.env,
+      env: {
+        ...process.env,
+        LOCAL_VLM_HOST: endpoint.host,
+        LOCAL_VLM_PORT: endpoint.portString,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -371,8 +407,22 @@ export const startLocalRunner = async (modelId: string): Promise<LocalRunnerStat
   ensureRunnerScript();
   runnerStopping = false;
   runnerModelId = trimmed;
-  const child = spawn(PY_BIN, [RUNNER_SCRIPT, "--model", trimmed], {
-    env: process.env,
+  const endpoint = ensureRunnerEndpointEnv();
+  const spawnArgs = [
+    RUNNER_SCRIPT,
+    "--model",
+    trimmed,
+    "--host",
+    endpoint.host,
+    "--port",
+    endpoint.portString,
+  ];
+  const child = spawn(PY_BIN, spawnArgs, {
+    env: {
+      ...process.env,
+      LOCAL_VLM_HOST: endpoint.host,
+      LOCAL_VLM_PORT: endpoint.portString,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   }) as ChildProcessWithoutNullStreams;
 
