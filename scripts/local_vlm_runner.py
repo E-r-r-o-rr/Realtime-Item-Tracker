@@ -80,13 +80,41 @@ def ensure_keepalive_image(tmp_dir: Path) -> Path:
     return keepalive
 
 
+def _call_with_optional_trust_remote_code(func, *args, **kwargs):
+    """Invoke a Hugging Face loader, tolerating older signatures."""
+
+    try:
+        return func(*args, **kwargs)
+    except TypeError as exc:
+        if "trust_remote_code" in str(exc):
+            kwargs.pop("trust_remote_code", None)
+            return func(*args, **kwargs)
+        raise
+
+
 def verify_local_install(model_id: str) -> None:
-    common_kwargs = {"local_files_only": True, "trust_remote_code": True}
+    common_kwargs = {"local_files_only": True}
+    optional_kwargs = {"trust_remote_code": True}
     if snapshot_download is not None:
-        snapshot_download(model_id, **common_kwargs)
+        _call_with_optional_trust_remote_code(
+            snapshot_download,
+            model_id,
+            **common_kwargs,
+            **optional_kwargs,
+        )
     else:  # Fallback: ensure config + processor exist locally.
-        AutoConfig.from_pretrained(model_id, **common_kwargs)
-        AutoProcessor.from_pretrained(model_id, **common_kwargs)
+        _call_with_optional_trust_remote_code(
+            AutoConfig.from_pretrained,
+            model_id,
+            **common_kwargs,
+            **optional_kwargs,
+        )
+        _call_with_optional_trust_remote_code(
+            AutoProcessor.from_pretrained,
+            model_id,
+            **common_kwargs,
+            **optional_kwargs,
+        )
 
 
 def resolve_device_map(device: Optional[str]) -> Dict[str, str]:
@@ -128,8 +156,17 @@ def load_model(model_id: str, device: str | None, dtype: str | None):
     elif chosen_dtype == "bfloat16":
         load_kwargs["torch_dtype"] = torch.bfloat16
 
-    model = Qwen3VLForConditionalGeneration.from_pretrained(model_id, **load_kwargs)
-    processor = AutoProcessor.from_pretrained(model_id, local_files_only=True, trust_remote_code=True)
+    model = _call_with_optional_trust_remote_code(
+        Qwen3VLForConditionalGeneration.from_pretrained,
+        model_id,
+        **load_kwargs,
+    )
+    processor = _call_with_optional_trust_remote_code(
+        AutoProcessor.from_pretrained,
+        model_id,
+        local_files_only=True,
+        trust_remote_code=True,
+    )
     model.eval()
     return model, processor
 
