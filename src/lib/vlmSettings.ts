@@ -5,6 +5,7 @@ import {
   KeyValuePair,
   VlmSettings,
   VlmRemoteSettings,
+  VlmLocalSettings,
   VlmMode,
   VlmAuthScheme,
   VlmProviderType,
@@ -247,6 +248,27 @@ const normalizeRemoteSettings = (value: unknown): VlmRemoteSettings => {
   return base;
 };
 
+const normalizeLocalSettings = (value: unknown): VlmLocalSettings => {
+  const base = structuredClone(DEFAULT_VLM_SETTINGS.local);
+  const incoming = (value && typeof value === "object" ? value : {}) as any;
+
+  const modelId = toString(incoming.modelId, base.modelId).trim();
+  base.modelId = modelId || base.modelId;
+
+  const dtype = toString(incoming.dtype, base.dtype).trim();
+  base.dtype = dtype || "auto";
+
+  const deviceMap = toString(incoming.deviceMap, base.deviceMap).trim();
+  base.deviceMap = deviceMap || "auto";
+
+  base.maxNewTokens = Math.max(1, toNumber(incoming.maxNewTokens, base.maxNewTokens));
+  base.enableFlashAttention2 = Boolean(
+    incoming.enableFlashAttention2 ?? base.enableFlashAttention2,
+  );
+
+  return base;
+};
+
 export const normalizeVlmSettings = (value: unknown): VlmSettings => {
   const base = structuredClone(DEFAULT_VLM_SETTINGS);
   const incoming = (value && typeof value === "object" ? value : {}) as any;
@@ -254,5 +276,6 @@ export const normalizeVlmSettings = (value: unknown): VlmSettings => {
   return {
     mode,
     remote: normalizeRemoteSettings(incoming.remote),
+    local: normalizeLocalSettings(incoming.local),
   };
 };

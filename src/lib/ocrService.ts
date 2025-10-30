@@ -5,12 +5,18 @@ import os from 'os';
 import { randomUUID } from 'crypto';
 
 import { loadPersistedVlmSettings } from './settingsStore';
+import {
+  getLocalVlmServiceStatus,
+  invokeLocalService,
+} from './localVlmService';
 
 export type VlmProviderInfo = {
   mode: 'remote' | 'local';
   providerType?: string;
   modelId?: string;
   baseUrl?: string;
+  execution?: 'remote-http' | 'local-service' | 'local-cli';
+  executionDebug?: string[];
 };
 
 export type OcrExtractionResult = {
@@ -20,7 +26,8 @@ export type OcrExtractionResult = {
   error?: string;
 };
 
-const DEFAULT_MODEL = process.env.OCR_MODEL || 'Qwen/Qwen2-VL-2B-Instruct';
+const DEFAULT_MODEL = process.env.OCR_MODEL || 'Qwen/Qwen3-VL-2B-Instruct';
+const DEFAULT_LOCAL_MAX_NEW_TOKENS = 512;
 
 // Prefer explicit venv python; fall back to system python
 const PY_BIN =
@@ -187,9 +194,11 @@ function deriveOcrErrorMessage(stdout: string, stderr: string, code?: number): s
 export async function extractKvPairs(filePath: string): Promise<OcrExtractionResult> {
   const vlmSettings = loadPersistedVlmSettings();
   const configuredModel =
-    vlmSettings.mode === 'remote' && vlmSettings.remote.modelId
-      ? vlmSettings.remote.modelId
-      : DEFAULT_MODEL;
+    vlmSettings.mode === 'remote'
+      ? vlmSettings.remote.modelId?.trim() || DEFAULT_MODEL
+      : vlmSettings.local?.modelId?.trim() || DEFAULT_MODEL;
+  const usingLocalMode = vlmSettings.mode === 'local';
+  const localDebug: string[] = [];
 
   const providerInfo: VlmProviderInfo = {
     mode: vlmSettings.mode,
@@ -207,15 +216,98 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     providerInfo.providerType = normalizedType;
     providerInfo.modelId = vlmSettings.remote.modelId?.trim() || configuredModel;
     providerInfo.baseUrl = effectiveBase;
+    providerInfo.execution = 'remote-http';
   } else {
     providerInfo.providerType = 'local';
     providerInfo.modelId = configuredModel;
     providerInfo.baseUrl = '';
+    providerInfo.execution = 'local-cli';
+  }
+
+  if (usingLocalMode) {
+    const serviceStatus = getLocalVlmServiceStatus();
+    if (serviceStatus.state !== 'running') {
+      const stateMessage =
+        serviceStatus.state === 'stopped'
+          ? 'Local model service is not running.'
+          : `Local model service state is ${serviceStatus.state}.`;
+      const debugLine = `[local-service] ${stateMessage}`;
+      localDebug.push(debugLine);
+      if (serviceStatus.message) {
+        localDebug.push(`[local-service] ${serviceStatus.message}`);
+      }
+      console.info('[ocrService] Local service unavailable:', {
+        state: serviceStatus.state,
+        message: serviceStatus.message,
+      });
+    } else {
+      localDebug.push(
+        `[local-service] Running on ${serviceStatus.host}:${serviceStatus.port} (model=${serviceStatus.modelId || 'unknown'})`,
+      );
+      try {
+        const inference = await invokeLocalService(filePath, {
+          normalizeDates: true,
+        });
+        if (inference.ok && inference.result?.llm_parsed) {
+          const parsed = inference.result.llm_parsed as Record<string, unknown>;
+          const allRaw =
+            (parsed as { all_key_values?: unknown }).all_key_values ??
+            (parsed as { allKeyValues?: unknown }).allKeyValues ??
+            parsed;
+          const selectedRaw =
+            (parsed as { selected_key_values?: unknown }).selected_key_values ??
+            (parsed as { selectedKeyValues?: unknown }).selectedKeyValues ??
+            {};
+
+          const kv = sanitizeKvRecord(allRaw);
+          const selectedKv = deriveSelectedKv(kv, selectedRaw);
+
+          if (typeof inference.durationMs === 'number') {
+            localDebug.push(
+              `[local-service] Completed in ${inference.durationMs}ms (source=${inference.source || 'n/a'})`,
+            );
+          } else {
+            localDebug.push(`[local-service] Completed (source=${inference.source || 'n/a'})`);
+          }
+
+          providerInfo.execution = inference.source === 'local-service' ? 'local-service' : 'local-cli';
+          if (localDebug.length > 0) {
+            providerInfo.executionDebug = [...localDebug];
+          }
+          return {
+            kv,
+            selectedKv,
+            providerInfo,
+          };
+        }
+
+        if (!inference.ok) {
+          const failureMessage = inference.message || 'Local service returned an unknown error.';
+          localDebug.push(`[local-service] Call failed: ${failureMessage}`);
+          console.warn('[ocrService] Local service inference failed:', failureMessage);
+        } else {
+          localDebug.push('[local-service] No parsed payload returned.');
+          console.warn('[ocrService] Local service returned no parsed payload.');
+        }
+      } catch (error) {
+        const errMessage = error instanceof Error ? error.message : String(error);
+        localDebug.push(`[local-service] Exception: ${errMessage}`);
+        console.warn('[ocrService] Local service call failed; falling back to CLI.', error);
+      }
+    }
+
+    if (localDebug.length > 0) {
+      providerInfo.executionDebug = [...localDebug];
+    }
   }
 
   if (!fs.existsSync(OCR_SCRIPT)) {
     console.warn('[ocrService] Python script not found, returning stub.');
     const stubKv = sanitizeKvRecord(stubFromFilename(filePath));
+    if (usingLocalMode) {
+      localDebug.push('[local-cli] Python script missing; returning stub result.');
+      providerInfo.executionDebug = [...localDebug];
+    }
     return { kv: stubKv, selectedKv: deriveSelectedKv(stubKv, {}), providerInfo };
   }
 
@@ -241,6 +333,11 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     env.OCR_RETRY_MAX = String(vlmSettings.remote.retryPolicy.maxRetries);
     env.OCR_STREAMING = vlmSettings.remote.defaults.streaming ? '1' : '0';
     env.OCR_SYSTEM_PROMPT = vlmSettings.remote.defaults.systemPrompt || '';
+    delete env.OCR_LOCAL_MODEL_ID;
+    delete env.OCR_LOCAL_DTYPE;
+    delete env.OCR_LOCAL_DEVICE_MAP;
+    delete env.OCR_LOCAL_MAX_NEW_TOKENS;
+    delete env.OCR_LOCAL_FLASH_ATTENTION;
     if (vlmSettings.remote.authScheme !== 'none' && vlmSettings.remote.apiKey) {
       const header = vlmSettings.remote.authHeaderName.toLowerCase();
       if (
@@ -252,11 +349,35 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     }
   } else {
     delete env.VLM_REMOTE_CONFIG;
+    delete env.OCR_REQUEST_TIMEOUT_MS;
+    delete env.OCR_RETRY_MAX;
+    delete env.OCR_STREAMING;
+    delete env.HF_TOKEN;
+
+    const local = vlmSettings.local;
+    env.OCR_LOCAL_MODEL_ID = configuredModel;
+    if (local.dtype) {
+      env.OCR_LOCAL_DTYPE = local.dtype;
+    } else {
+      delete env.OCR_LOCAL_DTYPE;
+    }
+    if (local.deviceMap) {
+      env.OCR_LOCAL_DEVICE_MAP = local.deviceMap;
+    } else {
+      delete env.OCR_LOCAL_DEVICE_MAP;
+    }
+    env.OCR_LOCAL_MAX_NEW_TOKENS = String(local.maxNewTokens || DEFAULT_LOCAL_MAX_NEW_TOKENS);
+    env.OCR_LOCAL_FLASH_ATTENTION = local.enableFlashAttention2 ? '1' : '0';
+    env.OCR_SYSTEM_PROMPT = vlmSettings.remote.defaults.systemPrompt || '';
   }
 
   let timer: NodeJS.Timeout | null = null;
 
   try {
+    if (usingLocalMode) {
+      localDebug.push(`[local-cli] Running fallback CLI pipeline for ${configuredModel}`);
+      providerInfo.executionDebug = [...localDebug];
+    }
     const { stdout, stderr, code, signal } = await new Promise<{
       stdout: string; stderr: string; code: number; signal: NodeJS.Signals | null;
     }>((resolve, reject) => {
@@ -281,6 +402,10 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
       const message = deriveOcrErrorMessage(stdout, stderr, code);
       console.warn('[ocrService] OCR script non-zero exit', { code, signal });
       if (stderr) console.warn('[ocrService] stderr:\n' + stderr);
+      if (usingLocalMode) {
+        localDebug.push(`[local-cli] Pipeline exited with code ${code}${signal ? ` (signal ${signal})` : ''}.`);
+        providerInfo.executionDebug = [...localDebug];
+      }
       return { kv: {}, selectedKv: {}, providerInfo, error: message };
     }
 
@@ -302,6 +427,10 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
         const kv = sanitizeKvRecord(allRaw);
         const selectedKv = deriveSelectedKv(kv, selectedRaw);
 
+        if (usingLocalMode) {
+          localDebug.push('[local-cli] Completed successfully.');
+          providerInfo.executionDebug = [...localDebug];
+        }
         return {
           kv,
           selectedKv,
@@ -312,11 +441,20 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
 
     const message = deriveOcrErrorMessage(stdout, stderr);
     console.warn('[ocrService] structured.json missing or invalid. stderr:\n' + (stderr || '(empty)'));
+    if (usingLocalMode) {
+      localDebug.push('[local-cli] structured.json missing or invalid.');
+      providerInfo.executionDebug = [...localDebug];
+    }
     return { kv: {}, selectedKv: {}, providerInfo, error: message };
   } catch (err) {
     if (timer) { clearTimeout(timer); }
     console.warn('[ocrService] Error running OCR script:', err);
     const message = err instanceof Error && err.message ? err.message : 'Failed to run OCR script.';
+    if (usingLocalMode) {
+      const errMessage = err instanceof Error && err.message ? err.message : String(err);
+      localDebug.push(`[local-cli] Exception: ${errMessage}`);
+      providerInfo.executionDebug = [...localDebug];
+    }
     return { kv: {}, selectedKv: {}, providerInfo, error: message };
   } finally {
     if (!KEEP_TMP) rmrf(outDir);

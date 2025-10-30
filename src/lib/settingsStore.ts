@@ -79,6 +79,10 @@ export function loadPersistedVlmSettings(): VlmSettings {
           ? parsed.remote!.extraHeaders!
           : [],
       },
+      local: {
+        ...structuredClone(DEFAULT_VLM_SETTINGS.local),
+        ...parsed.local,
+      },
     };
   } catch (error) {
     console.error("Failed to parse persisted VLM settings", error);
