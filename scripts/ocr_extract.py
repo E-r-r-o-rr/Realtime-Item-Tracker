@@ -18,9 +18,9 @@ Provider routing:
 
 from __future__ import annotations
 
-import os, re, sys, json, argparse, base64, mimetypes
+import os, re, sys, json, argparse, base64, importlib, mimetypes
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 from collections import OrderedDict
 from urllib import request as urllib_request, error as urllib_error
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
@@ -30,6 +30,7 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 # --------------------------
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
+LOCAL_PROVIDER = "local-transformers"
 HF_ROUTER_BASE = "https://router.huggingface.co"  # kept for generic HTTP path if you ever need it
 
 # --------------------------
@@ -114,6 +115,347 @@ def encode_image_to_base64(image_path: str) -> str:
     with open(image_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
     return f"data:{guess_mime(image_path)};base64,{b64}"
+
+# --------------------------
+# Local transformers helpers
+# --------------------------
+
+LOCAL_MODEL_CACHE: Dict[str, Tuple[Any, Any]] = {}
+
+
+def resolve_torch_dtype(name: str):
+    if not name or name.lower() == "auto":
+        return None
+    try:
+        import torch
+    except ImportError as exc:  # pragma: no cover - informative error path
+        raise RuntimeError(
+            "PyTorch is required for local transformers mode. Install with: pip install --upgrade torch"
+        ) from exc
+
+    normalized = name.strip().lower()
+    aliases = {
+        "float16": "float16",
+        "fp16": "float16",
+        "half": "float16",
+        "bfloat16": "bfloat16",
+        "bf16": "bfloat16",
+        "float32": "float32",
+        "fp32": "float32",
+        "float": "float32",
+        "auto": None,
+    }
+    target = aliases.get(normalized, normalized)
+    if target is None:
+        return None
+    if not hasattr(torch, target):
+        raise RuntimeError(f"Unsupported torch dtype requested: {name}")
+    return getattr(torch, target)
+
+
+def load_transformer_model(model_id: str):
+    if model_id in LOCAL_MODEL_CACHE:
+        return LOCAL_MODEL_CACHE[model_id]
+
+    try:
+        from transformers import AutoProcessor
+    except ImportError as exc:  # pragma: no cover - informative error path
+        raise RuntimeError(
+            "transformers is required for local mode. Install with: pip install --upgrade transformers"
+        ) from exc
+
+    load_kwargs: Dict[str, Any] = {"trust_remote_code": True}
+
+    device_map = os.environ.get("LOCAL_VLM_DEVICE_MAP", "auto").strip()
+    if device_map:
+        load_kwargs["device_map"] = device_map
+
+    dtype_name = os.environ.get("LOCAL_VLM_DTYPE", "auto").strip()
+    torch_dtype = resolve_torch_dtype(dtype_name)
+    if torch_dtype is not None:
+        load_kwargs["torch_dtype"] = torch_dtype
+
+    attn_impl = os.environ.get("LOCAL_VLM_ATTN_IMPL", "").strip()
+    if attn_impl:
+        load_kwargs["attn_implementation"] = attn_impl
+
+    compile_mode = os.environ.get("LOCAL_VLM_COMPILE", "").strip().lower()
+    if compile_mode in {"max-autotune", "reduce-overhead", "default"}:
+        load_kwargs["compile"] = compile_mode
+
+    candidate_loaders: Iterable[Tuple[str, str]] = (
+        ("transformers", "Qwen3VLForConditionalGeneration"),
+        ("transformers", "Qwen2VLForConditionalGeneration"),
+        ("transformers", "AutoModelForVision2Seq"),
+        ("transformers", "AutoModelForCausalLM"),
+    )
+
+    last_error: Optional[Exception] = None
+    model = None
+    for module_name, attr_name in candidate_loaders:
+        try:
+            module = importlib.import_module(module_name)
+            loader = getattr(module, attr_name)
+        except (ImportError, AttributeError):
+            continue
+        try:
+            model = loader.from_pretrained(model_id, **load_kwargs)
+            break
+        except Exception as exc:  # pragma: no cover - loader fallback path
+            last_error = exc
+            continue
+
+    if model is None:
+        hint = f" ({last_error})" if last_error else ""
+        raise RuntimeError(f"Failed to load local model '{model_id}'. Install the required transformers backend.{hint}")
+
+    processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+
+    try:
+        model.eval()
+    except Exception:
+        pass
+
+    LOCAL_MODEL_CACHE[model_id] = (model, processor)
+    return model, processor
+
+
+def convert_openai_messages_to_hf(messages: List[Dict[str, Any]], image_path: str) -> List[Dict[str, Any]]:
+    encoded_image = encode_image_to_base64(image_path)
+    hf_messages: List[Dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content_entries = msg.get("content")
+        hf_entry: Dict[str, Any] = {"role": role, "content": []}
+        if isinstance(content_entries, str):
+            hf_entry["content"].append({"type": "text", "text": content_entries})
+        elif isinstance(content_entries, list):
+            for part in content_entries:
+                if not isinstance(part, dict):
+                    continue
+                ptype = part.get("type")
+                if ptype == "text":
+                    text_val = part.get("text")
+                    if isinstance(text_val, str) and text_val:
+                        hf_entry["content"].append({"type": "text", "text": text_val})
+                elif ptype == "image_url":
+                    data = part.get("image_url")
+                    if isinstance(data, dict):
+                        url_val = data.get("url")
+                        if isinstance(url_val, str) and url_val:
+                            hf_entry["content"].append({"type": "image", "image": url_val})
+                            continue
+                    hf_entry["content"].append({"type": "image", "image": encoded_image})
+        if not hf_entry["content"]:
+            continue
+        hf_messages.append(hf_entry)
+    return hf_messages
+
+
+def local_transformer_generate(
+    model_id: str,
+    image_path: str,
+    messages: List[Dict[str, Any]],
+    defaults: Dict[str, Any],
+) -> str:
+    model, processor = load_transformer_model(model_id)
+    hf_messages = convert_openai_messages_to_hf(messages, image_path)
+    if not hf_messages:
+        raise RuntimeError("No chat messages provided for local inference")
+
+    try:
+        import torch
+    except ImportError as exc:  # pragma: no cover - informative error path
+        raise RuntimeError(
+            "PyTorch is required for local transformers mode. Install with: pip install --upgrade torch"
+        ) from exc
+
+    generation_kwargs: Dict[str, Any] = {}
+
+    temperature = defaults.get("temperature")
+    if isinstance(temperature, (int, float)):
+        generation_kwargs["temperature"] = float(temperature)
+
+    top_p = defaults.get("topP")
+    if isinstance(top_p, (int, float)) and top_p > 0:
+        generation_kwargs["top_p"] = float(top_p)
+
+    top_k = defaults.get("topK")
+    if isinstance(top_k, (int, float)) and top_k > 0:
+        generation_kwargs["top_k"] = int(top_k)
+
+    repetition_penalty = defaults.get("repetitionPenalty")
+    if isinstance(repetition_penalty, (int, float)) and repetition_penalty > 0:
+        generation_kwargs["repetition_penalty"] = float(repetition_penalty)
+
+    max_new_tokens_env = os.environ.get("LOCAL_VLM_MAX_NEW_TOKENS")
+    if max_new_tokens_env and max_new_tokens_env.isdigit():
+        max_new_tokens = int(max_new_tokens_env)
+    else:
+        max_new_tokens_default = defaults.get("maxOutputTokens")
+        if isinstance(max_new_tokens_default, (int, float)) and max_new_tokens_default > 0:
+            max_new_tokens = int(max_new_tokens_default)
+        else:
+            max_new_tokens = 512
+
+    seed = defaults.get("seed")
+    if isinstance(seed, (int, float)):
+        torch.manual_seed(int(seed))
+
+    with torch.inference_mode():
+        inputs = processor.apply_chat_template(
+            hf_messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        inputs = {k: (v.to(model.device) if hasattr(v, "to") else v) for k, v in inputs.items()}
+        generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens, **generation_kwargs)
+        input_ids = inputs.get("input_ids")
+        if input_ids is None:
+            raise RuntimeError("Local transformers pipeline did not produce input_ids")
+        trimmed = [out[len(in_ids) :] for in_ids, out in zip(input_ids, generated_ids)]
+        output_text = processor.batch_decode(
+            trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+
+    if not output_text:
+        raise RuntimeError("Local transformers pipeline returned no text")
+
+    return output_text[0]
+
+
+def warmup_local_transformer(model_id: str, *, quiet: bool = False):
+    model, _ = load_transformer_model(model_id)
+    if quiet:
+        return
+    try:
+        device_repr = getattr(model, "device", None)
+        if device_repr is not None:
+            print(f"[warmup] Loaded model on device: {device_repr}")
+    except Exception:
+        pass
+
+
+def _write_server_json(payload: Dict[str, Any]):
+    try:
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except Exception:
+        # If stdout is broken there's not much we can do; swallow to avoid crashes.
+        pass
+
+
+def run_stdio_server(
+    model_id: str,
+    defaults: Dict[str, Any],
+    system_prompt: Optional[str],
+):
+    base_defaults: Dict[str, Any] = dict(defaults or {})
+    base_defaults.pop("systemPrompt", None)
+    clean_system_prompt: Optional[str] = None
+    if isinstance(system_prompt, str) and system_prompt.strip():
+        clean_system_prompt = system_prompt.strip()
+
+    _write_server_json({"event": "starting", "model": model_id})
+    try:
+        warmup_local_transformer(model_id, quiet=True)
+    except Exception as exc:  # pragma: no cover - initialization failure
+        _write_server_json({"event": "error", "error": f"Warmup failed: {exc}"})
+        return
+
+    _write_server_json({"event": "ready", "model": model_id})
+
+    while True:
+        try:
+            raw_line = sys.stdin.readline()
+        except Exception as exc:  # pragma: no cover - stdin failure
+            _write_server_json({"event": "error", "error": f"stdin read failed: {exc}"})
+            break
+
+        if not raw_line:
+            # EOF from parent process -> exit gracefully
+            break
+
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        try:
+            request = json.loads(line)
+        except Exception as exc:
+            _write_server_json({"event": "error", "error": "invalid_json", "detail": str(exc)})
+            continue
+
+        req_id = request.get("id")
+        action = (request.get("action") or "infer").strip().lower()
+
+        if action == "shutdown":
+            _write_server_json({"event": "stopped", "id": req_id, "ok": True})
+            break
+
+        if action == "warmup":
+            try:
+                warmup_local_transformer(model_id, quiet=True)
+                _write_server_json({"id": req_id, "ok": True, "event": "warmed"})
+            except Exception as exc:  # pragma: no cover - warmup failure
+                _write_server_json({"id": req_id, "ok": False, "error": str(exc)})
+            continue
+
+        if action != "infer":
+            _write_server_json({"id": req_id, "ok": False, "error": f"Unknown action: {action}"})
+            continue
+
+        image_path = request.get("image")
+        if not isinstance(image_path, str) or not image_path.strip():
+            _write_server_json({"id": req_id, "ok": False, "error": "Image path is required."})
+            continue
+        image_path = image_path.strip()
+        if not Path(image_path).exists():
+            _write_server_json({"id": req_id, "ok": False, "error": f"Image not found: {image_path}"})
+            continue
+
+        normalize_dates = request.get("normalize_dates")
+        normalize_flag = True if normalize_dates is None else bool(normalize_dates)
+
+        ocr_hint = request.get("ocr_hint")
+        if not isinstance(ocr_hint, str) or not ocr_hint.strip():
+            ocr_hint = None
+        else:
+            ocr_hint = ocr_hint.strip()
+
+        req_defaults = request.get("defaults")
+        merged_defaults = dict(base_defaults)
+        if isinstance(req_defaults, dict):
+            for key, value in req_defaults.items():
+                if value is None:
+                    continue
+                merged_defaults[key] = value
+
+        req_system_prompt = request.get("system_prompt")
+        if isinstance(req_system_prompt, str) and req_system_prompt.strip():
+            system_prompt_value = req_system_prompt.strip()
+        else:
+            system_prompt_value = clean_system_prompt
+
+        try:
+            def vlm_call(image_path_inner: str, ocr_txt: Optional[str]) -> str:
+                messages = build_vlm_messages(image_path_inner, ocr_txt, system_prompt_value)
+                return local_transformer_generate(model_id, image_path_inner, messages, merged_defaults)
+
+            record = process_one(
+                vlm_call,
+                image_path,
+                normalize_dates=normalize_flag,
+                ocr_hint=ocr_hint,
+            )
+            _write_server_json({"id": req_id, "ok": True, "result": record})
+        except Exception as exc:  # pragma: no cover - inference failure
+            _write_server_json({"id": req_id, "ok": False, "error": str(exc)})
+
 
 # --------------------------
 # JSON path helpers
@@ -720,17 +1062,27 @@ def main():
     ap.add_argument("--provider", default="", help="Inference provider id (HF router provider name)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help="Model id or deployment (provider-specific)")
     ap.add_argument("--no_normalize_dates", action="store_true", help="Disable date zero-padding normalization")
+    ap.add_argument("--warmup_only", action="store_true", help="Load the local transformers model and exit")
+    ap.add_argument("--stdio_server", action="store_true", help="Run a persistent stdio server for local inference")
     args = ap.parse_args()
 
     remote_cfg = load_remote_config()
     remote_cfg = remote_cfg if isinstance(remote_cfg, dict) else {}
 
+    vlm_mode = os.environ.get("VLM_MODE", "").strip().lower()
+    is_local_mode = vlm_mode == "local"
+
     # Accept a wider set of provider types
     provider_type = str(remote_cfg.get("providerType") or "").lower()
-    allowed = {"openai-compatible", "huggingface", "generic-http", "openai", "azure-openai"}
+    if is_local_mode:
+        provider_type = LOCAL_PROVIDER
+    allowed = {"openai-compatible", "huggingface", "generic-http", "openai", "azure-openai", LOCAL_PROVIDER}
     if provider_type not in allowed:
         provider_type = "huggingface"
     remote_cfg["providerType"] = provider_type
+
+    if args.stdio_server and provider_type != LOCAL_PROVIDER:
+        sys.exit("[FATAL] --stdio_server is only supported in local mode")
 
     token = args.hf_token or os.environ.get("HF_TOKEN")
 
@@ -775,7 +1127,26 @@ def main():
         os.environ["OCR_SYSTEM_PROMPT"] = system_prompt
 
     # Provider-specific bootstrapping
-    if provider_type == "huggingface":
+    if provider_type == LOCAL_PROVIDER:
+        local_model = os.environ.get("LOCAL_VLM_MODEL") or args.model
+        if not isinstance(local_model, str) or not local_model.strip():
+            sys.exit("[FATAL] LOCAL_VLM_MODEL is required for local transformers mode.")
+        local_model = local_model.strip()
+
+        def vlm_call(image_path: str, ocr_txt: Optional[str]) -> str:
+            messages = build_vlm_messages(image_path, ocr_txt, system_prompt)
+            return local_transformer_generate(local_model, image_path, messages, defaults)
+
+        if args.warmup_only:
+            warmup_local_transformer(local_model)
+            print(json.dumps({"ok": True, "model": local_model}))
+            return
+
+        if args.stdio_server:
+            run_stdio_server(local_model, defaults, system_prompt)
+            return
+
+    elif provider_type == "huggingface":
         # IMPORTANT: Do NOT set HF_ENDPOINT/HF_HUB_ENDPOINT to the router.
         # The HF SDK needs the hub (https://huggingface.co) for metadata calls.
         request_base = ""  # not used by the HF SDK path
@@ -810,6 +1181,9 @@ def main():
             messages = build_vlm_messages(image_path, ocr_txt, system_prompt)
             return call_http_vlm(remote_cfg, base_url, args.model, messages, defaults)
 
+        if args.warmup_only:
+            sys.exit("[FATAL] --warmup_only is only supported in local mode")
+
     safe_mkdir(args.out_dir)
     normalize_dates = not args.no_normalize_dates
 
@@ -827,6 +1201,11 @@ def main():
         if not Path(args.data_dir).exists():
             sys.exit(f"[FATAL] Folder not found: {args.data_dir}")
         process_folder(vlm_call, args.data_dir, args.out_dir, normalize_dates, ocr_hint)
+        return
+
+    if args.warmup_only and provider_type == LOCAL_PROVIDER:
+        warmup_local_transformer(local_model)
+        print(json.dumps({"ok": True, "model": local_model}))
         return
 
     print("Provide --image or --data_dir")
