@@ -448,6 +448,43 @@ def build_local_vlm_call(
     return local_vlm
 
 # --------------------------
+# Local model availability check
+# --------------------------
+def ensure_local_model_available(model_id: str) -> None:
+    normalized = (model_id or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    print(f"[check] Verifying local cache for '{normalized}'…")
+
+    try:
+        from huggingface_hub import snapshot_download  # type: ignore
+        from huggingface_hub.utils import LocalEntryNotFoundError  # type: ignore
+    except ImportError as exc:  # pragma: no cover - safety path when deps missing
+        raise RuntimeError(
+            "huggingface_hub is required to confirm local model availability. "
+            "Install it with: pip install --upgrade huggingface_hub"
+        ) from exc
+
+    try:
+        cache_path = snapshot_download(
+            normalized,
+            local_files_only=True,
+            allow_patterns=None,
+        )
+    except LocalEntryNotFoundError as exc:
+        instructions = (
+            f"Local model '{normalized}' is not cached on this machine.\n"
+            "Download the weights before scanning. Examples:\n"
+            f"  • huggingface-cli download {normalized} --local-dir ./models/{normalized.replace('/', '_')}\n"
+            f"  • python -c \"from huggingface_hub import snapshot_download; snapshot_download('{normalized}')\"\n"
+            "After the download completes, rerun the scanner."
+        )
+        raise RuntimeError(instructions) from exc
+    except Exception as exc:
+        raise RuntimeError(f"Unable to verify local model '{normalized}': {exc}") from exc
+
+    if cache_path:
+        print(f"[info] Found cached weights under {cache_path}")
+
+# --------------------------
 # Provider-dispatched VLM call
 # --------------------------
 def call_http_vlm(
@@ -1074,6 +1111,11 @@ def main():
             max_tokens = int(max_tokens_env) if max_tokens_env not in {None, ""} else DEFAULT_LOCAL_MAX_NEW_TOKENS
         except Exception:
             max_tokens = DEFAULT_LOCAL_MAX_NEW_TOKENS
+
+        try:
+            ensure_local_model_available(local_model)
+        except RuntimeError as exc:
+            sys.exit(f"[FATAL] {exc}")
 
         try:
             vlm_call = build_local_vlm_call(local_model, dtype, device_map, max_tokens, attn_impl_env, system_prompt)
