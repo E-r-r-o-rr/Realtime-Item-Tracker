@@ -79,6 +79,22 @@ const parseRunnerEvent = (line: string): Record<string, unknown> | null => {
   if (!trimmed) {
     return null;
   }
+
+  // Some libraries (e.g. huggingface_hub) emit progress updates to stdout using
+  // carriage returns. When that happens the JSON payload from the Python runner
+  // may be appended to an existing progress message. Attempt to recover by
+  // slicing out the JSON object from the last opening/closing braces.
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
+    const candidate = trimmed.slice(firstBrace, lastBrace + 1);
+    try {
+      return JSON.parse(candidate) as Record<string, unknown>;
+    } catch {
+      // fall through to debug log below
+    }
+  }
+
   try {
     return JSON.parse(trimmed) as Record<string, unknown>;
   } catch {

@@ -65,7 +65,10 @@ def verify_local_install(model_id: str) -> None:
 def load_model(model_id: str, device: str | None, dtype: str | None):
     from transformers import Qwen3VLForConditionalGeneration
 
-    load_kwargs: Dict[str, Any] = {"local_files_only": False}
+    # We explicitly operate on pre-downloaded weights. Avoid attempting to fetch
+    # files from the network again so that startup is deterministic when the
+    # cache is incomplete.
+    load_kwargs: Dict[str, Any] = {"local_files_only": True}
     if dtype == "float16":
         load_kwargs["torch_dtype"] = torch.float16
     elif dtype == "bfloat16":
