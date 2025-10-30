@@ -309,8 +309,40 @@ def build_local_vlm_call(
     if torch_dtype == "auto" and dtype_key not in {"auto", ""}:
         print(f"[warn] Unsupported dtype '{dtype}'. Falling back to auto.", file=sys.stderr)
 
-    device_map_clean = (device_map or "auto").strip() or "auto"
+    if torch_dtype == "auto":
+        try:
+            if torch.cuda.is_available():
+                torch_dtype = torch.float16
+        except Exception:
+            pass
+
+    device_map_clean = (device_map or "auto").strip()
+    device_map_value: Any = device_map_clean or "auto"
+    if isinstance(device_map_value, str):
+        lowered_map = device_map_value.lower()
+        if lowered_map in {"auto", ""}:
+            try:
+                if torch.cuda.is_available():
+                    device_map_value = {"": 0}
+                else:
+                    device_map_value = "auto"
+            except Exception:
+                device_map_value = "auto"
+        elif lowered_map in {"cuda", "cuda:0", "gpu", "0"}:
+            device_map_value = {"": 0}
+        elif lowered_map.startswith("{") or lowered_map.startswith("["):
+            try:
+                device_map_value = json.loads(device_map_value)
+            except Exception:
+                device_map_value = device_map_clean or lowered_map
+
     attn_impl_clean = (attn_impl or "").strip()
+    if not attn_impl_clean:
+        try:
+            if torch.cuda.is_available():
+                attn_impl_clean = "sdpa"
+        except Exception:
+            pass
     tokens = max(1, int(max_new_tokens or DEFAULT_LOCAL_MAX_NEW_TOKENS))
 
     loaders: List[Any] = []
@@ -328,8 +360,8 @@ def build_local_vlm_call(
 
     def attempt_load(loader: Any) -> Any:
         base_kwargs: Dict[str, Any] = {"trust_remote_code": True}
-        if device_map_clean:
-            base_kwargs["device_map"] = device_map_clean
+        if device_map_value not in {"", None}:
+            base_kwargs["device_map"] = device_map_value
         if torch_dtype != "auto":
             base_kwargs["torch_dtype"] = torch_dtype
         if attn_impl_clean:
@@ -346,7 +378,7 @@ def build_local_vlm_call(
             if "device_map" in adjusted and "device_map" in msg:
                 device_hint = adjusted.pop("device_map", None)
                 model = loader.from_pretrained(normalized_model, **adjusted)
-                if device_hint and device_hint not in {"auto", ""}:
+                if isinstance(device_hint, str) and device_hint not in {"auto", ""}:
                     try:
                         model.to(device_hint)
                     except Exception:

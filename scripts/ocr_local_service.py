@@ -34,6 +34,18 @@ KEEPALIVE_PATH = SCRIPT_DIR / "_keepalive.jpg"
 
 os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
 
+try:  # Prefer flash / SDPA kernels for GPU parity with the working CLI flow
+    from torch.nn.attention import SDPBackend, sdpa_kernel  # type: ignore
+
+    sdpa_kernel(SDPBackend.FLASH_ATTENTION)
+except Exception:
+    try:
+        from torch.backends.cuda import sdp_kernel  # type: ignore
+
+        sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False)
+    except Exception:
+        pass
+
 
 @dataclass
 class ServiceConfig:
@@ -67,6 +79,9 @@ class ServiceContext:
                 with urllib_request.urlopen(KEEPALIVE_URL, timeout=10) as resp:
                     KEEPALIVE_PATH.write_bytes(resp.read())
         except Exception:
+            return
+
+        if SHUTDOWN_EVENT.is_set():
             return
 
         try:
@@ -276,12 +291,19 @@ def main() -> int:
     global SERVICE_CONTEXT
     SERVICE_CONTEXT = ctx
 
-    ctx.warmup()
-
     server = ThreadingHTTPServer((args.host, args.port), LocalVlmHandler)
     server.allow_reuse_address = True
     server.daemon_threads = True
     install_signal_handlers(server)
+
+    def _warmup() -> None:
+        sys.stdout.write("[serve] Starting warmup inference...\n")
+        try:
+            ctx.warmup()
+        finally:
+            sys.stdout.write("[serve] Warmup thread finished.\n")
+
+    threading.Thread(target=_warmup, daemon=True).start()
 
     sys.stdout.write(
         f"[serve] Local VLM ready on http://{args.host}:{args.port} with model {config.model_id}\n"
