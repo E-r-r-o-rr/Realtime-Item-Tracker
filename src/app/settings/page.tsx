@@ -41,6 +41,8 @@ type LocalServiceState = {
   port?: number;
   startedAt?: number;
   message?: string;
+  logs?: { stdout: string[]; stderr: string[] };
+  lastExit?: { code: number | null; signal: string | null; at?: number };
 };
 
 const detectLocalModelPreset = (modelId: string): LocalModelPreset => {
@@ -127,6 +129,9 @@ export default function SettingsPage() {
           modelId?: string;
           port?: number;
           startedAt?: number;
+          message?: string;
+          logs?: { stdout?: unknown; stderr?: unknown } | null;
+          lastExit?: { code?: unknown; signal?: unknown; at?: unknown } | null;
         } | null;
         if (status) {
           setLocalServiceState({
@@ -134,7 +139,35 @@ export default function SettingsPage() {
             modelId: status.modelId ?? undefined,
             port: typeof status.port === "number" ? status.port : undefined,
             startedAt: typeof status.startedAt === "number" ? status.startedAt : undefined,
-            message: undefined,
+            message: typeof status.message === "string" ? status.message : undefined,
+            logs:
+              status.logs && typeof status.logs === "object"
+                ? {
+                    stdout: Array.isArray(status.logs.stdout)
+                      ? (status.logs.stdout as unknown[]).map((entry) => String(entry))
+                      : [],
+                    stderr: Array.isArray(status.logs.stderr)
+                      ? (status.logs.stderr as unknown[]).map((entry) => String(entry))
+                      : [],
+                  }
+                : undefined,
+            lastExit:
+              status.lastExit && typeof status.lastExit === "object"
+                ? {
+                    code:
+                      typeof status.lastExit.code === "number" || status.lastExit.code === null
+                        ? (status.lastExit.code as number | null)
+                        : null,
+                    signal:
+                      typeof status.lastExit.signal === "string"
+                        ? (status.lastExit.signal as string)
+                        : null,
+                    at:
+                      typeof status.lastExit.at === "number"
+                        ? (status.lastExit.at as number)
+                        : undefined,
+                  }
+                : undefined,
           });
         } else {
           setLocalServiceState({ state: "stopped" });
@@ -200,6 +233,9 @@ export default function SettingsPage() {
           modelId?: string;
           port?: number;
           startedAt?: number;
+          message?: string;
+          logs?: { stdout?: unknown; stderr?: unknown } | null;
+          lastExit?: { code?: unknown; signal?: unknown; at?: unknown } | null;
         } | null;
         if (status) {
           setLocalServiceState({
@@ -207,6 +243,35 @@ export default function SettingsPage() {
             modelId: status.modelId ?? settings.local.modelId,
             port: typeof status.port === "number" ? status.port : undefined,
             startedAt: typeof status.startedAt === "number" ? status.startedAt : undefined,
+            message: typeof status.message === "string" ? status.message : undefined,
+            logs:
+              status.logs && typeof status.logs === "object"
+                ? {
+                    stdout: Array.isArray(status.logs.stdout)
+                      ? (status.logs.stdout as unknown[]).map((entry) => String(entry))
+                      : [],
+                    stderr: Array.isArray(status.logs.stderr)
+                      ? (status.logs.stderr as unknown[]).map((entry) => String(entry))
+                      : [],
+                  }
+                : undefined,
+            lastExit:
+              status.lastExit && typeof status.lastExit === "object"
+                ? {
+                    code:
+                      typeof status.lastExit.code === "number" || status.lastExit.code === null
+                        ? (status.lastExit.code as number | null)
+                        : null,
+                    signal:
+                      typeof status.lastExit.signal === "string"
+                        ? (status.lastExit.signal as string)
+                        : null,
+                    at:
+                      typeof status.lastExit.at === "number"
+                        ? (status.lastExit.at as number)
+                        : undefined,
+                  }
+                : undefined,
           });
           await refreshLocalServiceStatus();
         } else {
@@ -525,6 +590,27 @@ export default function SettingsPage() {
       ? "text-indigo-300"
       : "text-slate-300/80";
 
+  const lastExitSummary = useMemo(() => {
+    const exit = localServiceState.lastExit;
+    if (!exit) return null;
+    const parts: string[] = [];
+    if (typeof exit.code === "number") {
+      parts.push(`code ${exit.code}`);
+    }
+    if (exit.signal) {
+      parts.push(`signal ${exit.signal}`);
+    }
+    const time = typeof exit.at === "number" ? new Date(exit.at).toLocaleTimeString() : null;
+    if (!parts.length && !time) return null;
+    if (parts.length && time) {
+      return `Last exit (${parts.join(", ")}) at ${time}.`;
+    }
+    if (parts.length) {
+      return `Last exit (${parts.join(", ")}).`;
+    }
+    return time ? `Last exit at ${time}.` : null;
+  }, [localServiceState.lastExit]);
+
   const serviceMessage = (() => {
     switch (localServiceState.state) {
       case "running": {
@@ -541,7 +627,7 @@ export default function SettingsPage() {
       case "starting":
         return "Starting the local model service…";
       case "stopped":
-        return "Service is currently stopped.";
+        return localServiceState.message || "Service is currently stopped.";
       case "error":
         return localServiceState.message || "Unable to reach the local model service.";
       case "unknown":
@@ -891,6 +977,31 @@ export default function SettingsPage() {
                     )}
                   </div>
                   <p className={`text-xs ${serviceTone}`}>{serviceMessage}</p>
+                  {localServiceState.logs &&
+                    (localServiceState.logs.stdout.length > 0 || localServiceState.logs.stderr.length > 0) &&
+                    localServiceState.state !== "running" && (
+                      <div className="space-y-3 rounded-xl border border-white/5 bg-slate-950/60 p-3">
+                        {lastExitSummary && (
+                          <p className="text-[11px] text-slate-400">{lastExitSummary}</p>
+                        )}
+                        {localServiceState.logs.stdout.length > 0 && (
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">Stdout tail</p>
+                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-slate-300/80">
+                              {localServiceState.logs.stdout.join("\n")}
+                            </pre>
+                          </div>
+                        )}
+                        {localServiceState.logs.stderr.length > 0 && (
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-rose-300/90">Stderr tail</p>
+                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-rose-200/80">
+                              {localServiceState.logs.stderr.join("\n")}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    )}
                 </div>
               </div>
               {localCheckStatus === "success" ? (
