@@ -433,28 +433,28 @@ def build_local_vlm_call(
         messages.append({"role": "user", "content": user_content})
 
         try:
-            token_inputs = processor.apply_chat_template(
+            prompt_text = processor.apply_chat_template(
                 messages,
-                tokenize=True,
+                tokenize=False,
                 add_generation_prompt=True,
-                return_dict=True,
-                return_tensors="pt",
             )
         except Exception as exc:
-            raise RuntimeError(f"Failed to tokenize prompt for {image_path}: {exc}") from exc
+            raise RuntimeError(f"Failed to compose prompt for {image_path}: {exc}") from exc
+
+        try:
+            token_inputs = processor(
+                images=[image],
+                text=prompt_text,
+                return_tensors="pt",
+                padding=True,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Failed to encode image for {image_path}: {exc}") from exc
 
         if hasattr(token_inputs, "to"):
             token_inputs = token_inputs.to(target_device)
         if not isinstance(token_inputs, dict):
             token_inputs = dict(token_inputs)
-
-        try:
-            vision_inputs = processor(images=[image], return_tensors="pt")
-        except Exception as exc:
-            raise RuntimeError(f"Failed to encode image for {image_path}: {exc}") from exc
-
-        for key, value in vision_inputs.items():
-            token_inputs.setdefault(key, value)
 
         inputs = move_batch(token_inputs)
 
