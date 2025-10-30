@@ -29,8 +29,17 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 # Constants
 # --------------------------
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
-DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen3-VL-2B-Instruct"
 HF_ROUTER_BASE = "https://router.huggingface.co"  # kept for generic HTTP path if you ever need it
+DEFAULT_LOCAL_MAX_NEW_TOKENS = 512
+
+BASE_EXTRACTION_PROMPT = (
+    "You are given a shipping/order IMAGE and its OCR transcript.\n"
+    "Extract all the key values and return two JSON bodies.\n"
+    "1. A JSON (\"all_key_values\") containing all the key values on the order sheet without missing any.\n"
+    "2. A JSON (\"selected_key_values\") returning these key values: Destination, Item Name, Tracking/Order ID, Truck Number, Ship Date, Expected Departure Time, Origin.\n"
+    "Respond with a single JSON object that includes both keys. Do not wrap the output in code fences."
+)
 
 # --------------------------
 # Config helpers
@@ -199,13 +208,7 @@ def build_vlm_messages(
     system_prompt: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     img_b64 = encode_image_to_base64(image_path)
-    instruction = (
-        "You are given a shipping/order IMAGE and its OCR transcript.\n"
-        "Extract all the key values and return two JSON bodies.\n"
-        "1. A JSON (\"all_key_values\") containing all the key values on the order sheet without missing any.\n"
-        "2. A JSON (\"selected_key_values\") returning these key values: Destination, Item Name, Tracking/Order ID, Truck Number, Ship Date, Expected Departure Time, Origin.\n"
-        "Respond with a single JSON object that includes both keys. Do not wrap the output in code fences."
-    )
+    instruction = BASE_EXTRACTION_PROMPT
     user_content = [
         {"type": "text", "text": instruction},
         {"type": "image_url", "image_url": {"url": img_b64}},
@@ -227,6 +230,222 @@ def build_vlm_messages(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_content})
     return messages
+
+def parse_bool(value: Optional[str], default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+def compose_prompt_text(system_prompt: Optional[str], ocr_txt: Optional[str]) -> str:
+    parts: List[str] = []
+    if isinstance(system_prompt, str):
+        stripped = system_prompt.strip()
+        if stripped:
+            parts.append(stripped)
+    parts.append(BASE_EXTRACTION_PROMPT)
+    cleaned_txt = (ocr_txt or "").strip()
+    if cleaned_txt:
+        parts.append("OCR_TEXT_BEGIN\n" + cleaned_txt + "\nOCR_TEXT_END")
+    else:
+        parts.append(
+            "No OCR transcript is available. Use the visual content of the image to extract header key/value pairs."
+        )
+    parts.append("OUTPUT: JSON only.")
+    return "\n\n".join(parts)
+
+def build_local_vlm_call(
+    model_id: str,
+    dtype: str,
+    device_map: str,
+    max_new_tokens: int,
+    attn_impl: Optional[str],
+    system_prompt: Optional[str],
+) -> Callable[[str, Optional[str]], str]:
+    try:
+        import torch
+    except ImportError as ie:
+        raise RuntimeError(
+            "torch is required for local VLM execution. Install with: pip install torch"
+        ) from ie
+
+    try:
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoModelForVision2Seq,
+            AutoProcessor,
+        )
+    except ImportError as ie:
+        raise RuntimeError(
+            "transformers is required for local VLM execution. Install with: pip install transformers"
+        ) from ie
+
+    try:
+        from PIL import Image
+    except ImportError as ie:
+        raise RuntimeError(
+            "Pillow is required for local VLM execution. Install with: pip install pillow"
+        ) from ie
+
+    try:
+        from transformers import Qwen2VLForConditionalGeneration  # type: ignore
+    except ImportError:
+        Qwen2VLForConditionalGeneration = None  # type: ignore
+
+    try:
+        from transformers import Qwen3VLForConditionalGeneration  # type: ignore
+    except ImportError:
+        Qwen3VLForConditionalGeneration = None  # type: ignore
+
+    normalized_model = (model_id or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    dtype_key = (dtype or "auto").strip().lower()
+    dtype_mapping: Dict[str, Any] = {
+        "auto": "auto",
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "half": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+    }
+    torch_dtype = dtype_mapping.get(dtype_key, "auto")
+    if torch_dtype == "auto" and dtype_key not in {"auto", ""}:
+        print(f"[warn] Unsupported dtype '{dtype}'. Falling back to auto.", file=sys.stderr)
+
+    device_map_clean = (device_map or "auto").strip() or "auto"
+    attn_impl_clean = (attn_impl or "").strip()
+    tokens = max(1, int(max_new_tokens or DEFAULT_LOCAL_MAX_NEW_TOKENS))
+
+    loaders: List[Any] = []
+    lowered = normalized_model.lower()
+    if "qwen3" in lowered and Qwen3VLForConditionalGeneration is not None:
+        loaders.append(Qwen3VLForConditionalGeneration)
+    if "qwen2" in lowered and Qwen2VLForConditionalGeneration is not None:
+        loaders.append(Qwen2VLForConditionalGeneration)
+    for candidate in (AutoModelForVision2Seq, AutoModelForCausalLM):
+        if candidate is not None and candidate not in loaders:
+            loaders.append(candidate)
+
+    if not loaders:
+        raise RuntimeError("No suitable model loader available from transformers.")
+
+    def attempt_load(loader: Any) -> Any:
+        base_kwargs: Dict[str, Any] = {"trust_remote_code": True}
+        if device_map_clean:
+            base_kwargs["device_map"] = device_map_clean
+        if torch_dtype != "auto":
+            base_kwargs["torch_dtype"] = torch_dtype
+        if attn_impl_clean:
+            base_kwargs["attn_implementation"] = attn_impl_clean
+
+        try:
+            return loader.from_pretrained(normalized_model, **base_kwargs)
+        except TypeError as exc:
+            msg = str(exc).lower()
+            adjusted = dict(base_kwargs)
+            if "attn_implementation" in adjusted and "attn_implementation" in msg:
+                adjusted.pop("attn_implementation", None)
+                return loader.from_pretrained(normalized_model, **adjusted)
+            if "device_map" in adjusted and "device_map" in msg:
+                device_hint = adjusted.pop("device_map", None)
+                model = loader.from_pretrained(normalized_model, **adjusted)
+                if device_hint and device_hint not in {"auto", ""}:
+                    try:
+                        model.to(device_hint)
+                    except Exception:
+                        pass
+                return model
+            raise
+
+    last_error: Optional[Exception] = None
+    model = None
+    for loader in loaders:
+        try:
+            model = attempt_load(loader)
+            break
+        except Exception as exc:  # pragma: no cover - debugging helper
+            last_error = exc
+            continue
+
+    if model is None:
+        detail = f": {last_error}" if last_error else ""
+        raise RuntimeError(f"Failed to load local model '{normalized_model}'{detail}")
+
+    model.eval()
+
+    processor = AutoProcessor.from_pretrained(normalized_model, trust_remote_code=True)
+    tokenizer = getattr(processor, "tokenizer", None)
+    if tokenizer is not None and getattr(tokenizer, "pad_token_id", None) is None:
+        eos_id = getattr(tokenizer, "eos_token_id", None)
+        if eos_id is not None:
+            tokenizer.pad_token_id = eos_id
+
+    try:
+        first_param = next(model.parameters())
+        target_device = first_param.device
+    except StopIteration:
+        target_device = torch.device(device_map_clean if device_map_clean else "cpu")
+    except Exception:
+        target_device = torch.device("cpu")
+
+    prompt_cache = system_prompt
+
+    def move_batch(batch: Any) -> Any:
+        if hasattr(batch, "to"):
+            return batch.to(target_device)
+        if isinstance(batch, dict):
+            return {k: move_batch(v) for k, v in batch.items()}
+        return batch
+
+    def local_vlm(image_path: str, ocr_txt: Optional[str]) -> str:
+        prompt = compose_prompt_text(prompt_cache, ocr_txt)
+        try:
+            with Image.open(image_path) as img:
+                image = img.convert("RGB")
+                inputs = processor(text=prompt, images=[image], return_tensors="pt")
+        except Exception as exc:
+            raise RuntimeError(f"Failed to prepare inputs for {image_path}: {exc}") from exc
+
+        inputs = move_batch(inputs)
+
+        try:
+            with torch.no_grad():
+                generated = model.generate(**inputs, max_new_tokens=tokens)
+        except Exception as exc:
+            raise RuntimeError(f"Generation failed: {exc}") from exc
+
+        input_ids = inputs.get("input_ids") if isinstance(inputs, dict) else getattr(inputs, "input_ids", None)
+        trimmed_sequences: List[Any] = []
+
+        if isinstance(generated, torch.Tensor):
+            generated_cpu = generated.detach().to("cpu")
+            if input_ids is not None:
+                input_cpu = input_ids.detach().to("cpu")
+                for in_ids, out_ids in zip(input_cpu, generated_cpu):
+                    trimmed_sequences.append(out_ids[len(in_ids) :])
+            else:
+                trimmed_sequences = [seq for seq in generated_cpu]
+        else:
+            trimmed_sequences = list(generated)
+
+        try:
+            decoded = processor.batch_decode(
+                trimmed_sequences,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Decoding failed: {exc}") from exc
+
+        if not decoded:
+            return ""
+        return decoded[0].strip()
+
+    return local_vlm
 
 # --------------------------
 # Provider-dispatched VLM call
@@ -773,6 +992,7 @@ def main():
     ap.add_argument("--hf_token", default=None, help="HF token (else env HF_TOKEN)")
     ap.add_argument("--provider", default="", help="Inference provider id (HF router provider name)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help="Model id or deployment (provider-specific)")
+    ap.add_argument("--mode", choices=["remote", "local"], default=None, help="Force execution mode (defaults to VLM_MODE)")
     ap.add_argument("--no_normalize_dates", action="store_true", help="Disable date zero-padding normalization")
     args = ap.parse_args()
 
@@ -827,6 +1047,62 @@ def main():
     system_prompt = defaults.get("systemPrompt") if isinstance(defaults.get("systemPrompt"), str) else None
     if isinstance(system_prompt, str):
         os.environ["OCR_SYSTEM_PROMPT"] = system_prompt
+
+    env_system_prompt = os.environ.get("OCR_SYSTEM_PROMPT")
+    if isinstance(env_system_prompt, str):
+        system_prompt = env_system_prompt
+
+    cli_mode = (args.mode or "").strip().lower()
+    env_mode = (os.environ.get("VLM_MODE") or "").strip().lower()
+    mode = "remote"
+    if cli_mode in {"local", "remote"}:
+        mode = cli_mode
+    if env_mode in {"local", "remote"}:
+        mode = env_mode
+
+    if mode == "local":
+        model_hint = (os.environ.get("OCR_LOCAL_MODEL_ID") or args.model or DEFAULT_MODEL).strip()
+        local_model = model_hint or DEFAULT_MODEL
+        dtype = os.environ.get("OCR_LOCAL_DTYPE") or "auto"
+        device_map = os.environ.get("OCR_LOCAL_DEVICE_MAP") or "auto"
+        attn_impl_env = os.environ.get("OCR_LOCAL_ATTN_IMPLEMENTATION") or os.environ.get("OCR_LOCAL_ATTN_IMPL")
+        flash_flag = os.environ.get("OCR_LOCAL_FLASH_ATTENTION")
+        if parse_bool(flash_flag, False) and not attn_impl_env:
+            attn_impl_env = "flash_attention_2"
+        max_tokens_env = os.environ.get("OCR_LOCAL_MAX_NEW_TOKENS")
+        try:
+            max_tokens = int(max_tokens_env) if max_tokens_env not in {None, ""} else DEFAULT_LOCAL_MAX_NEW_TOKENS
+        except Exception:
+            max_tokens = DEFAULT_LOCAL_MAX_NEW_TOKENS
+
+        try:
+            vlm_call = build_local_vlm_call(local_model, dtype, device_map, max_tokens, attn_impl_env, system_prompt)
+        except RuntimeError as exc:
+            sys.exit(f"[FATAL] {exc}")
+
+        print(f"[info] Local VLM model: {local_model}")
+
+        safe_mkdir(args.out_dir)
+        normalize_dates = not args.no_normalize_dates
+
+        if args.image:
+            p = Path(args.image)
+            if not p.exists():
+                sys.exit(f"[FATAL] Image not found: {p}")
+            print(f"[proc] {p.name}")
+            rec = process_one(vlm_call, str(p), normalize_dates=normalize_dates, ocr_hint=ocr_hint)
+            write_json_array([rec], str(Path(args.out_dir) / "structured.json"))
+            print(json.dumps(rec, ensure_ascii=False, indent=2))
+            return
+
+        if args.data_dir:
+            if not Path(args.data_dir).exists():
+                sys.exit(f"[FATAL] Folder not found: {args.data_dir}")
+            process_folder(vlm_call, args.data_dir, args.out_dir, normalize_dates, ocr_hint)
+            return
+
+        print("Provide --image or --data_dir")
+        return
 
     # Provider-specific bootstrapping
     if provider_type == "huggingface":

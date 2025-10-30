@@ -87,4 +87,11 @@ export const DEFAULT_VLM_SETTINGS: VlmSettings = {
       postProcessingTemplate: "",
     },
   },
+  local: {
+    modelId: "Qwen/Qwen3-VL-2B-Instruct",
+    dtype: "auto",
+    deviceMap: "auto",
+    maxNewTokens: 512,
+    enableFlashAttention2: false,
+  },
 };

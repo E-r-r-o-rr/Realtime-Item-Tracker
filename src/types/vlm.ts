@@ -129,7 +129,16 @@ export interface VlmRemoteSettings {
   ocr: VlmOcrTuning;
 }
 
+export interface VlmLocalSettings {
+  modelId: string;
+  dtype: string;
+  deviceMap: string;
+  maxNewTokens: number;
+  enableFlashAttention2: boolean;
+}
+
 export interface VlmSettings {
   mode: VlmMode;
   remote: VlmRemoteSettings;
+  local: VlmLocalSettings;
 }

@@ -20,7 +20,8 @@ export type OcrExtractionResult = {
   error?: string;
 };
 
-const DEFAULT_MODEL = process.env.OCR_MODEL || 'Qwen/Qwen2-VL-2B-Instruct';
+const DEFAULT_MODEL = process.env.OCR_MODEL || 'Qwen/Qwen3-VL-2B-Instruct';
+const DEFAULT_LOCAL_MAX_NEW_TOKENS = 512;
 
 // Prefer explicit venv python; fall back to system python
 const PY_BIN =
@@ -187,9 +188,9 @@ function deriveOcrErrorMessage(stdout: string, stderr: string, code?: number): s
 export async function extractKvPairs(filePath: string): Promise<OcrExtractionResult> {
   const vlmSettings = loadPersistedVlmSettings();
   const configuredModel =
-    vlmSettings.mode === 'remote' && vlmSettings.remote.modelId
-      ? vlmSettings.remote.modelId
-      : DEFAULT_MODEL;
+    vlmSettings.mode === 'remote'
+      ? vlmSettings.remote.modelId?.trim() || DEFAULT_MODEL
+      : vlmSettings.local?.modelId?.trim() || DEFAULT_MODEL;
 
   const providerInfo: VlmProviderInfo = {
     mode: vlmSettings.mode,
@@ -241,6 +242,11 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     env.OCR_RETRY_MAX = String(vlmSettings.remote.retryPolicy.maxRetries);
     env.OCR_STREAMING = vlmSettings.remote.defaults.streaming ? '1' : '0';
     env.OCR_SYSTEM_PROMPT = vlmSettings.remote.defaults.systemPrompt || '';
+    delete env.OCR_LOCAL_MODEL_ID;
+    delete env.OCR_LOCAL_DTYPE;
+    delete env.OCR_LOCAL_DEVICE_MAP;
+    delete env.OCR_LOCAL_MAX_NEW_TOKENS;
+    delete env.OCR_LOCAL_FLASH_ATTENTION;
     if (vlmSettings.remote.authScheme !== 'none' && vlmSettings.remote.apiKey) {
       const header = vlmSettings.remote.authHeaderName.toLowerCase();
       if (
@@ -252,6 +258,26 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     }
   } else {
     delete env.VLM_REMOTE_CONFIG;
+    delete env.OCR_REQUEST_TIMEOUT_MS;
+    delete env.OCR_RETRY_MAX;
+    delete env.OCR_STREAMING;
+    delete env.HF_TOKEN;
+
+    const local = vlmSettings.local;
+    env.OCR_LOCAL_MODEL_ID = configuredModel;
+    if (local.dtype) {
+      env.OCR_LOCAL_DTYPE = local.dtype;
+    } else {
+      delete env.OCR_LOCAL_DTYPE;
+    }
+    if (local.deviceMap) {
+      env.OCR_LOCAL_DEVICE_MAP = local.deviceMap;
+    } else {
+      delete env.OCR_LOCAL_DEVICE_MAP;
+    }
+    env.OCR_LOCAL_MAX_NEW_TOKENS = String(local.maxNewTokens || DEFAULT_LOCAL_MAX_NEW_TOKENS);
+    env.OCR_LOCAL_FLASH_ATTENTION = local.enableFlashAttention2 ? '1' : '0';
+    env.OCR_SYSTEM_PROMPT = vlmSettings.remote.defaults.systemPrompt || '';
   }
 
   let timer: NodeJS.Timeout | null = null;

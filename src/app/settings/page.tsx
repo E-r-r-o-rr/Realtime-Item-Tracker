@@ -14,6 +14,19 @@ const providerOptions: Array<{ value: VlmProviderType; label: string }> = [
   { value: "generic-http", label: "Generic HTTP (Custom)" },
 ];
 
+const dtypeOptions: Array<{ value: string; label: string }> = [
+  { value: "auto", label: "Auto" },
+  { value: "bfloat16", label: "bfloat16" },
+  { value: "float16", label: "float16" },
+  { value: "float32", label: "float32" },
+];
+
+const deviceMapOptions: Array<{ value: string; label: string }> = [
+  { value: "auto", label: "Auto" },
+  { value: "cuda", label: "CUDA" },
+  { value: "cpu", label: "CPU" },
+];
+
 const sectionTitleClass = "text-sm font-semibold uppercase tracking-wide text-slate-300";
 const fieldLabelClass = "text-sm font-medium text-slate-200";
 const fieldDescriptionClass = "text-xs text-slate-400";
@@ -146,6 +159,12 @@ export default function SettingsPage() {
     });
   };
 
+  const handleLocalChange = <K extends keyof VlmSettings["local"]>(key: K, value: VlmSettings["local"][K]) => {
+    updateSettings((draft) => {
+      (draft.local as any)[key] = value;
+    });
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setStatusMessage(null);
@@ -232,6 +251,7 @@ export default function SettingsPage() {
   }, []);
 
   const remote = settings.remote;
+  const local = settings.local;
   const providerType = remote.providerType;
   const baseUrlDisabled = providerType === "huggingface";
   const baseUrlPlaceholder =
@@ -492,6 +512,111 @@ export default function SettingsPage() {
                   </span>
                 )}
               </div>
+            </section>
+          )}
+          {settings.mode === "local" && (
+            <section className="space-y-5 rounded-2xl border border-white/10 bg-white/5 p-5">
+              <div className="space-y-2">
+                <p className="text-lg font-semibold text-slate-100">Local runtime configuration</p>
+                <p className="text-sm text-slate-300/80">
+                  Select the model to load on this workstation and tune how the bundled Python pipeline executes it.
+                </p>
+              </div>
+              <div className="grid gap-5 md:grid-cols-2">
+                <div className="space-y-2">
+                  <label className={fieldLabelClass} htmlFor="local-model-id">
+                    Model repository
+                  </label>
+                  <Input
+                    id="local-model-id"
+                    placeholder="Qwen/Qwen3-VL-2B-Instruct"
+                    value={local.modelId}
+                    onChange={(event) => handleLocalChange("modelId", event.target.value)}
+                    spellCheck={false}
+                  />
+                  <p className={fieldDescriptionClass}>
+                    Provide the Hugging Face repo ID to load locally. Ensure the weights are downloaded before scanning.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <label className={fieldLabelClass} htmlFor="local-dtype">
+                    Compute dtype
+                  </label>
+                  <select
+                    id="local-dtype"
+                    className={selectClass}
+                    value={local.dtype}
+                    onChange={(event) => handleLocalChange("dtype", event.target.value)}
+                  >
+                    {dtypeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className={fieldDescriptionClass}>Use bfloat16/float16 for accelerated GPU inference when supported.</p>
+                </div>
+                <div className="space-y-2">
+                  <label className={fieldLabelClass} htmlFor="local-device-map">
+                    Device map
+                  </label>
+                  <select
+                    id="local-device-map"
+                    className={selectClass}
+                    value={local.deviceMap}
+                    onChange={(event) => handleLocalChange("deviceMap", event.target.value)}
+                  >
+                    {deviceMapOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className={fieldDescriptionClass}>
+                    "Auto" lets Transformers place layers across available devices. Use "cuda" or "cpu" to force a target.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <label className={fieldLabelClass} htmlFor="local-max-new-tokens">
+                    Max new tokens
+                  </label>
+                  <Input
+                    id="local-max-new-tokens"
+                    type="number"
+                    min={64}
+                    max={4096}
+                    step={32}
+                    value={local.maxNewTokens}
+                    onChange={(event) => {
+                      const parsed = Number.parseInt(event.target.value, 10);
+                      handleLocalChange(
+                        "maxNewTokens",
+                        Number.isFinite(parsed) ? Math.max(64, parsed) : local.maxNewTokens,
+                      );
+                    }}
+                  />
+                  <p className={fieldDescriptionClass}>Controls how much text the model can emit for each scan.</p>
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <label className={`${fieldLabelClass} flex items-center gap-3`} htmlFor="local-flash-attn">
+                    <input
+                      id="local-flash-attn"
+                      type="checkbox"
+                      checked={local.enableFlashAttention2}
+                      onChange={(event) => handleLocalChange("enableFlashAttention2", event.target.checked)}
+                      className="h-4 w-4 rounded border border-white/20 bg-slate-900/60 text-indigo-400 focus:ring-2 focus:ring-indigo-400"
+                    />
+                    Enable FlashAttention 2
+                  </label>
+                  <p className={fieldDescriptionClass}>
+                    Requires a compatible GPU and recent PyTorch/Transformers builds. Disable if you encounter kernel errors.
+                  </p>
+                </div>
+              </div>
+              <p className={fieldDescriptionClass}>
+                The scanner will launch the Python OCR script with these parameters. Adjust them to match your workstation's
+                hardware and model preferences.
+              </p>
             </section>
           )}
           {settings.mode === "local" && (
