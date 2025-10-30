@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import signal
 import sys
 import tempfile
@@ -33,6 +34,28 @@ try:  # pragma: no cover - optional import
     from huggingface_hub import snapshot_download
 except Exception:  # pragma: no cover - optional import
     snapshot_download = None
+
+
+# Clear legacy CUDA allocator tweaks that can prevent large models from loading
+# on Windows installs when users experimented with PyTorch settings earlier.
+os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+
+
+def _prefer_flash_attention() -> None:  # pragma: no cover - hardware dependent
+    try:
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+
+        sdpa_kernel(SDPBackend.FLASH_ATTENTION)
+    except Exception:
+        try:
+            from torch.backends.cuda import sdp_kernel
+
+            sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False)
+        except Exception:
+            pass
+
+
+_prefer_flash_attention()
 
 
 KEEPALIVE_IMAGE_B64 = (
@@ -85,7 +108,7 @@ def load_model(model_id: str, device: str | None, dtype: str | None):
         load_kwargs["device_map"] = "auto"
 
     model = Qwen3VLForConditionalGeneration.from_pretrained(model_id, **load_kwargs)
-    processor = AutoProcessor.from_pretrained(model_id)
+    processor = AutoProcessor.from_pretrained(model_id, local_files_only=True)
     return model, processor
 
 

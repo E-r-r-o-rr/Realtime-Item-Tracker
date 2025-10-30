@@ -4,7 +4,7 @@ import path from "path";
 
 import { DEFAULT_VLM_SETTINGS } from "@/config/vlm";
 
-export type LocalRunnerStatus = "stopped" | "starting" | "running" | "stopping" | "error";
+export type LocalRunnerStatus = "stopped" | "checking" | "starting" | "running" | "stopping" | "error";
 
 export interface LocalRunnerState {
   status: LocalRunnerStatus;
@@ -12,10 +12,12 @@ export interface LocalRunnerState {
   message: string;
   error: string | null;
   updatedAt: number;
+  installed: boolean | null;
 }
 
 const statusMessages: Record<Exclude<LocalRunnerStatus, "error">, string> = {
   stopped: "Local service is stopped.",
+  checking: "Checking local model files…",
   starting: "Starting local service…",
   running: "Local service is running.",
   stopping: "Stopping local service…",
@@ -31,6 +33,7 @@ const applyDefaults = (state: LocalRunnerState): LocalRunnerState => {
     ...state,
     message: state.message || statusMessages[state.status],
     error: null,
+    installed: state.installed ?? currentState.installed ?? null,
   };
 };
 
@@ -61,6 +64,7 @@ let currentState: LocalRunnerState = {
   message: statusMessages.stopped,
   error: null,
   updatedAt: Date.now(),
+  installed: null,
 };
 
 const updateState = (next: Partial<LocalRunnerState>): LocalRunnerState => {
@@ -103,8 +107,11 @@ const parseRunnerEvent = (line: string): Record<string, unknown> | null => {
   }
 };
 
-const setErrorState = (message: string, modelId: string | null = null) =>
-  updateState({ status: "error", message, error: message, modelId });
+const setErrorState = (
+  message: string,
+  modelId: string | null = null,
+  installed: boolean | null = currentState.installed ?? null,
+) => updateState({ status: "error", message, error: message, modelId, installed });
 
 const ensureRunnerScript = () => {
   if (!fs.existsSync(RUNNER_SCRIPT)) {
@@ -159,6 +166,41 @@ const ensureModelInstalled = async (modelId: string) => {
   throw new Error(message.trim());
 };
 
+export const checkLocalModelAvailability = async (modelId: string): Promise<LocalRunnerState> => {
+  const trimmed = modelId?.trim();
+  if (!trimmed) {
+    throw new Error("Model ID is required to check local availability.");
+  }
+
+  updateState({
+    status: "checking",
+    modelId: trimmed,
+    message: `Checking local files for ${trimmed}…`,
+    installed: null,
+  });
+
+  try {
+    await ensureModelInstalled(trimmed);
+  } catch (error: any) {
+    const message = error instanceof Error ? error.message : INSTALL_GUIDE(trimmed);
+    updateState({
+      status: "error",
+      modelId: trimmed,
+      message,
+      error: message,
+      installed: false,
+    });
+    throw new Error(message);
+  }
+
+  return updateState({
+    status: "stopped",
+    modelId: trimmed,
+    message: `Model \"${trimmed}\" is available locally.`,
+    installed: true,
+  });
+};
+
 const attachRunnerListeners = (child: ChildProcessWithoutNullStreams, modelId: string) => {
   let buffer = "";
   child.stdout.on("data", (chunk) => {
@@ -176,13 +218,23 @@ const attachRunnerListeners = (child: ChildProcessWithoutNullStreams, modelId: s
 
       switch (type) {
         case "loading":
-          updateState({ status: "starting", modelId, message: message || `Loading ${modelId} locally…` });
+          updateState({
+            status: "starting",
+            modelId,
+            message: message || `Loading ${modelId} locally…`,
+            installed: true,
+          });
           break;
         case "ready":
-          updateState({ status: "running", modelId, message: message || `Local service running with ${modelId}.` });
+          updateState({
+            status: "running",
+            modelId,
+            message: message || `Local service running with ${modelId}.`,
+            installed: true,
+          });
           break;
         case "fatal":
-          setErrorState(error || `Failed to start local model ${modelId}.`, modelId);
+          setErrorState(error || `Failed to start local model ${modelId}.`, modelId, false);
           if (!runnerStopping && runnerProcess) {
             try {
               runnerProcess.kill();
@@ -190,7 +242,7 @@ const attachRunnerListeners = (child: ChildProcessWithoutNullStreams, modelId: s
           }
           break;
         case "missing":
-          setErrorState(error ? `${error} ${INSTALL_GUIDE(modelId)}` : INSTALL_GUIDE(modelId), modelId);
+          setErrorState(error ? `${error} ${INSTALL_GUIDE(modelId)}` : INSTALL_GUIDE(modelId), modelId, false);
           if (runnerProcess) {
             try {
               runnerProcess.kill();
@@ -199,12 +251,22 @@ const attachRunnerListeners = (child: ChildProcessWithoutNullStreams, modelId: s
           break;
         case "shutdown":
           if (!runnerStopping) {
-            updateState({ status: "stopping", modelId, message: "Local runner shutting down…" });
+            updateState({
+              status: "stopping",
+              modelId,
+              message: "Local runner shutting down…",
+              installed: currentState.installed,
+            });
           }
           break;
         case "stopped":
           if (runnerStopping) {
-            updateState({ status: "stopped", modelId: null, message: message || "Local service stopped." });
+            updateState({
+              status: "stopped",
+              modelId: null,
+              message: message || "Local service stopped.",
+              installed: currentState.installed,
+            });
           } else {
             setErrorState(message || "Local runner exited unexpectedly.", modelId);
           }
@@ -233,12 +295,22 @@ const attachRunnerListeners = (child: ChildProcessWithoutNullStreams, modelId: s
 
   child.on("exit", (code, signal) => {
     if (runnerStopping) {
-      updateState({ status: "stopped", modelId: null, message: "Local service stopped." });
+      updateState({
+        status: "stopped",
+        modelId: null,
+        message: "Local service stopped.",
+        installed: currentState.installed,
+      });
     } else if (code !== 0) {
       const reason = signal ? `signal ${signal}` : `code ${code}`;
       setErrorState(`Local runner exited (${reason}).`, modelId);
     } else {
-      updateState({ status: "stopped", modelId: null, message: "Local service stopped." });
+      updateState({
+        status: "stopped",
+        modelId: null,
+        message: "Local service stopped.",
+        installed: currentState.installed,
+      });
     }
     resetRunnerRefs();
   });
@@ -274,17 +346,27 @@ export const startLocalRunner = async (modelId: string): Promise<LocalRunnerStat
     await stopLocalRunner();
   }
 
-  updateState({ status: "starting", modelId: trimmed, message: `Checking local files for ${trimmed}…` });
+  updateState({
+    status: "checking",
+    modelId: trimmed,
+    message: `Checking local files for ${trimmed}…`,
+    installed: currentState.installed,
+  });
 
   try {
     await ensureModelInstalled(trimmed);
   } catch (error: any) {
     const message = error instanceof Error ? error.message : INSTALL_GUIDE(trimmed);
-    setErrorState(message, trimmed);
+    setErrorState(message, trimmed, false);
     throw new Error(message);
   }
 
-  updateState({ status: "starting", modelId: trimmed, message: `Loading ${trimmed} locally…` });
+  updateState({
+    status: "starting",
+    modelId: trimmed,
+    message: `Loading ${trimmed} locally…`,
+    installed: true,
+  });
 
   ensureRunnerScript();
   runnerStopping = false;
@@ -303,10 +385,10 @@ export const startLocalRunner = async (modelId: string): Promise<LocalRunnerStat
 
 export const stopLocalRunner = async (): Promise<LocalRunnerState> => {
   if (currentState.status === "stopped") {
-    return updateState({ message: "Local service already stopped.", modelId: null });
+    return updateState({ message: "Local service already stopped.", modelId: null, installed: currentState.installed });
   }
 
-  updateState({ status: "stopping", message: "Stopping local service…" });
+  updateState({ status: "stopping", message: "Stopping local service…", installed: currentState.installed });
 
   if (runnerProcess) {
     runnerStopping = true;
@@ -324,7 +406,12 @@ export const stopLocalRunner = async (): Promise<LocalRunnerState> => {
   }
 
   resetRunnerRefs();
-  return updateState({ status: "stopped", modelId: null, message: "Local service stopped." });
+  return updateState({
+    status: "stopped",
+    modelId: null,
+    message: "Local service stopped.",
+    installed: currentState.installed,
+  });
 };
 
 export const markLocalRunnerError = (message: string): LocalRunnerState => {
@@ -334,6 +421,7 @@ export const markLocalRunnerError = (message: string): LocalRunnerState => {
     message,
     error: message,
     updatedAt: Date.now(),
+    installed: false,
   };
   return cloneState(currentState);
 };
