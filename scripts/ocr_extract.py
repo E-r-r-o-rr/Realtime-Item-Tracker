@@ -1030,6 +1030,7 @@ def main():
     ap.add_argument("--provider", default="", help="Inference provider id (HF router provider name)")
     ap.add_argument("--model", default=DEFAULT_MODEL, help="Model id or deployment (provider-specific)")
     ap.add_argument("--mode", choices=["remote", "local"], default=None, help="Force execution mode (defaults to VLM_MODE)")
+    ap.add_argument("--check_model", action="store_true", help="Only verify the local model cache and exit")
     ap.add_argument("--no_normalize_dates", action="store_true", help="Disable date zero-padding normalization")
     args = ap.parse_args()
 
@@ -1097,6 +1098,9 @@ def main():
     if env_mode in {"local", "remote"}:
         mode = env_mode
 
+    if args.check_model and mode != "local":
+        sys.exit("[FATAL] Local model availability checks require mode=local")
+
     if mode == "local":
         model_hint = (os.environ.get("OCR_LOCAL_MODEL_ID") or args.model or DEFAULT_MODEL).strip()
         local_model = model_hint or DEFAULT_MODEL
@@ -1111,6 +1115,15 @@ def main():
             max_tokens = int(max_tokens_env) if max_tokens_env not in {None, ""} else DEFAULT_LOCAL_MAX_NEW_TOKENS
         except Exception:
             max_tokens = DEFAULT_LOCAL_MAX_NEW_TOKENS
+
+        if args.check_model:
+            try:
+                ensure_local_model_available(local_model)
+            except RuntimeError as exc:
+                sys.exit(f"[FATAL] {exc}")
+
+            print(f"[ok] Local cache confirmed for {local_model}")
+            return
 
         try:
             ensure_local_model_available(local_model)
