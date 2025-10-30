@@ -5,7 +5,7 @@ import os from 'os';
 import { randomUUID } from 'crypto';
 
 import { loadPersistedVlmSettings } from './settingsStore';
-import { getLocalRunnerBaseUrl, startLocalRunner } from './localRunner';
+import { startLocalRunner } from './localRunner';
 
 export type VlmProviderInfo = {
   mode: 'remote' | 'local';
@@ -80,7 +80,7 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
 
   const remoteConfigBase: any = JSON.parse(JSON.stringify(vlmSettings.remote || {}));
   let remoteConfigPayload: any = null;
-  let localBaseUrl = '';
+  let localProviderId = '';
 
   if (vlmSettings.mode === 'remote') {
     const providerType = vlmSettings.remote.providerType;
@@ -96,20 +96,15 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     providerInfo.baseUrl = effectiveBase;
     remoteConfigPayload = remoteConfigBase;
   } else {
-    providerInfo.providerType = 'local';
+    providerInfo.providerType = 'local-transformers';
     providerInfo.modelId = configuredModel;
-    localBaseUrl = getLocalRunnerBaseUrl();
-    providerInfo.baseUrl = localBaseUrl;
+    providerInfo.baseUrl = 'local-transformers';
     remoteConfigPayload = {
-      ...remoteConfigBase,
-      providerType: 'openai-compatible',
-      baseUrl: localBaseUrl,
+      providerType: 'local-transformers',
       modelId: configuredModel,
-      authScheme: 'none',
-      authHeaderName: 'Authorization',
-      apiKey: '',
-      extraHeaders: [],
+      defaults: remoteConfigBase?.defaults || vlmSettings.remote?.defaults || {},
     };
+    localProviderId = 'local-transformers';
   }
 
   if (!fs.existsSync(OCR_SCRIPT)) {
@@ -182,6 +177,24 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     }
   } else {
     delete env.HF_TOKEN;
+    env.LOCAL_VLM_MODEL = configuredModel;
+    if (localProviderId) {
+      env.VLM_LOCAL_PROVIDER = localProviderId;
+    } else {
+      delete env.VLM_LOCAL_PROVIDER;
+    }
+    const maxTokens = remoteConfigPayload?.defaults?.maxOutputTokens ?? vlmSettings.remote.defaults?.maxOutputTokens;
+    if (typeof maxTokens === 'number' && maxTokens > 0) {
+      env.LOCAL_VLM_MAX_NEW_TOKENS = String(maxTokens);
+    } else {
+      delete env.LOCAL_VLM_MAX_NEW_TOKENS;
+    }
+  }
+
+  if (vlmSettings.mode === 'remote') {
+    delete env.LOCAL_VLM_MODEL;
+    delete env.LOCAL_VLM_MAX_NEW_TOKENS;
+    delete env.VLM_LOCAL_PROVIDER;
   }
 
   let timer: NodeJS.Timeout | null = null;
