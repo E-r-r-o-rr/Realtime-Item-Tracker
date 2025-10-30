@@ -133,6 +133,7 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     }
   } else {
     delete env.VLM_REMOTE_CONFIG;
+    env.LOCAL_VLM_SYSTEM_PROMPT = vlmSettings.remote.defaults.systemPrompt || '';
   }
 
   let timer: NodeJS.Timeout | null = null;

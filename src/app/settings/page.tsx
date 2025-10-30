@@ -19,10 +19,11 @@ const localModelOptions = [
   { value: "Qwen/Qwen3-VL-4B-Instruct", label: "Qwen/Qwen3-VL-4B-Instruct" },
 ];
 
-type LocalRunnerStatus = "unknown" | "stopped" | "starting" | "running" | "stopping" | "error";
+type LocalRunnerStatus = "unknown" | "checking" | "stopped" | "starting" | "running" | "stopping" | "error";
 
 const localStatusLabels: Record<LocalRunnerStatus, string> = {
   unknown: "Status unknown",
+  checking: "Checking…",
   stopped: "Stopped",
   starting: "Starting…",
   running: "Running",
@@ -57,6 +58,7 @@ export default function SettingsPage() {
   const [testTone, setTestTone] = useState<"idle" | "success" | "error">("idle");
   const [localStatus, setLocalStatus] = useState<LocalRunnerStatus>("unknown");
   const [localStatusMessage, setLocalStatusMessage] = useState<string | null>(null);
+  const [localInstalled, setLocalInstalled] = useState<boolean | null>(null);
   const statusTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const showStatus = (message: string, tone: "info" | "success" | "error" = "info") => {
@@ -76,14 +78,17 @@ export default function SettingsPage() {
         const status = normalizeLocalStatus(payload.status);
         setLocalStatus(status);
         setLocalStatusMessage(payload.message ?? payload.error ?? null);
+        setLocalInstalled(typeof payload.installed === "boolean" ? payload.installed : null);
       } else {
         setLocalStatus("error");
         setLocalStatusMessage(payload.message ?? payload.error ?? "Unable to determine local service status.");
+        setLocalInstalled(null);
       }
     } catch (error) {
       console.error("Failed to load local runner status", error);
       setLocalStatus("error");
       setLocalStatusMessage("Unable to contact local runner status endpoint.");
+      setLocalInstalled(null);
     }
   }, []);
 
@@ -136,6 +141,11 @@ export default function SettingsPage() {
     updateSettings((draft) => {
       draft.mode = mode;
     });
+    if (mode !== "local") {
+      setLocalInstalled(null);
+      setLocalStatus("unknown");
+      setLocalStatusMessage(null);
+    }
   };
 
   const handleProviderTypeChange = (providerType: VlmProviderType) => {
@@ -208,12 +218,67 @@ export default function SettingsPage() {
       }
       draft.local.modelId = value;
     });
+    setLocalInstalled(null);
+    setLocalStatusMessage(null);
+    setLocalStatus((prev) => (prev === "running" ? prev : "stopped"));
   };
 
   const handleLocalModelInputChange = (value: string) => {
     updateSettings((draft) => {
       draft.local.modelId = value;
     });
+    setLocalInstalled(null);
+    setLocalStatusMessage(null);
+    setLocalStatus((prev) => (prev === "running" ? prev : "stopped"));
+  };
+
+  const handleCheckLocalModel = async () => {
+    if (!hasLocalModelId) {
+      const message = "Provide a model ID before checking availability.";
+      setLocalStatus("error");
+      setLocalInstalled(false);
+      setLocalStatusMessage(message);
+      showStatus(message, "error");
+      return;
+    }
+
+    setLocalStatus("checking");
+    setLocalStatusMessage(null);
+    setLocalInstalled(null);
+
+    try {
+      const response = await fetch("/api/vlm/local/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelId: settings.local.modelId }),
+      });
+      const payload = await response.json();
+      const status = normalizeLocalStatus(payload.status);
+      const installed = typeof payload.installed === "boolean" ? payload.installed : null;
+
+      if (!response.ok || payload.ok === false) {
+        const message = payload.message ?? payload.error ?? "Unable to verify local model availability.";
+        setLocalStatus(status === "unknown" ? "error" : status);
+        setLocalInstalled(installed ?? false);
+        setLocalStatusMessage(message);
+        showStatus(message, "error");
+        return;
+      }
+
+      const message = payload.message ?? payload.error ?? "Model is ready on this workstation.";
+      setLocalStatus(status === "unknown" ? "stopped" : status);
+      const resolvedInstalled = installed === true ? true : installed === false ? false : null;
+      setLocalInstalled(resolvedInstalled);
+      setLocalStatusMessage(message);
+      showStatus(message, resolvedInstalled === false ? "error" : "success");
+    } catch (error) {
+      console.error("Failed to check local model availability", error);
+      const message = "Unable to verify the local model. Check server logs.";
+      setLocalStatus("error");
+      setLocalInstalled(false);
+      setLocalStatusMessage(message);
+      showStatus(message, "error");
+    }
   };
 
   const handleStartLocalService = async () => {
@@ -231,17 +296,20 @@ export default function SettingsPage() {
         const message = payload.message ?? payload.error ?? "Unable to start local service.";
         setLocalStatus(status === "unknown" ? "error" : status);
         setLocalStatusMessage(message);
+        setLocalInstalled(typeof payload.installed === "boolean" ? payload.installed : localInstalled);
         showStatus(message, "error");
         return;
       }
       setLocalStatus(status);
       setLocalStatusMessage(payload.message ?? payload.error ?? null);
+      setLocalInstalled(typeof payload.installed === "boolean" ? payload.installed : true);
       showStatus(payload.message ?? "Local VLM service is running.", "success");
       await fetchLocalRunnerStatus();
     } catch (error) {
       console.error("Failed to start local VLM service", error);
       setLocalStatus("error");
       setLocalStatusMessage("Unable to start the local service. Check server logs.");
+      setLocalInstalled(false);
       showStatus("Unable to start the local service. Check server logs.", "error");
     }
   };
@@ -257,17 +325,20 @@ export default function SettingsPage() {
         const message = payload.message ?? payload.error ?? "Unable to stop local service.";
         setLocalStatus(status === "unknown" ? "error" : status);
         setLocalStatusMessage(message);
+        setLocalInstalled(typeof payload.installed === "boolean" ? payload.installed : localInstalled);
         showStatus(message, "error");
         return;
       }
       setLocalStatus(status);
       setLocalStatusMessage(payload.message ?? payload.error ?? null);
+      setLocalInstalled(typeof payload.installed === "boolean" ? payload.installed : localInstalled);
       showStatus(payload.message ?? "Local VLM service stopped.", "success");
       await fetchLocalRunnerStatus();
     } catch (error) {
       console.error("Failed to stop local VLM service", error);
       setLocalStatus("error");
       setLocalStatusMessage("Unable to stop the local service. Check server logs.");
+      setLocalInstalled(localInstalled);
       showStatus("Unable to stop the local service. Check server logs.", "error");
     }
   };
@@ -388,11 +459,15 @@ export default function SettingsPage() {
       ? "text-emerald-300"
       : localStatus === "error"
       ? "text-rose-300"
-      : localStatus === "starting" || localStatus === "stopping"
+      : localStatus === "starting" || localStatus === "stopping" || localStatus === "checking"
       ? "text-amber-200"
       : "text-slate-300/80";
-  const startDisabled = localStatus === "starting" || localStatus === "running" || !hasLocalModelId;
-  const stopDisabled = localStatus === "stopping" || localStatus === "stopped" || localStatus === "starting";
+  const startDisabled =
+    localStatus === "checking" || localStatus === "starting" || localStatus === "running" || !hasLocalModelId || localInstalled !== true;
+  const stopDisabled =
+    localStatus === "checking" || localStatus === "stopping" || localStatus === "stopped" || localStatus === "starting";
+  const checkDisabled =
+    !hasLocalModelId || localStatus === "checking" || localStatus === "starting" || localStatus === "stopping" || localStatus === "running";
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-8 px-4 py-10 sm:px-6 lg:px-8">
@@ -696,11 +771,30 @@ export default function SettingsPage() {
                   <p className={fieldLabelClass}>Service status</p>
                   <p className={`text-sm ${localStatusTextClass}`}>{localStatusText}</p>
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <Button type="button" variant="secondary" onClick={handleStartLocalService} disabled={startDisabled}>
-                    {localStatus === "starting" ? "Starting…" : "Start local service"}
-                  </Button>
-                  <Button
+              <div className="flex flex-wrap items-center gap-3">
+                <Button type="button" variant="secondary" onClick={handleCheckLocalModel} disabled={checkDisabled}>
+                  {localStatus === "checking"
+                    ? "Checking…"
+                    : localInstalled === true
+                    ? "Re-check model"
+                    : "Check model files"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={handleStartLocalService}
+                  disabled={startDisabled}
+                  title={
+                    !hasLocalModelId
+                      ? "Enter a model ID to continue."
+                      : localInstalled === true
+                      ? undefined
+                      : "Check model files before starting the local service."
+                  }
+                >
+                  {localStatus === "starting" ? "Starting…" : "Start local service"}
+                </Button>
+                <Button
                     type="button"
                     variant="outline"
                     className="border-white/10 bg-transparent text-slate-200 hover:border-rose-400/60 hover:bg-rose-500/10 hover:text-rose-200"
