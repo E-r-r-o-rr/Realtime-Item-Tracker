@@ -284,13 +284,6 @@ def build_local_vlm_call(
         ) from ie
 
     try:
-        from PIL import Image
-    except ImportError as ie:
-        raise RuntimeError(
-            "Pillow is required for local VLM execution. Install with: pip install pillow"
-        ) from ie
-
-    try:
         from transformers import Qwen2VLForConditionalGeneration  # type: ignore
     except ImportError:
         Qwen2VLForConditionalGeneration = None  # type: ignore
@@ -396,22 +389,19 @@ def build_local_vlm_call(
 
     def move_batch(batch: Any) -> Any:
         if hasattr(batch, "to"):
-            return batch.to(target_device)
+            try:
+                return batch.to(target_device, non_blocking=True)
+            except TypeError:
+                return batch.to(target_device)
         if isinstance(batch, dict):
             return {k: move_batch(v) for k, v in batch.items()}
         return batch
 
     def local_vlm(image_path: str, ocr_txt: Optional[str]) -> str:
         cleaned_txt = (ocr_txt or "").strip()
-        try:
-            with Image.open(image_path) as img:
-                image = img.convert("RGB")
-        except Exception as exc:
-            raise RuntimeError(f"Failed to prepare inputs for {image_path}: {exc}") from exc
-
-        user_content = [
+        user_content: List[Dict[str, Any]] = [
+            {"type": "image", "image": image_path},
             {"type": "text", "text": BASE_EXTRACTION_PROMPT},
-            {"type": "image", "image": image},
         ]
         if cleaned_txt:
             user_content.append({"type": "text", "text": "OCR_TEXT_BEGIN\n" + cleaned_txt + "\nOCR_TEXT_END"})
@@ -433,30 +423,19 @@ def build_local_vlm_call(
         messages.append({"role": "user", "content": user_content})
 
         try:
-            prompt_text = processor.apply_chat_template(
+            token_inputs = processor.apply_chat_template(
                 messages,
-                tokenize=False,
+                tokenize=True,
                 add_generation_prompt=True,
-            )
-        except Exception as exc:
-            raise RuntimeError(f"Failed to compose prompt for {image_path}: {exc}") from exc
-
-        try:
-            token_inputs = processor(
-                images=[image],
-                text=prompt_text,
+                return_dict=True,
                 return_tensors="pt",
-                padding=True,
             )
         except Exception as exc:
-            raise RuntimeError(f"Failed to encode image for {image_path}: {exc}") from exc
-
-        if hasattr(token_inputs, "to"):
-            token_inputs = token_inputs.to(target_device)
-        if not isinstance(token_inputs, dict):
-            token_inputs = dict(token_inputs)
+            raise RuntimeError(f"Failed to prepare inputs for {image_path}: {exc}") from exc
 
         inputs = move_batch(token_inputs)
+        if not isinstance(inputs, dict):
+            inputs = dict(inputs)
 
         gen_kwargs: Dict[str, Any] = {"max_new_tokens": tokens}
         eos_id = getattr(tokenizer, "eos_token_id", None)
@@ -465,9 +444,11 @@ def build_local_vlm_call(
             gen_kwargs["eos_token_id"] = eos_id
         if pad_id is not None:
             gen_kwargs["pad_token_id"] = pad_id
+        gen_kwargs.setdefault("use_cache", True)
+        gen_kwargs.setdefault("do_sample", False)
 
         try:
-            with torch.no_grad():
+            with torch.inference_mode():
                 generated = model.generate(**inputs, **gen_kwargs)
         except Exception as exc:
             raise RuntimeError(f"Generation failed: {exc}") from exc
