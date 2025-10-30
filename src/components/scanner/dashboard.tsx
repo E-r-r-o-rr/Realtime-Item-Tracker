@@ -265,6 +265,7 @@ interface ProviderInfo {
   modelId?: string;
   baseUrl?: string;
   execution?: ExecutionMode;
+  executionDebug?: string[];
 }
 
 const PROVIDER_TYPE_LABELS: Record<string, string> = {
@@ -354,12 +355,20 @@ const sanitizeProviderInfo = (value: unknown): ProviderInfo | null => {
       ? (rawExecution as ExecutionMode)
       : undefined;
 
+  const rawDebug = raw.executionDebug;
+  const debugEntries = Array.isArray(rawDebug)
+    ? rawDebug
+        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+        .filter((entry): entry is string => entry.length > 0)
+    : undefined;
+
   return {
     mode: normalizedMode,
     providerType: trimString(raw.providerType),
     modelId: trimString(raw.modelId),
     baseUrl: trimString(raw.baseUrl),
     execution: normalizedExecution,
+    executionDebug: debugEntries,
   };
 };
 
@@ -1310,7 +1319,18 @@ export default function ScannerDashboard() {
             </div>
             <div>
               <dt className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-300/70">Execution path</dt>
-              <dd className="mt-1 text-base text-slate-100/90">{describeExecutionMode(vlmInfo)}</dd>
+              <dd className="mt-1 text-base text-slate-100/90">
+                {describeExecutionMode(vlmInfo)}
+                {vlmInfo.executionDebug && vlmInfo.executionDebug.length > 0 && (
+                  <ul className="mt-2 space-y-1 text-xs text-slate-300/80">
+                    {vlmInfo.executionDebug.map((entry, index) => (
+                      <li key={`${entry}-${index}`} className="break-words">
+                        {entry}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </dd>
             </div>
           </dl>
         </div>
