@@ -402,19 +402,73 @@ def build_local_vlm_call(
         return batch
 
     def local_vlm(image_path: str, ocr_txt: Optional[str]) -> str:
-        prompt = compose_prompt_text(prompt_cache, ocr_txt)
+        cleaned_txt = (ocr_txt or "").strip()
         try:
             with Image.open(image_path) as img:
                 image = img.convert("RGB")
-                inputs = processor(text=prompt, images=[image], return_tensors="pt")
         except Exception as exc:
             raise RuntimeError(f"Failed to prepare inputs for {image_path}: {exc}") from exc
 
-        inputs = move_batch(inputs)
+        user_content = [
+            {"type": "text", "text": BASE_EXTRACTION_PROMPT},
+            {"type": "image", "image": image},
+        ]
+        if cleaned_txt:
+            user_content.append({"type": "text", "text": "OCR_TEXT_BEGIN\n" + cleaned_txt + "\nOCR_TEXT_END"})
+        else:
+            user_content.append(
+                {
+                    "type": "text",
+                    "text": (
+                        "No OCR transcript is available. Use the visual content of the image to"
+                        " extract header key/value pairs."
+                    ),
+                }
+            )
+        user_content.append({"type": "text", "text": "OUTPUT: JSON only."})
+
+        messages: List[Dict[str, Any]] = []
+        if prompt_cache:
+            messages.append({"role": "system", "content": prompt_cache})
+        messages.append({"role": "user", "content": user_content})
+
+        try:
+            token_inputs = processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Failed to tokenize prompt for {image_path}: {exc}") from exc
+
+        if hasattr(token_inputs, "to"):
+            token_inputs = token_inputs.to(target_device)
+        if not isinstance(token_inputs, dict):
+            token_inputs = dict(token_inputs)
+
+        try:
+            vision_inputs = processor(images=[image], return_tensors="pt")
+        except Exception as exc:
+            raise RuntimeError(f"Failed to encode image for {image_path}: {exc}") from exc
+
+        for key, value in vision_inputs.items():
+            token_inputs.setdefault(key, value)
+
+        inputs = move_batch(token_inputs)
+
+        gen_kwargs: Dict[str, Any] = {"max_new_tokens": tokens}
+        eos_id = getattr(tokenizer, "eos_token_id", None)
+        pad_id = getattr(tokenizer, "pad_token_id", None)
+        if eos_id is not None:
+            gen_kwargs["eos_token_id"] = eos_id
+        if pad_id is not None:
+            gen_kwargs["pad_token_id"] = pad_id
 
         try:
             with torch.no_grad():
-                generated = model.generate(**inputs, max_new_tokens=tokens)
+                generated = model.generate(**inputs, **gen_kwargs)
         except Exception as exc:
             raise RuntimeError(f"Generation failed: {exc}") from exc
 
