@@ -360,7 +360,7 @@ def build_local_vlm_call(
 
     def attempt_load(loader: Any) -> Any:
         base_kwargs: Dict[str, Any] = {"trust_remote_code": True}
-        if device_map_value not in {"", None}:
+        if device_map_value not in ("", None):
             base_kwargs["device_map"] = device_map_value
         if torch_dtype != "auto":
             base_kwargs["torch_dtype"] = torch_dtype
