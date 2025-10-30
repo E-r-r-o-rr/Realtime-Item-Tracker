@@ -14,7 +14,6 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib import request as urllib_request
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -28,9 +27,6 @@ from ocr_extract import (  # noqa: E402
     parse_bool,
     process_one,
 )
-
-KEEPALIVE_URL = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
-KEEPALIVE_PATH = SCRIPT_DIR / "_keepalive.jpg"
 
 os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
 
@@ -71,28 +67,6 @@ class ServiceContext:
         )
         self.lock = threading.Lock()
         self.started_at = time.time()
-
-    def warmup(self) -> None:
-        try:
-            KEEPALIVE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            if not KEEPALIVE_PATH.exists():
-                with urllib_request.urlopen(KEEPALIVE_URL, timeout=10) as resp:
-                    KEEPALIVE_PATH.write_bytes(resp.read())
-        except Exception:
-            return
-
-        if SHUTDOWN_EVENT.is_set():
-            return
-
-        try:
-            process_one(
-                self.vlm_call,
-                str(KEEPALIVE_PATH),
-                normalize_dates=False,
-                ocr_hint=None,
-            )
-        except Exception:
-            return
 
     def infer(self, image_path: str, normalize_dates: Optional[bool], ocr_hint: Optional[str]) -> Dict[str, Any]:
         target_normalize = self.config.normalize_dates if normalize_dates is None else bool(normalize_dates)
@@ -200,6 +174,7 @@ class LocalVlmHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "result": result,
                 "durationMs": duration_ms,
+                "source": "local-service",
             },
         )
 
@@ -295,15 +270,6 @@ def main() -> int:
     server.allow_reuse_address = True
     server.daemon_threads = True
     install_signal_handlers(server)
-
-    def _warmup() -> None:
-        sys.stdout.write("[serve] Starting warmup inference...\n")
-        try:
-            ctx.warmup()
-        finally:
-            sys.stdout.write("[serve] Warmup thread finished.\n")
-
-    threading.Thread(target=_warmup, daemon=True).start()
 
     sys.stdout.write(
         f"[serve] Local VLM ready on http://{args.host}:{args.port} with model {config.model_id}\n"

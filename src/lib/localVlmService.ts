@@ -262,6 +262,7 @@ export type LocalServiceInferResult = {
     llm_parsed: Record<string, unknown>;
   };
   durationMs?: number;
+  source?: "local-service";
   message?: string;
 };
 

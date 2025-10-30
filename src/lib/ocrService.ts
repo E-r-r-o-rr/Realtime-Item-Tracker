@@ -15,6 +15,7 @@ export type VlmProviderInfo = {
   providerType?: string;
   modelId?: string;
   baseUrl?: string;
+  execution?: 'remote-http' | 'local-service' | 'local-cli';
 };
 
 export type OcrExtractionResult = {
@@ -212,10 +213,12 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     providerInfo.providerType = normalizedType;
     providerInfo.modelId = vlmSettings.remote.modelId?.trim() || configuredModel;
     providerInfo.baseUrl = effectiveBase;
+    providerInfo.execution = 'remote-http';
   } else {
     providerInfo.providerType = 'local';
     providerInfo.modelId = configuredModel;
     providerInfo.baseUrl = '';
+    providerInfo.execution = 'local-cli';
   }
 
   if (vlmSettings.mode === 'local') {
@@ -239,6 +242,7 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
           const kv = sanitizeKvRecord(allRaw);
           const selectedKv = deriveSelectedKv(kv, selectedRaw);
 
+          providerInfo.execution = inference.source === 'local-service' ? 'local-service' : 'local-cli';
           return {
             kv,
             selectedKv,

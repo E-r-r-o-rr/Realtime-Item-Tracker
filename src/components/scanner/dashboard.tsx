@@ -257,11 +257,14 @@ interface ApiHistoryEntry {
 
 type ProviderMode = "remote" | "local";
 
+type ExecutionMode = "remote-http" | "local-service" | "local-cli";
+
 interface ProviderInfo {
   mode: ProviderMode;
   providerType?: string;
   modelId?: string;
   baseUrl?: string;
+  execution?: ExecutionMode;
 }
 
 const PROVIDER_TYPE_LABELS: Record<string, string> = {
@@ -345,11 +348,18 @@ const sanitizeProviderInfo = (value: unknown): ProviderInfo | null => {
   const normalizedMode = rawMode === "remote" || rawMode === "local" ? (rawMode as ProviderMode) : null;
   if (!normalizedMode) return null;
 
+  const rawExecution = trimString(raw.execution);
+  const normalizedExecution =
+    rawExecution === "remote-http" || rawExecution === "local-service" || rawExecution === "local-cli"
+      ? (rawExecution as ExecutionMode)
+      : undefined;
+
   return {
     mode: normalizedMode,
     providerType: trimString(raw.providerType),
     modelId: trimString(raw.modelId),
     baseUrl: trimString(raw.baseUrl),
+    execution: normalizedExecution,
   };
 };
 
@@ -361,6 +371,19 @@ const describeProviderType = (info: ProviderInfo): string => {
     return PROVIDER_TYPE_LABELS[info.providerType];
   }
   return info.providerType ? info.providerType : "Remote provider";
+};
+
+const describeExecutionMode = (info: ProviderInfo): string => {
+  switch (info.execution) {
+    case "local-service":
+      return "Persistent local service";
+    case "local-cli":
+      return "One-off local CLI";
+    case "remote-http":
+      return "Remote HTTP provider";
+    default:
+      return info.mode === "local" ? "Local pipeline" : "Remote provider";
+  }
 };
 
 const describeProviderLink = (info: ProviderInfo): { label: string; href?: string } => {
@@ -1255,7 +1278,7 @@ export default function ScannerDashboard() {
       {vlmInfo && (
         <div className="glassy-panel rounded-2xl border border-white/10 bg-white/5 px-5 py-4 text-sm text-slate-100">
           <span className="font-semibold uppercase tracking-[0.3em] text-slate-300/80">VLM configuration</span>
-          <dl className="mt-3 grid gap-4 sm:grid-cols-3">
+          <dl className="mt-3 grid gap-4 sm:grid-cols-4">
             <div>
               <dt className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-300/70">Provider type</dt>
               <dd className="mt-1 text-base text-slate-100/90">{describeProviderType(vlmInfo)}</dd>
@@ -1284,6 +1307,10 @@ export default function ScannerDashboard() {
                   return <span className="text-slate-100/90">{endpoint.label || "—"}</span>;
                 })()}
               </dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-300/70">Execution path</dt>
+              <dd className="mt-1 text-base text-slate-100/90">{describeExecutionMode(vlmInfo)}</dd>
             </div>
           </dl>
         </div>
