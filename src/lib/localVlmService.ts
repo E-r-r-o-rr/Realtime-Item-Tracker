@@ -1,6 +1,7 @@
-import { spawn, ChildProcessWithoutNullStreams } from "child_process";
+import { spawn, type ChildProcessByStdio } from "child_process";
 import fs from "fs";
 import path from "path";
+import type { Readable } from "stream";
 
 import { DEFAULT_VLM_SETTINGS } from "@/config/vlm";
 import { VlmLocalSettings } from "@/types/vlm";
@@ -39,8 +40,10 @@ export type LocalServiceRuntime = {
   lastExit?: { code: number | null; signal: string | null; at: number };
 };
 
+type ServiceChildProcess = ChildProcessByStdio<null, Readable, Readable>;
+
 type ServiceProcess = {
-  child: ChildProcessWithoutNullStreams;
+  child: ServiceChildProcess;
   host: string;
   port: number;
   modelId: string;
@@ -286,7 +289,7 @@ export async function startLocalVlmService(
   }
 
   const env = { ...process.env };
-  const child = spawn(PY_BIN, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(PY_BIN, args, { env, stdio: ["ignore", "pipe", "pipe"] }) as ServiceChildProcess;
 
   const proc: ServiceProcess = {
     child,
