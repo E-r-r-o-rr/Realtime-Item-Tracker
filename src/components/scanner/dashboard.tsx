@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -76,6 +76,9 @@ interface BarcodeComparisonReport {
   barcodeText?: string;
 }
 
+// Normalizes various barcode comparison payload shapes returned by upstream OCR services
+// into a consistent structure that the UI can render safely. Any unexpected input is
+// coerced into conservative defaults so we never attempt to read undefined fields.
 const sanitizeBarcodeComparison = (value: unknown): BarcodeComparisonReport | null => {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
@@ -95,28 +98,31 @@ const sanitizeBarcodeComparison = (value: unknown): BarcodeComparisonReport | nu
 
   const rawRows = (rowSource as unknown[])
     .map((row) => {
-        if (!row || typeof row !== "object") return null;
-        const entry = row as Record<string, unknown>;
-        return {
-          key: typeof entry.key === "string" ? entry.key : "",
-            ocr: typeof entry.ocr === "string" ? entry.ocr : "",
-            barcodeLabel: typeof entry.barcodeLabel === "string"
-              ? entry.barcodeLabel
-              : typeof entry.barcode_label === "string"
-              ? entry.barcode_label
-              : "",
-            barcodeValue: typeof entry.barcodeValue === "string"
-              ? entry.barcodeValue
-              : typeof entry.barcode_value === "string"
-              ? entry.barcode_value
-              : "",
-            status: toStatus(entry.status),
-            contextLabel: typeof entry.contextLabel === "string"
-              ? entry.contextLabel
+      if (!row || typeof row !== "object") return null;
+      const entry = row as Record<string, unknown>;
+      return {
+        key: typeof entry.key === "string" ? entry.key : "",
+        ocr: typeof entry.ocr === "string" ? entry.ocr : "",
+        barcodeLabel:
+          typeof entry.barcodeLabel === "string"
+            ? entry.barcodeLabel
+            : typeof entry.barcode_label === "string"
+            ? entry.barcode_label
+            : "",
+        barcodeValue:
+          typeof entry.barcodeValue === "string"
+            ? entry.barcodeValue
+            : typeof entry.barcode_value === "string"
+            ? entry.barcode_value
+            : "",
+        status: toStatus(entry.status),
+        contextLabel:
+          typeof entry.contextLabel === "string"
+            ? entry.contextLabel
             : typeof entry.context_label === "string"
             ? entry.context_label
             : undefined,
-        } as BarcodeComparisonRow;
+      } as BarcodeComparisonRow;
     })
     .filter((row): row is BarcodeComparisonRow => Boolean(row));
 
@@ -196,6 +202,8 @@ const sanitizeBarcodeComparison = (value: unknown): BarcodeComparisonReport | nu
   return { rows, summary, library, barcodeText: barcodeTextValue };
 };
 
+// Display metadata for each barcode comparison state so the table and summary can share
+// consistent icons and colors.
 const COMPARISON_STATUS_META: Record<ComparisonStatus, { symbol: string; label: string; className: string }> = {
   MATCH: { symbol: "✓", label: "Match", className: "text-emerald-400" },
   MISMATCH: { symbol: "✕", label: "Mismatch", className: "text-rose-400" },
@@ -275,7 +283,9 @@ const PROVIDER_TYPE_LABELS: Record<string, string> = {
   local: "Local OCR pipeline",
 };
 
+// Client-side cache key for persisting dashboard state between reloads.
 const PERSISTED_STATE_KEY = "scanner.dashboard.ui_state.v1";
+// Default background refresh interval when continuously monitoring bookings.
 const DEFAULT_REFRESH_MS = 300_000;
 const REFRESH_INTERVAL_OPTIONS: { label: string; value: number }[] = [
   { label: "Every 30 seconds", value: 30_000 },
@@ -291,6 +301,8 @@ const trimString = (value: unknown): string | undefined => {
 
 const DEFAULT_SCAN_ERROR_MESSAGE = "Error scanning document.";
 
+// Attempts to unwrap nested JSON error envelopes returned by proxy services so that the
+// operator receives a concise, human-readable failure reason.
 const parseErrorPayload = (raw: string): string => {
   if (!raw) return "";
   const trimmed = raw.trim();
@@ -314,6 +326,9 @@ const parseErrorPayload = (raw: string): string => {
   return trimmed;
 };
 
+// Reduces arbitrary error objects into the final status banner string shown to the user.
+// The function walks nested "cause" chains and string payloads to surface the most
+// actionable explanation possible.
 const formatStatusError = (error: unknown): string => {
   if (!error) return DEFAULT_SCAN_ERROR_MESSAGE;
 
@@ -342,6 +357,8 @@ const formatStatusError = (error: unknown): string => {
   return DEFAULT_SCAN_ERROR_MESSAGE;
 };
 
+// Converts provider metadata returned by the OCR backend into strongly typed fields.
+// Unknown or malformed values are discarded so the UI only renders trusted data.
 const sanitizeProviderInfo = (value: unknown): ProviderInfo | null => {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
@@ -465,6 +482,8 @@ const getValueFromMap = (map: Map<string, string>, keys: string[]): string => {
 
 
 
+// Maps noisy OCR field labels into canonical barcode labels so that comparisons are
+// resilient to upstream naming differences.
 const OCR_TO_BARCODE_KEY: Record<string, string> = (() => {
   const m: Record<string, string> = {};
   const set = (aliases: string[], barcodeTitle: string) => {
@@ -578,11 +597,15 @@ const buildLiveRecord = (getBufferValue: (keys: string[]) => string): LiveRecord
   return hasValue ? record : null;
 };
 
+// Extracts the canonical live record fields from a normalized key/value map, returning
+// null when the required data is missing.
 const buildLiveRecordFromMap = (map: Map<string, string>): LiveRecord | null => {
   if (!map || map.size === 0) return null;
   return buildLiveRecord((keys) => getValueFromMap(map, keys));
 };
 
+// Combines operator-selected values with the broader OCR extraction, preferring explicit
+// choices but falling back to any available data.
 const mergeLiveRecords = (primary: LiveRecord | null, secondary: LiveRecord | null): LiveRecord | null => {
   if (!primary && !secondary) return null;
   if (!secondary) return primary;
@@ -616,7 +639,15 @@ export default function ScannerDashboard() {
   const [checkingBooking, setCheckingBooking] = useState(false);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState<number>(DEFAULT_REFRESH_MS);
   const [hasHydrated, setHasHydrated] = useState(false);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
+  // Rehydrate any persisted dashboard state from localStorage so a refresh does not lose
+  // the operator's context while demoing or debugging.
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -706,6 +737,7 @@ export default function ScannerDashboard() {
     }
   }, []);
 
+  // Persist current dashboard selections so the UI feels stateful across reloads.
   useEffect(() => {
     if (!hasHydrated || typeof window === "undefined") return;
     try {
@@ -785,6 +817,8 @@ export default function ScannerDashboard() {
     });
   }, [barcodeComparison]);
 
+  // Pulls the most recent booking record from the orders API and keeps the live buffer in
+  // sync with server state. When "sync" is requested we trigger the upstream poller.
   const fetchLiveBuffer = useCallback(async (options?: { sync?: boolean }) => {
     try {
       const query = options?.sync ? "?sync=true" : "";
@@ -823,6 +857,85 @@ export default function ScannerDashboard() {
 
   const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "my-secret-api-key";
 
+  const stopCameraStream = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraReady(false);
+  }, []);
+
+  const openCamera = useCallback(() => {
+    setCameraError(null);
+    setIsCameraOpen(true);
+  }, []);
+
+  const handleCameraLoaded = useCallback(() => {
+    setCameraReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isCameraOpen) {
+      stopCameraStream();
+      return;
+    }
+
+    setCameraReady(false);
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setCameraError("Camera is not supported in this environment.");
+      return;
+    }
+
+    let cancelled = false;
+    setCameraError(null);
+
+    const startCamera = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        streamRef.current = stream;
+        const video = videoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          try {
+            await video.play();
+          } catch (error) {
+            console.warn("Unable to autoplay camera stream", error);
+          }
+        }
+      } catch (error) {
+        console.error("Failed to access camera", error);
+        let message = "Unable to access the camera. Check permissions and try again.";
+        if (error instanceof DOMException) {
+          if (error.name === "NotAllowedError") {
+            message = "Camera access was blocked. Please allow permission and try again.";
+          } else if (error.message) {
+            message = error.message;
+          }
+        } else if (error instanceof Error && error.message) {
+          message = error.message;
+        }
+        setCameraError(message);
+        stopCameraStream();
+      }
+    };
+
+    startCamera();
+
+    return () => {
+      cancelled = true;
+      stopCameraStream();
+    };
+  }, [isCameraOpen, stopCameraStream]);
+
   const allKvMap = useMemo(() => toNormalizedMap(kv), [kv]);
   const selectedMap = useMemo(() => toNormalizedMap(selectedKv), [selectedKv]);
 
@@ -855,9 +968,15 @@ export default function ScannerDashboard() {
     updateLiveRecord(mergedLiveRecord);
   }, [hasSourceData, mergedLiveRecord, updateLiveRecord]);
 
+  // Resets the dashboard when a new document is selected so stale extraction data is not
+  // displayed while the next scan runs.
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     setFile(f ?? null);
+    setCapturedImage(null);
+    setIsCameraOpen(false);
+    stopCameraStream();
+    setCameraError(null);
     setKv(null);
     setSelectedKv(null);
     setStatus(null);
@@ -868,191 +987,253 @@ export default function ScannerDashboard() {
     setBookingLocated(false);
   };
 
-  const scanDocument = async () => {
-    if (!file) return;
-    setLoading(true);
-    setStatus("Uploading file and scanning…");
-    setVlmInfo(null);
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
+  // Uploads a file to the OCR endpoint and hydrates the dashboard with the extracted
+  // structured data and barcode comparison results.
+  const runScan = useCallback(
+    async (targetFile: File) => {
+      setLoading(true);
+      setStatus("Uploading file and scanning…");
+      setVlmInfo(null);
+      try {
+        const formData = new FormData();
+        formData.append("file", targetFile);
 
-      const res = await fetch("/api/ocr", {
-        method: "POST",
-        headers: { "x-api-key": API_KEY },
-        body: formData,
-      });
-      if (!res.ok) {
-        let text = "";
-        try {
-          text = await res.text();
-        } catch (error) {
-          text = "";
+        const res = await fetch("/api/ocr", {
+          method: "POST",
+          headers: { "x-api-key": API_KEY },
+          body: formData,
+        });
+        if (!res.ok) {
+          let text = "";
+          try {
+            text = await res.text();
+          } catch (error) {
+            text = "";
+          }
+          const reason = parseErrorPayload(text) || res.statusText || DEFAULT_SCAN_ERROR_MESSAGE;
+          throw new Error(reason);
         }
-        const reason = parseErrorPayload(text) || res.statusText || DEFAULT_SCAN_ERROR_MESSAGE;
-        throw new Error(reason);
-      }
 
-      const data: ApiOcrResponse = await res.json();
-      const nextProviderInfo = sanitizeProviderInfo(data.providerInfo);
+        const data: ApiOcrResponse = await res.json();
+        const nextProviderInfo = sanitizeProviderInfo(data.providerInfo);
 
-      const errorMessage = typeof data.error === "string" ? data.error.trim() : "";
-      if (errorMessage) {
-        setStatus(errorMessage);
-        setKv(null);
-        setSelectedKv(null);
-        setBarcodes([]);
-        setBarcodeWarnings([]);
-        setBarcodeComparison(null);
-        setValidation(null);
-        setBookingWarning(null);
-        setBookingSuccess(null);
-        setVlmInfo(nextProviderInfo ?? null);
-        updateLiveRecord(null);
-        return;
-      }
-
-      const kvPayload = data.kv && typeof data.kv === "object" ? (data.kv as KvPairs) : {};
-      const rawSelected = data.selectedKv ?? (data as { selected_key_values?: unknown }).selected_key_values ?? null;
-      const selectedPayload =
-        rawSelected && typeof rawSelected === "object" && !Array.isArray(rawSelected) ? (rawSelected as KvPairs) : {};
-
-      setKv(kvPayload);
-      setSelectedKv(selectedPayload);
-      setBarcodes(Array.isArray(data.barcodes) ? data.barcodes : []);
-      setBarcodeWarnings(Array.isArray(data.barcodeWarnings) ? data.barcodeWarnings : []);
-      setBarcodeComparison(sanitizeBarcodeComparison(data.barcodeComparison));
-      setValidation(toClientValidation(data.validation));
-
-      const statusFromValidation: Record<ValidationStatus, string> = {
-        match: "Barcode and OCR values align. Checking database…",
-        mismatch: data.validation?.message || "Barcode and OCR values mismatch.",
-        no_barcode: "No barcode detected; continuing with OCR results.",
-        missing_item_code: "Barcode detected but OCR did not yield an item code.",
-      };
-
-      const vStatus = data.validation?.status;
-      if (vStatus) setStatus(statusFromValidation[vStatus]);
-
-      const normalizedAllMap = toNormalizedMap(kvPayload);
-      const normalizedSelectedMap = toNormalizedMap(selectedPayload);
-      const recordCandidate = mergeLiveRecords(
-        buildLiveRecordFromMap(normalizedSelectedMap),
-        buildLiveRecordFromMap(normalizedAllMap),
-      );
-
-      if (recordCandidate) {
-        updateLiveRecord(recordCandidate);
-        const missingField = (Object.entries(recordCandidate) as Array<[keyof LiveRecord, string]>).find(
-          ([, value]) => !value || !value.trim(),
-        );
-        if (missingField) {
-          setStatus(
-            `Live buffer updated locally but missing "${missingField[0]}" to sync with the history log.`,
-          );
+        const errorMessage = typeof data.error === "string" ? data.error.trim() : "";
+        if (errorMessage) {
+          setStatus(errorMessage);
+          setKv(null);
+          setSelectedKv(null);
+          setBarcodes([]);
+          setBarcodeWarnings([]);
+          setBarcodeComparison(null);
+          setValidation(null);
           setBookingWarning(null);
           setBookingSuccess(null);
-          setVlmInfo(null);
+          setVlmInfo(nextProviderInfo ?? null);
+          updateLiveRecord(null);
           setBookingLocated(false);
-        } else {
-          const trackingIdForStatus = recordCandidate.trackingId;
-          setStatus(`Logging scan for ${trackingIdForStatus}…`);
-          setBookingWarning(null);
-          setBookingSuccess(null);
-          const response = await fetch(`/api/orders`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
-            body: JSON.stringify({
-              destination: recordCandidate.destination,
-              itemName: recordCandidate.itemName,
-              trackingId: recordCandidate.trackingId,
-              truckNumber: recordCandidate.truckNumber,
-              shipDate: recordCandidate.shipDate,
-              expectedDepartureTime: recordCandidate.expectedDepartureTime,
-              originLocation: recordCandidate.origin,
-            }),
-          });
-          const payload: {
-            record?: {
-              destination: string;
-              itemName: string;
-              trackingId: string;
-              truckNumber: string;
-              shipDate: string;
-              expectedDepartureTime: string;
-              originLocation: string;
-            };
-            historyEntry?: ApiHistoryEntry;
-            warning?: string;
-            error?: string;
-          } = await response.json().catch(() => ({ error: "" }));
-          if (!response.ok) {
-            const reason = typeof payload.error === "string" && payload.error ? payload.error : response.statusText;
-            setStatus(reason || "Failed to log scan.");
+          return;
+        }
+
+        const kvPayload = data.kv && typeof data.kv === "object" ? (data.kv as KvPairs) : {};
+        const rawSelected = data.selectedKv ?? (data as { selected_key_values?: unknown }).selected_key_values ?? null;
+        const selectedPayload =
+          rawSelected && typeof rawSelected === "object" && !Array.isArray(rawSelected) ? (rawSelected as KvPairs) : {};
+
+        setKv(kvPayload);
+        setSelectedKv(selectedPayload);
+        setBarcodes(Array.isArray(data.barcodes) ? data.barcodes : []);
+        setBarcodeWarnings(Array.isArray(data.barcodeWarnings) ? data.barcodeWarnings : []);
+        setBarcodeComparison(sanitizeBarcodeComparison(data.barcodeComparison));
+        setValidation(toClientValidation(data.validation));
+
+        const statusFromValidation: Record<ValidationStatus, string> = {
+          match: "Barcode and OCR values align. Checking database…",
+          mismatch: data.validation?.message || "Barcode and OCR values mismatch.",
+          no_barcode: "No barcode detected; continuing with OCR results.",
+          missing_item_code: "Barcode detected but OCR did not yield an item code.",
+        };
+
+        const vStatus = data.validation?.status;
+        if (vStatus) setStatus(statusFromValidation[vStatus]);
+
+        const normalizedAllMap = toNormalizedMap(kvPayload);
+        const normalizedSelectedMap = toNormalizedMap(selectedPayload);
+        const recordCandidate = mergeLiveRecords(
+          buildLiveRecordFromMap(normalizedSelectedMap),
+          buildLiveRecordFromMap(normalizedAllMap),
+        );
+
+        if (recordCandidate) {
+          updateLiveRecord(recordCandidate);
+          const missingField = (Object.entries(recordCandidate) as Array<[keyof LiveRecord, string]>).find(
+            ([, value]) => !value || !value.trim(),
+          );
+          if (missingField) {
+            setStatus(
+              `Live buffer updated locally but missing "${missingField[0]}" to sync with the history log.`,
+            );
             setBookingWarning(null);
             setBookingSuccess(null);
             setVlmInfo(null);
+            setBookingLocated(false);
           } else {
-            const record = payload.record;
-            const warningRaw = typeof payload.warning === "string" ? payload.warning.trim() : "";
-            const warning = warningRaw.length > 0 ? warningRaw : null;
-            setBookingWarning(warning);
-            const trackedId = record?.trackingId || recordCandidate.trackingId;
-            if (warning) {
-              setBookingSuccess(null);
-              setBookingLocated(false);
-            } else if (trackedId) {
-              setBookingSuccess(`Booked item found for ${trackedId}`);
-              setBookingLocated(true);
-            } else {
-              setBookingSuccess("Booked item found");
-              setBookingLocated(true);
-            }
-            if (record) {
-              const nextRecord: LiveRecord = {
-                destination: record.destination,
-                itemName: record.itemName,
-                trackingId: record.trackingId,
-                truckNumber: record.truckNumber,
-                shipDate: record.shipDate,
-                expectedDepartureTime: record.expectedDepartureTime,
-                origin: record.originLocation,
+            const trackingIdForStatus = recordCandidate.trackingId;
+            setStatus(`Logging scan for ${trackingIdForStatus}…`);
+            setBookingWarning(null);
+            setBookingSuccess(null);
+            const response = await fetch(`/api/orders`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
+              body: JSON.stringify({
+                destination: recordCandidate.destination,
+                itemName: recordCandidate.itemName,
+                trackingId: recordCandidate.trackingId,
+                truckNumber: recordCandidate.truckNumber,
+                shipDate: recordCandidate.shipDate,
+                expectedDepartureTime: recordCandidate.expectedDepartureTime,
+                originLocation: recordCandidate.origin,
+              }),
+            });
+            const payload: {
+              record?: {
+                destination: string;
+                itemName: string;
+                trackingId: string;
+                truckNumber: string;
+                shipDate: string;
+                expectedDepartureTime: string;
+                originLocation: string;
               };
-              updateLiveRecord(nextRecord);
+              historyEntry?: ApiHistoryEntry;
+              warning?: string;
+              error?: string;
+            } = await response.json().catch(() => ({ error: "" }));
+            if (!response.ok) {
+              const reason = typeof payload.error === "string" && payload.error ? payload.error : response.statusText;
+              setStatus(reason || "Failed to log scan.");
+              setBookingWarning(null);
+              setBookingSuccess(null);
+              setVlmInfo(null);
+            } else {
+              const record = payload.record;
+              const warningRaw = typeof payload.warning === "string" ? payload.warning.trim() : "";
+              const warning = warningRaw.length > 0 ? warningRaw : null;
+              setBookingWarning(warning);
+              const trackedId = record?.trackingId || recordCandidate.trackingId;
+              if (warning) {
+                setBookingSuccess(null);
+                setBookingLocated(false);
+              } else if (trackedId) {
+                setBookingSuccess(`Booked item found for ${trackedId}`);
+                setBookingLocated(true);
+              } else {
+                setBookingSuccess("Booked item found");
+                setBookingLocated(true);
+              }
+              if (record) {
+                const nextRecord: LiveRecord = {
+                  destination: record.destination,
+                  itemName: record.itemName,
+                  trackingId: record.trackingId,
+                  truckNumber: record.truckNumber,
+                  shipDate: record.shipDate,
+                  expectedDepartureTime: record.expectedDepartureTime,
+                  origin: record.originLocation,
+                };
+                updateLiveRecord(nextRecord);
+              }
+              const displayTrackingId = record?.trackingId || recordCandidate.trackingId;
+              const statusSegments: string[] = [];
+              if (displayTrackingId) {
+                statusSegments.push(`Order ${displayTrackingId} -`);
+              }
+              statusSegments.push("Saved to history.");
+              const trailingMessage = warning
+                ? warning.endsWith(".")
+                  ? warning
+                  : `${warning}.`
+                : "Booked item found.";
+              statusSegments.push(trailingMessage);
+              setStatus(statusSegments.join(" ").replace(/\s+/g, " ").trim());
+              setVlmInfo(nextProviderInfo ?? null);
             }
-            const displayTrackingId = record?.trackingId || recordCandidate.trackingId;
-            const statusSegments: string[] = [];
-            if (displayTrackingId) {
-              statusSegments.push(`Order ${displayTrackingId} -`);
-            }
-            statusSegments.push("Saved to history.");
-            const trailingMessage = warning
-              ? warning.endsWith(".")
-                ? warning
-                : `${warning}.`
-              : "Booked item found.";
-            statusSegments.push(trailingMessage);
-            setStatus(statusSegments.join(" ").replace(/\s+/g, " ").trim());
-            setVlmInfo(nextProviderInfo ?? null);
           }
+        } else {
+          updateLiveRecord(null);
         }
-      } else {
-        updateLiveRecord(null);
+      } catch (err) {
+        console.error(err);
+        setStatus(formatStatusError(err));
+        setBookingWarning(null);
+        setBookingSuccess(null);
+        setVlmInfo(null);
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      console.error(err);
-      setStatus(formatStatusError(err));
-      setBookingWarning(null);
-      setBookingSuccess(null);
-      setVlmInfo(null);
-    } finally {
-      setLoading(false);
-    }
-  };
+    },
+    [API_KEY, mapApiRecordToLive, updateLiveRecord],
+  );
 
+  // Convenience wrapper so existing UI hooks can trigger the scan based on the selected
+  // file state when uploading from disk.
+  const scanDocument = useCallback(async () => {
+    if (!file) return;
+    await runScan(file);
+  }, [file, runScan]);
+
+  const handleCapture = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video) return;
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    if (!width || !height) {
+      setStatus("Camera is still starting. Please try again in a moment.");
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      setStatus("Unable to capture an image from the camera feed.");
+      return;
+    }
+    context.drawImage(video, 0, 0, width, height);
+
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob((result) => resolve(result), "image/jpeg", 0.92),
+    );
+    if (!blob) {
+      setStatus("Unable to capture an image from the camera feed.");
+      return;
+    }
+
+    const previewDataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    if (previewDataUrl) {
+      setCapturedImage(previewDataUrl);
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const capturedFile = new File([blob], `camera-capture-${timestamp}.jpg`, {
+      type: blob.type || "image/jpeg",
+    });
+
+    setCameraError(null);
+    setFile(capturedFile);
+    setIsCameraOpen(false);
+    stopCameraStream();
+    await runScan(capturedFile);
+  }, [runScan, stopCameraStream]);
+
+  // Seeds the UI with canned manifest data so demos can run without an actual camera feed.
   const handleDemoScan = () => {
     const sample = DEMO_RECORDS[Math.floor(Math.random() * DEMO_RECORDS.length)];
     setFile(null);
+    setCapturedImage(null);
+    setIsCameraOpen(false);
+    setCameraError(null);
+    stopCameraStream();
     setKv(sample);
     setSelectedKv({
       Destination: toDisplayString(sample.destination_warehouse_id),
@@ -1073,6 +1254,8 @@ export default function ScannerDashboard() {
     setVlmInfo(null);
   };
 
+  // Requeries the booking service for the active tracking ID to confirm if a dock assignment
+  // exists and updates status messaging accordingly.
   const handleRecheckBooking = useCallback(async () => {
     const activeTrackingId = liveRecord?.trackingId?.trim();
     if (!activeTrackingId) {
@@ -1137,6 +1320,8 @@ export default function ScannerDashboard() {
     }
   }, [liveRecord, mapApiRecordToLive, updateLiveRecord]);
 
+  // Lets operators control how aggressively the dashboard re-polls bookings after a match
+  // has been confirmed.
   const handleRefreshIntervalChange = useCallback(
     (event: React.ChangeEvent<HTMLSelectElement>) => {
       const rawValue = Number(event.target.value);
@@ -1149,6 +1334,8 @@ export default function ScannerDashboard() {
     [fetchLiveBuffer, bookingLocated],
   );
 
+  // Persists the current live record to the storage API, simulating a downstream system
+  // update when operators confirm the extracted data.
   const handleWriteStorage = async () => {
     if (!liveRecord) return;
     try {
@@ -1176,6 +1363,8 @@ export default function ScannerDashboard() {
     }
   };
 
+  // Clears the live buffer on the API and resets UI context so operators can start a fresh
+  // scan session without stale data leaking through.
   const handleClearLive = async () => {
     try {
       const response = await fetch("/api/orders", { method: "DELETE" });
@@ -1264,14 +1453,83 @@ export default function ScannerDashboard() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h3.75L10 4h4l2.25 3H20v12H4z" />
               </svg>
             </div>
-            <h3 className="mt-6 text-lg font-semibold text-slate-100">Use camera demo</h3>
+            <h3 className="mt-6 text-lg font-semibold text-slate-100">Capture with camera</h3>
             <p className="mt-2 text-sm text-slate-400">
-              Instantly seed the live buffer with curated manifests to preview the workflow without capturing a file.
+              Open your device camera, snap an order sheet, and send it through the same OCR pipeline instantly.
             </p>
-            <div className="mt-6">
-              <Button type="button" onClick={handleDemoScan} className="justify-center">
-                Launch camera (demo)
-              </Button>
+            <div className="mt-6 space-y-4 text-left">
+              {!isCameraOpen && capturedImage && (
+                <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/30">
+                  <img
+                    src={capturedImage}
+                    alt="Last captured order sheet preview"
+                    className="h-56 w-full object-cover"
+                  />
+                </div>
+              )}
+              {isCameraOpen ? (
+                <div className="space-y-4">
+                  <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/40">
+                    <video
+                      ref={videoRef}
+                      className="h-56 w-full object-cover"
+                      muted
+                      playsInline
+                      autoPlay
+                      onLoadedMetadata={handleCameraLoaded}
+                    />
+                  </div>
+                  {cameraError && (
+                    <p className="rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">
+                      {cameraError}
+                    </p>
+                  )}
+                  <div className="flex flex-wrap items-center justify-center gap-3">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="flex-1 justify-center"
+                      onClick={() => setIsCameraOpen(false)}
+                      disabled={loading}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="button"
+                      className="flex-1 justify-center"
+                      onClick={handleCapture}
+                      disabled={!cameraReady || loading}
+                    >
+                      {loading ? "Scanning…" : cameraReady ? "Capture & scan" : "Starting camera…"}
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {cameraError && (
+                    <p className="rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">
+                      {cameraError}
+                    </p>
+                  )}
+                  <Button
+                    type="button"
+                    onClick={openCamera}
+                    className="w-full justify-center"
+                    disabled={loading}
+                  >
+                    Launch camera
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleDemoScan}
+                    className="w-full justify-center"
+                    disabled={loading}
+                  >
+                    Use sample data
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         </div>

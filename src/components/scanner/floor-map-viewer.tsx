@@ -11,8 +11,11 @@ interface FloorMapViewerProps {
   activeDestination?: string | null;
 }
 
+// Lightweight normalizer to make fuzzy destination comparisons deterministic.
 const normalize = (value: string) => value.trim().toLowerCase();
 
+// Serializes the selected map waypoint into the payload shape expected by the navigation
+// stub endpoint. Keeping this logic central ensures the UI and API stay aligned.
 const buildNavigationPayload = (map: FloorMap, point: MapPoint) => ({
   label: point.label,
   synonyms: point.synonyms,
@@ -53,6 +56,8 @@ export function FloorMapViewer({ activeDestination }: FloorMapViewerProps) {
   const [navigationStatus, setNavigationStatus] = useState<string>("");
   const [sending, setSending] = useState(false);
 
+  // Fetches the latest floor maps (including point geometry) so the viewer always reflects
+  // admin changes without requiring a manual refresh.
   const loadMaps = useCallback(async () => {
     setLoading(true);
     try {
@@ -82,10 +87,12 @@ export function FloorMapViewer({ activeDestination }: FloorMapViewerProps) {
     }
   }, [selectedMapId]);
 
+  // Initial load.
   useEffect(() => {
     loadMaps();
   }, [loadMaps]);
 
+  // Refresh when the admin panel broadcasts updates.
   useEffect(() => {
     const handler = () => {
       loadMaps();
@@ -99,6 +106,8 @@ export function FloorMapViewer({ activeDestination }: FloorMapViewerProps) {
     [maps, selectedMapId],
   );
 
+  // Keep the selected point valid when maps are reloaded or a previously chosen point is
+  // deleted.
   useEffect(() => {
     if (!selectedMap) {
       setSelectedPointId(null);
@@ -112,6 +121,8 @@ export function FloorMapViewer({ activeDestination }: FloorMapViewerProps) {
     }
   }, [selectedMap, selectedPointId]);
 
+  // Resolve a destination string into the best matching waypoint. Exact tag and label
+  // matches are preferred, otherwise we bubble up a short suggestion list.
   useEffect(() => {
     if (!activeDestination || !maps.length) {
       setSuggestions([]);
@@ -174,6 +185,8 @@ export function FloorMapViewer({ activeDestination }: FloorMapViewerProps) {
     setNavigationStatus(`Pinned ${point.label} on ${map ? formatFloorLabel(map) : "selected map"}`);
   };
 
+  // Sends the preview payload to the navigation stub so external systems can hook in during
+  // demos or integration testing.
   const handleStartNavigation = async () => {
     if (!payloadPreview) return;
     setSending(true);
