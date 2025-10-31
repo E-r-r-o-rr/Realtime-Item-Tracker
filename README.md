@@ -52,6 +52,24 @@ The application ships with:
 - **better-sqlite3** – Embedded database driver used in the API layer and bootstrap script.
 - **ESLint + TypeScript** – Linting and static types for predictable builds.
 
+### Python packages
+- **Pillow** + **zxing-cpp** – Required by `scripts/barcode_decode.py` to open captured images and run the ZXing barcode decoder.
+- **huggingface_hub** – Used by `scripts/ocr_extract.py` when routing remote jobs through Hugging Face’s Inference Client.
+- **openai** – Powers both direct OpenAI calls and Azure OpenAI compatibility layers inside `scripts/ocr_extract.py`.
+- **torch** + **transformers** – Power the local VLM bridge in `scripts/ocr_extract.py` and `scripts/ocr_local_service.py`; install GPU builds where applicable.
+- **scipy** *(optional)* – Enables Hungarian matching in `scripts/barcode_ocr_match.py`; the script falls back to a greedy matcher if missing.
+- **numpy** + **pandas** *(optional)* – Provide richer JSON sanitising inside `scripts/barcode_ocr_match.py` when present.
+
+Install the Python stack in a virtual environment, for example:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install pillow zxing-cpp huggingface_hub openai torch transformers
+# Optional extras used for richer matching/reporting:
+pip install scipy numpy pandas
+```
+
 ### Native/system considerations
 - Installing `better-sqlite3` may require build tools (`python3`, `make`, and a C++ toolchain) on your platform.
 - Camera capture relies on modern browsers with `MediaDevices.getUserMedia` support. When testing locally over HTTPS, use `npm run dev -- --hostname 0.0.0.0` or a tunnel to grant camera permissions.
