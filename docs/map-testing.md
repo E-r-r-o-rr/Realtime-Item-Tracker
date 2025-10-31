@@ -5,7 +5,7 @@ This document captures the manual checks run against the floor-map workflow. The
 ## Prerequisites
 
 1. Open the dashboard and navigate to the Home view.
-2. Scroll to **Map Administration** and upload at least three floor variants using the built-in uploader. For quick testing you can reuse any internal warehouse schematics or the bundled sample SVG (`public/images/warehouse-grid.svg`).
+2. Scroll to **Map Administration** and upload at least three floor variants using the built-in uploader. The `npm run bootstrap` command copies a demo SVG into `data/maps/`, or you can reuse any internal schematics such as the bundled sample (`public/images/warehouse-grid.svg`).
 3. Annotate each map with a handful of destinations. For example:
    - `floor1`: add points for `Dock 3`, `R1-A`, and `W9`.
    - `floor1-section-a`: add `D3` as a synonym of `Dock 3` and mark a distinct rack (e.g., `A-12`).
