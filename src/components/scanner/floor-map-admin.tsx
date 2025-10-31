@@ -14,13 +14,13 @@ interface PendingPoint {
   yPx: number;
 }
 
-const emptyPendingPoint: PendingPoint | null = null;
-
+// Helper to display optional numeric metadata in read/write forms.
 const formatNumber = (value: number | null | undefined, precision = 2) => {
   if (value === null || value === undefined || Number.isNaN(value)) return "";
   return Number(value).toFixed(precision);
 };
 
+// Broadcast an update event so any listeners (e.g. the viewer) can refresh their data.
 const dispatchMapsUpdated = () => {
   window.dispatchEvent(new Event("floor-map:updated"));
 };
@@ -41,7 +41,7 @@ export function FloorMapAdmin() {
   const [uploadScale, setUploadScale] = useState("1");
   const [uploadStatus, setUploadStatus] = useState("");
 
-  const [pendingPoint, setPendingPoint] = useState<PendingPoint | null>(emptyPendingPoint);
+  const [pendingPoint, setPendingPoint] = useState<PendingPoint | null>(null);
   const [pointLabel, setPointLabel] = useState("");
   const [pointSynonyms, setPointSynonyms] = useState("");
   const [adminStatus, setAdminStatus] = useState("");
@@ -63,6 +63,8 @@ export function FloorMapAdmin() {
     georefScaleMPx: "1",
   });
 
+  // Pull the latest map inventory from the API so the admin tools stay in sync with
+  // persisted state.
   const loadMaps = useCallback(async () => {
     setLoading(true);
     try {
@@ -74,7 +76,7 @@ export function FloorMapAdmin() {
       const payload = safeParseJson<{ maps?: FloorMap[] }>(raw, { maps: [] }, "floor map admin list");
       const list: FloorMap[] = Array.isArray(payload.maps) ? payload.maps : [];
       setMaps(list);
-      setPendingPoint(emptyPendingPoint);
+      setPendingPoint(null);
       if (!list.length) {
         setSelectedMapId(null);
         return;
@@ -90,10 +92,12 @@ export function FloorMapAdmin() {
     }
   }, [selectedMapId]);
 
+  // Initial load.
   useEffect(() => {
     loadMaps();
   }, [loadMaps]);
 
+  // Keep the edit form aligned with whichever map is currently selected.
   useEffect(() => {
     if (!selectedMap) {
       setGeorefForm({
@@ -118,6 +122,8 @@ export function FloorMapAdmin() {
     });
   }, [selectedMap]);
 
+  // When a user chooses an image we calculate natural dimensions so geo metadata can be
+  // pre-populated.
   const handleUploadFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     setUploadFile(file ?? null);
@@ -155,6 +161,7 @@ export function FloorMapAdmin() {
     setUploadScale("1");
   };
 
+  // Upload a new map background and metadata to the API.
   const handleUpload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!uploadFile || !uploadName.trim()) {
@@ -199,6 +206,7 @@ export function FloorMapAdmin() {
     }
   };
 
+  // Capture click coordinates to stage a new waypoint marker.
   const handleMapClick = (event: MouseEvent<HTMLDivElement>) => {
     if (!selectedMap) return;
     const bounding = event.currentTarget.getBoundingClientRect();
@@ -210,6 +218,7 @@ export function FloorMapAdmin() {
     setAdminStatus(`Staged point at (${xPx}, ${yPx}). Add a label to save.`);
   };
 
+  // Allow keyboard users to cancel pending markers.
   const handleMapKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
@@ -220,6 +229,7 @@ export function FloorMapAdmin() {
     setAdminStatus(`Staged point at (${xPx}, ${yPx}). Add a label to save.`);
   };
 
+  // Commit the staged waypoint to the API so it becomes available to navigators.
   const handleCreatePoint = async () => {
     if (!selectedMap || !pendingPoint) {
       setAdminStatus("Click the map to choose coordinates first.");
@@ -254,7 +264,7 @@ export function FloorMapAdmin() {
       setAdminStatus(`Saved point ${pointLabel.trim()} at (${pendingPoint.xPx}, ${pendingPoint.yPx}).`);
       setPointLabel("");
       setPointSynonyms("");
-      setPendingPoint(emptyPendingPoint);
+      setPendingPoint(null);
       await loadMaps();
       dispatchMapsUpdated();
     } catch (error) {
@@ -265,6 +275,7 @@ export function FloorMapAdmin() {
     }
   };
 
+  // Remove a waypoint from the selected map.
   const handleDeletePoint = async (pointId: number) => {
     if (!selectedMap) return;
     try {
@@ -286,6 +297,7 @@ export function FloorMapAdmin() {
     }
   };
 
+  // Persist edited geospatial metadata for the active map.
   const handleSaveGeoref = async () => {
     if (!selectedMap) return;
     setSavingGeoref(true);
