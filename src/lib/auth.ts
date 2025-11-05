@@ -117,16 +117,17 @@ export async function verifySession(raw: string | undefined | null): Promise<Ses
 
   let signatureBytes: Uint8Array;
   try {
-    signatureBytes = fromBase64Url(signature);
+    signatureBytes = new Uint8Array(fromBase64Url(signature));
   } catch {
     return null;
   }
 
   const key = await getSigningKey();
+  const signatureBuffer = toArrayBuffer(signatureBytes);
   const isValid = await getCrypto().subtle.verify(
     "HMAC",
     key,
-    toArrayBuffer(signatureBytes),
+    signatureBuffer,
     encoder.encode(encodedPayload),
   );
 
