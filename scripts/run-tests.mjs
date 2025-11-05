@@ -34,8 +34,14 @@ if (testFiles.length === 0) {
 
 const loaderPath = path.join(testsDir, 'ts-loader.mjs');
 const loaderSpecifier = pathToFileURL(loaderPath).href;
+const registerSource = [
+  'import { register } from "node:module";',
+  'import { pathToFileURL } from "node:url";',
+  `register(${JSON.stringify(loaderSpecifier)}, pathToFileURL("./"));`,
+].join(' ');
+const registerDataUrl = `data:text/javascript,${encodeURIComponent(registerSource)}`;
 
-const child = spawn(process.execPath, ['--test', '--loader', loaderSpecifier, ...testFiles], {
+const child = spawn(process.execPath, ['--test', '--import', registerDataUrl, ...testFiles], {
   stdio: 'inherit',
   cwd: projectRoot,
   env: process.env,
