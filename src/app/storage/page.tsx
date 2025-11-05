@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,11 +62,44 @@ const fieldToPayloadKey: Record<EditableField, string> = {
   expectedDepartureTime: "expectedDepartureTime",
 };
 
+interface OrderFormState {
+  destination: string;
+  itemName: string;
+  trackingId: string;
+  truckNumber: string;
+  shipDate: string;
+  expectedDepartureTime: string;
+  originLocation: string;
+  booked: boolean;
+}
+
+const initialOrderState: OrderFormState = {
+  destination: "",
+  itemName: "",
+  trackingId: "",
+  truckNumber: "",
+  shipDate: "",
+  expectedDepartureTime: "",
+  originLocation: "",
+  booked: false,
+};
+
+const requiredOrderFields: Array<Exclude<keyof OrderFormState, "booked">> = [
+  "destination",
+  "itemName",
+  "trackingId",
+  "truckNumber",
+  "shipDate",
+  "expectedDepartureTime",
+  "originLocation",
+];
+
 export default function StoragePage() {
   const [storage, setStorage] = useState<StorageRow[]>([]);
   const [bookings, setBookings] = useState<BookingRow[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [newOrder, setNewOrder] = useState<OrderFormState>(initialOrderState);
 
   const applyPayload = useCallback(
     (payload: any, previousTrackingId?: string) => {
@@ -130,14 +163,47 @@ export default function StoragePage() {
         }
         applyPayload(payload, previousTrackingId);
         setError(null);
+        return true;
       } catch (err) {
         console.error(err);
         setError(err instanceof Error ? err.message : "Storage update failed.");
+        return false;
       } finally {
         setLoading(false);
       }
     },
     [applyPayload]
+  );
+
+  const handleNewOrderChange = (field: keyof OrderFormState, value: string | boolean) => {
+    setNewOrder((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleCreateOrder = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const body = {
+      destination: newOrder.destination.trim(),
+      itemName: newOrder.itemName.trim(),
+      trackingId: newOrder.trackingId.trim(),
+      truckNumber: newOrder.truckNumber.trim(),
+      shipDate: newOrder.shipDate.trim(),
+      expectedDepartureTime: newOrder.expectedDepartureTime.trim(),
+      originLocation: newOrder.originLocation.trim(),
+      booked: newOrder.booked,
+    };
+    const success = await mutate("/api/storage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (success) {
+      setNewOrder(initialOrderState);
+    }
+  };
+
+  const isCreateDisabled = useMemo(
+    () => loading || requiredOrderFields.some((field) => newOrder[field].trim().length === 0),
+    [loading, newOrder]
   );
 
   const toggleBooked = (record: StorageRow, value: boolean) => {
@@ -203,6 +269,93 @@ export default function StoragePage() {
         </p>
         {error && <p className="text-sm text-rose-300">{error}</p>}
       </div>
+
+      <Card
+        className="mb-10"
+        header={<span className="text-lg font-semibold text-slate-100">Create new storage order</span>}
+      >
+        <form onSubmit={handleCreateOrder} className="space-y-6">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <label className="flex flex-col gap-2 text-sm text-slate-300/80">
+              Destination (rack)
+              <Input
+                value={newOrder.destination}
+                onChange={(event) => handleNewOrderChange("destination", event.target.value)}
+                placeholder="e.g. Rack A3"
+                required
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-sm text-slate-300/80">
+              Item name
+              <Input
+                value={newOrder.itemName}
+                onChange={(event) => handleNewOrderChange("itemName", event.target.value)}
+                placeholder="e.g. Pallet of routers"
+                required
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-sm text-slate-300/80">
+              Tracking ID
+              <Input
+                value={newOrder.trackingId}
+                onChange={(event) => handleNewOrderChange("trackingId", event.target.value)}
+                placeholder="e.g. RT-458392"
+                required
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-sm text-slate-300/80">
+              Truck number
+              <Input
+                value={newOrder.truckNumber}
+                onChange={(event) => handleNewOrderChange("truckNumber", event.target.value)}
+                placeholder="e.g. VIC-42"
+                required
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-sm text-slate-300/80">
+              Ship date
+              <Input
+                value={newOrder.shipDate}
+                onChange={(event) => handleNewOrderChange("shipDate", event.target.value)}
+                placeholder="YYYY-MM-DD"
+                required
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-sm text-slate-300/80">
+              Expected departure time
+              <Input
+                value={newOrder.expectedDepartureTime}
+                onChange={(event) => handleNewOrderChange("expectedDepartureTime", event.target.value)}
+                placeholder="e.g. 16:45"
+                required
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-sm text-slate-300/80 sm:col-span-2 lg:col-span-3">
+              Origin location
+              <Input
+                value={newOrder.originLocation}
+                onChange={(event) => handleNewOrderChange("originLocation", event.target.value)}
+                placeholder="e.g. Melbourne DC"
+                required
+              />
+            </label>
+          </div>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <label className="flex items-center gap-3 text-sm text-slate-300/80">
+              <input
+                type="checkbox"
+                checked={newOrder.booked}
+                onChange={(event) => handleNewOrderChange("booked", event.target.checked)}
+                className="h-4 w-4 rounded border-white/20 bg-transparent text-indigo-400 focus:ring-indigo-400/70"
+              />
+              Mark as booked immediately
+            </label>
+            <Button type="submit" disabled={isCreateDisabled}>
+              Add to storage
+            </Button>
+          </div>
+        </form>
+      </Card>
 
       <Card
         className="mb-10"

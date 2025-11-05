@@ -1020,3 +1020,14 @@ export const syncLiveBufferWithStorage = (): LiveBufferRecord[] => {
   return listLiveBuffer();
 };
 
+export function __resetDbForTests(): void {
+  if (db) {
+    try {
+      db.close();
+    } catch {
+      // ignore close errors during tests
+    }
+    db = null;
+  }
+}
+
