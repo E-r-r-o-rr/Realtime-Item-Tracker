@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "sh -c 'node --test --loader ./tests/ts-loader.mjs $(find tests -name \"*.ts\" -print)'",
+    "test": "node ./scripts/run-tests.mjs",
     "bootstrap": "node scripts/bootstrap.js"
   },
   "dependencies": {
