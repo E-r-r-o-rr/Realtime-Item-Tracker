@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,8 +33,9 @@ if (testFiles.length === 0) {
 }
 
 const loaderPath = path.join(testsDir, 'ts-loader.mjs');
+const loaderSpecifier = pathToFileURL(loaderPath).href;
 
-const child = spawn(process.execPath, ['--test', '--loader', loaderPath, ...testFiles], {
+const child = spawn(process.execPath, ['--test', '--loader', loaderSpecifier, ...testFiles], {
   stdio: 'inherit',
   cwd: projectRoot,
   env: process.env,
