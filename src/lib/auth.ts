@@ -81,10 +81,6 @@ function fromBase64Url(value: string) {
   return base64ToBytes(padded);
 }
 
-function toArrayBuffer(bytes: Uint8Array) {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-}
-
 export function getAllowedCredentials() {
   const username = process.env.AUTH_USERNAME?.trim() || DEFAULT_USERNAME;
   const password = process.env.AUTH_PASSWORD?.trim() || DEFAULT_PASSWORD;
@@ -117,17 +113,20 @@ export async function verifySession(raw: string | undefined | null): Promise<Ses
 
   let signatureBytes: Uint8Array;
   try {
-    signatureBytes = new Uint8Array(fromBase64Url(signature));
+    const decodedSignature = fromBase64Url(signature);
+    signatureBytes = decodedSignature instanceof Uint8Array
+      ? decodedSignature
+      : new Uint8Array(decodedSignature);
   } catch {
     return null;
   }
 
   const key = await getSigningKey();
-  const signatureBuffer = toArrayBuffer(signatureBytes);
+  const normalizedSignature = new Uint8Array(signatureBytes);
   const isValid = await getCrypto().subtle.verify(
     "HMAC",
     key,
-    signatureBuffer,
+    normalizedSignature,
     encoder.encode(encodedPayload),
   );
 
