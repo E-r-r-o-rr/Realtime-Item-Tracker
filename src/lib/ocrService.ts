@@ -10,6 +10,24 @@ import {
   invokeLocalService,
 } from './localVlmService';
 
+type LoadSettingsFn = typeof loadPersistedVlmSettings;
+type GetServiceStatusFn = typeof getLocalVlmServiceStatus;
+type InvokeLocalFn = typeof invokeLocalService;
+
+let loadSettingsFn: LoadSettingsFn = loadPersistedVlmSettings;
+let getServiceStatusFn: GetServiceStatusFn = getLocalVlmServiceStatus;
+let invokeLocalFn: InvokeLocalFn = invokeLocalService;
+
+export function __setOcrServiceTestOverrides(overrides?: {
+  loadSettings?: LoadSettingsFn;
+  getServiceStatus?: GetServiceStatusFn;
+  invokeLocal?: InvokeLocalFn;
+}): void {
+  loadSettingsFn = overrides?.loadSettings ?? loadPersistedVlmSettings;
+  getServiceStatusFn = overrides?.getServiceStatus ?? getLocalVlmServiceStatus;
+  invokeLocalFn = overrides?.invokeLocal ?? invokeLocalService;
+}
+
 export type VlmProviderInfo = {
   mode: 'remote' | 'local';
   providerType?: string;
@@ -72,11 +90,11 @@ const SELECTED_CANONICAL_BY_NORMALIZED: Record<string, string> = (() => {
   return entries;
 })();
 
-function normalizeLabelKey(value: string): string {
+export function normalizeLabelKey(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-function sanitizeKvRecord(input: unknown): Record<string, string> {
+export function sanitizeKvRecord(input: unknown): Record<string, string> {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return {};
   }
@@ -137,7 +155,7 @@ function buildSelectedFromAll(all: Record<string, string>): Record<string, strin
   return selected;
 }
 
-function deriveSelectedKv(all: Record<string, string>, selectedRaw: unknown): Record<string, string> {
+export function deriveSelectedKv(all: Record<string, string>, selectedRaw: unknown): Record<string, string> {
   const base = buildSelectedFromAll(all);
   const overrides = sanitizeKvRecord(selectedRaw);
   const merged: Record<string, string> = { ...base };
@@ -167,7 +185,7 @@ function rmrf(p: string) {
   } catch {}
 }
 
-function deriveOcrErrorMessage(stdout: string, stderr: string, code?: number): string {
+export function deriveOcrErrorMessage(stdout: string, stderr: string, code?: number): string {
   const fallback = code ? `OCR pipeline failed (code ${code})` : 'OCR pipeline failed.';
   const combined = `${stderr}\n${stdout}`
     .split(/\r?\n/)
@@ -192,7 +210,7 @@ function deriveOcrErrorMessage(stdout: string, stderr: string, code?: number): s
  * Falls back to a stub if the script fails or is missing.
  */
 export async function extractKvPairs(filePath: string): Promise<OcrExtractionResult> {
-  const vlmSettings = loadPersistedVlmSettings();
+  const vlmSettings = loadSettingsFn();
   const configuredModel =
     vlmSettings.mode === 'remote'
       ? vlmSettings.remote.modelId?.trim() || DEFAULT_MODEL
@@ -225,7 +243,7 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
   }
 
   if (usingLocalMode) {
-    const serviceStatus = getLocalVlmServiceStatus();
+    const serviceStatus = getServiceStatusFn();
     if (serviceStatus.state !== 'running') {
       const stateMessage =
         serviceStatus.state === 'stopped'
@@ -245,7 +263,7 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
         `[local-service] Running on ${serviceStatus.host}:${serviceStatus.port} (model=${serviceStatus.modelId || 'unknown'})`,
       );
       try {
-        const inference = await invokeLocalService(filePath, {
+        const inference = await invokeLocalFn(filePath, {
           normalizeDates: true,
         });
         if (inference.ok && inference.result?.llm_parsed) {
@@ -462,7 +480,7 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
   }
 }
 
-function stubFromFilename(filePath: string): Record<string, string> {
+export function stubFromFilename(filePath: string): Record<string, string> {
   const basename = path.basename(filePath).toLowerCase();
   const code = basename.replace(/[^a-z0-9]+/g, '').slice(0, 6) || randomUUID().slice(0, 6);
   return {
