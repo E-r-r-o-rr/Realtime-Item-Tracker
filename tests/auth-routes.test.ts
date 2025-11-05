@@ -160,7 +160,7 @@ describe("auth logout route", () => {
       "@/app/api/auth/logout/route",
     );
 
-    const response = await POST(new Request("https://example.test/api/auth/logout", { method: "POST" }));
+    const response = await POST();
 
     assert.equal(response.status, 200);
     const data = (await response.json()) as { success: boolean };

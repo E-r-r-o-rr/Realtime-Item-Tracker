@@ -17,7 +17,11 @@ async function collectTestFiles(dir) {
 
     if (entry.isDirectory()) {
       files.push(...(await collectTestFiles(fullPath)));
-    } else if (entry.isFile() && fullPath.endsWith('.ts')) {
+    } else if (
+      entry.isFile() &&
+      fullPath.endsWith('.ts') &&
+      !fullPath.endsWith('.d.ts')
+    ) {
       files.push(fullPath);
     }
   }
