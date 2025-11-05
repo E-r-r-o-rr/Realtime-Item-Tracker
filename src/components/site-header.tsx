@@ -4,6 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 
+import { LogoutButton } from "@/components/auth/logout-button";
+
 const links = [
   { href: "/", label: "Scanner" },
   { href: "/history", label: "History" },
@@ -20,7 +22,12 @@ const activeLinkStyles =
 const inactiveLinkStyles =
   "text-slate-300/70 hover:text-slate-100 hover:after:scale-x-100";
 
-export function SiteHeader() {
+type SiteHeaderProps = {
+  authenticated?: boolean;
+  username?: string;
+};
+
+export function SiteHeader({ authenticated = false, username }: SiteHeaderProps) {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -32,6 +39,7 @@ export function SiteHeader() {
   };
 
   const toggleMenu = () => setMenuOpen((open) => !open);
+  const onLoginPage = pathname === "/login";
 
   return (
     <header className="relative z-20 border-b border-white/10 bg-slate-900/50 backdrop-blur-xl">
@@ -44,29 +52,54 @@ export function SiteHeader() {
             Realtime Item Tracker
           </span>
         </Link>
-        <nav className="hidden items-center gap-10 md:flex">
-          {links.map((link) => (
-            <Link
-              key={link.href}
-              href={link.href}
-              className={`${baseLinkStyles} ${isActive(link.href) ? activeLinkStyles : inactiveLinkStyles}`}
+        {authenticated && (
+          <nav className="hidden items-center gap-10 md:flex">
+            {links.map((link) => (
+              <Link
+                key={link.href}
+                href={link.href}
+                className={`${baseLinkStyles} ${isActive(link.href) ? activeLinkStyles : inactiveLinkStyles}`}
+              >
+                {link.label}
+              </Link>
+            ))}
+          </nav>
+        )}
+        <div className="flex items-center gap-3">
+          {authenticated ? (
+            <>
+              {username && (
+                <span className="hidden text-sm font-medium text-slate-200 sm:inline">
+                  Signed in as <span className="text-slate-100">{username}</span>
+                </span>
+              )}
+              <LogoutButton />
+            </>
+          ) : (
+            !onLoginPage && (
+              <Link
+                href="/login"
+                className="inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+              >
+                Sign in
+              </Link>
+            )
+          )}
+          {authenticated && (
+            <button
+              type="button"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-slate-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 md:hidden"
+              onClick={toggleMenu}
+              aria-label="Toggle navigation"
             >
-              {link.label}
-            </Link>
-          ))}
-        </nav>
-        <button
-          type="button"
-          className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-slate-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 md:hidden"
-          onClick={toggleMenu}
-          aria-label="Toggle navigation"
-        >
-          <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16M4 12h16M4 17h16" />
-          </svg>
-        </button>
+              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16M4 12h16M4 17h16" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
-      {menuOpen && (
+      {authenticated && menuOpen && (
         <div className="border-t border-white/10 bg-slate-900/70 backdrop-blur-xl md:hidden">
           <nav className="flex flex-col space-y-1 px-4 py-4">
             {links.map((link) => (
