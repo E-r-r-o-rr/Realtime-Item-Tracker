@@ -600,7 +600,10 @@ export default function SettingsPage() {
     if (exit.signal) {
       parts.push(`signal ${exit.signal}`);
     }
-    const time = typeof exit.at === "number" ? new Date(exit.at).toLocaleTimeString() : null;
+    const time =
+      hydrated && typeof exit.at === "number"
+        ? new Date(exit.at).toLocaleTimeString()
+        : null;
     if (!parts.length && !time) return null;
     if (parts.length && time) {
       return `Last exit (${parts.join(", ")}) at ${time}.`;
@@ -609,14 +612,16 @@ export default function SettingsPage() {
       return `Last exit (${parts.join(", ")}).`;
     }
     return time ? `Last exit at ${time}.` : null;
-  }, [localServiceState.lastExit]);
+  }, [hydrated, localServiceState.lastExit]);
 
   const serviceMessage = (() => {
     switch (localServiceState.state) {
       case "running": {
         const port = localServiceState.port;
         const since =
-          localServiceState.startedAt && Number.isFinite(localServiceState.startedAt)
+          hydrated &&
+          localServiceState.startedAt &&
+          Number.isFinite(localServiceState.startedAt)
             ? new Date(localServiceState.startedAt).toLocaleTimeString()
             : null;
         const base = port
