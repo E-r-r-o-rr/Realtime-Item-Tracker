@@ -970,21 +970,28 @@ export default function ScannerDashboard() {
 
   // Resets the dashboard when a new document is selected so stale extraction data is not
   // displayed while the next scan runs.
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    setFile(f ?? null);
+  const resetExtractionState = useCallback(() => {
     setCapturedImage(null);
-    setIsCameraOpen(false);
-    stopCameraStream();
-    setCameraError(null);
     setKv(null);
     setSelectedKv(null);
     setStatus(null);
     setBarcodes([]);
     setBarcodeWarnings([]);
+    setBarcodeComparison(null);
     setValidation(null);
     setBookingWarning(null);
+    setBookingSuccess(null);
     setBookingLocated(false);
+    setVlmInfo(null);
+  }, []);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    setFile(f ?? null);
+    setIsCameraOpen(false);
+    stopCameraStream();
+    setCameraError(null);
+    resetExtractionState();
   };
 
   // Uploads a file to the OCR endpoint and hydrates the dashboard with the extracted
@@ -1210,21 +1217,22 @@ export default function ScannerDashboard() {
     }
 
     const previewDataUrl = canvas.toDataURL("image/jpeg", 0.85);
-    if (previewDataUrl) {
-      setCapturedImage(previewDataUrl);
-    }
-
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const capturedFile = new File([blob], `camera-capture-${timestamp}.jpg`, {
       type: blob.type || "image/jpeg",
     });
+
+    resetExtractionState();
+    if (previewDataUrl) {
+      setCapturedImage(previewDataUrl);
+    }
 
     setCameraError(null);
     setFile(capturedFile);
     setIsCameraOpen(false);
     stopCameraStream();
     await runScan(capturedFile);
-  }, [runScan, stopCameraStream]);
+  }, [resetExtractionState, runScan, stopCameraStream]);
 
   // Seeds the UI with canned manifest data so demos can run without an actual camera feed.
   const handleDemoScan = () => {
