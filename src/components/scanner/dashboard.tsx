@@ -895,13 +895,25 @@ export default function ScannerDashboard() {
     const startCamera = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment" },
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
         });
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop());
           return;
         }
         streamRef.current = stream;
+        const [track] = stream.getVideoTracks();
+        if (track && typeof track.applyConstraints === "function") {
+          const torchConstraint = { torch: true } as unknown as MediaTrackConstraintSet;
+          const advancedConstraints = { advanced: [torchConstraint] } as MediaTrackConstraints;
+          track.applyConstraints(advancedConstraints).catch(() => {
+            /* Torch support is optional; ignore failures. */
+          });
+        }
         const video = videoRef.current;
         if (video) {
           video.srcObject = stream;
@@ -1198,18 +1210,23 @@ export default function ScannerDashboard() {
       return;
     }
 
+    const minCaptureWidth = 1200;
+    const maxCaptureWidth = 2000;
     const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
+    const targetWidth = Math.round(Math.min(Math.max(width, minCaptureWidth), maxCaptureWidth));
+    const scale = targetWidth / width;
+    const targetHeight = Math.round(height * scale);
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
     const context = canvas.getContext("2d");
     if (!context) {
       setStatus("Unable to capture an image from the camera feed.");
       return;
     }
-    context.drawImage(video, 0, 0, width, height);
+    context.drawImage(video, 0, 0, targetWidth, targetHeight);
 
     const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob((result) => resolve(result), "image/jpeg", 0.92),
+      canvas.toBlob((result) => resolve(result), "image/jpeg", 0.8),
     );
     if (!blob) {
       setStatus("Unable to capture an image from the camera feed.");
@@ -1477,7 +1494,7 @@ export default function ScannerDashboard() {
               )}
               {isCameraOpen ? (
                 <div className="space-y-4">
-                  <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/40">
+                  <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-black/40">
                     <video
                       ref={videoRef}
                       className="h-56 w-full object-cover"
@@ -1486,7 +1503,19 @@ export default function ScannerDashboard() {
                       autoPlay
                       onLoadedMetadata={handleCameraLoaded}
                     />
+                    {cameraReady && !cameraError && (
+                      <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-4 p-4">
+                        <div className="h-28 w-56 rounded-xl border border-white/70 bg-black/20" />
+                        <p className="rounded-full bg-black/60 px-4 py-1 text-xs font-medium uppercase tracking-wide text-white/90">
+                          Fill this with the barcode. Hold steady for 1s.
+                        </p>
+                      </div>
+                    )}
                   </div>
+                  <p className="text-xs text-slate-300/80">
+                    Tip: tilt the sheet slightly to dodge glare—we’ll try to enable your device torch automatically when
+                    it’s available.
+                  </p>
                   {cameraError && (
                     <p className="rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">
                       {cameraError}
