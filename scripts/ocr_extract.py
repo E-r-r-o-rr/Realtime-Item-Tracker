@@ -46,6 +46,12 @@ BASE_EXTRACTION_PROMPT = (
 # Config helpers
 # --------------------------
 def load_remote_config() -> Optional[Dict[str, Any]]:
+    """Return the remote VLM configuration encoded in ``VLM_REMOTE_CONFIG``.
+
+    The helper keeps the rest of the module agnostic to how configuration is
+    provided by swallowing JSON parsing errors and returning ``None`` when the
+    environment variable is missing or malformed.
+    """
     raw = os.environ.get("VLM_REMOTE_CONFIG")
     if not raw:
         return None
@@ -56,6 +62,7 @@ def load_remote_config() -> Optional[Dict[str, Any]]:
         return None
 
 def normalize_hf_base_url(value: Optional[str]) -> str:
+    """Normalise Hugging Face router URLs while handling deprecated hosts."""
     # Kept for generic HTTP mode; not used by the HF SDK path.
     if not isinstance(value, str):
         return ""
@@ -74,6 +81,7 @@ def normalize_hf_base_url(value: Optional[str]) -> str:
     return trimmed
 
 def ensure_chat_completions_url(base_url: str) -> str:
+    """Ensure the supplied base URL points at a chat completions endpoint."""
     if not isinstance(base_url, str) or not base_url.strip():
         raise ValueError("Base URL is required for remote VLM calls")
     parts = urlsplit(base_url.strip())
@@ -92,6 +100,7 @@ def ensure_chat_completions_url(base_url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, final_path, parts.query, parts.fragment))
 
 def append_query_params(url: str, params: Dict[str, Optional[str]]) -> str:
+    """Add optional query parameters without clobbering existing ones."""
     if not params:
         return url
     parts = urlsplit(url)
@@ -112,14 +121,17 @@ def append_query_params(url: str, params: Dict[str, Optional[str]]) -> str:
 # I/O utils
 # --------------------------
 def safe_mkdir(d: str):
+    """Create ``d`` (and parents) when a truthy path is supplied."""
     if d:
         Path(d).mkdir(parents=True, exist_ok=True)
 
 def guess_mime(p: str) -> str:
+    """Best-effort MIME type detection for outgoing image payloads."""
     mime, _ = mimetypes.guess_type(p)
     return mime or "image/jpeg"
 
 def encode_image_to_base64(image_path: str) -> str:
+    """Return a ``data:`` URI with the base64 encoded contents of ``image_path``."""
     # Keeping base64 data URI for compatibility — HF SDK handles large payloads via multipart/stream.
     with open(image_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -129,6 +141,7 @@ def encode_image_to_base64(image_path: str) -> str:
 # JSON path helpers
 # --------------------------
 def parse_path_tokens(path: str) -> List[Union[str, int]]:
+    """Tokenise dotted/array JSON paths into index-aware components."""
     tokens: List[Union[str, int]] = []
     buf = ""
     i = 0
@@ -153,6 +166,7 @@ def parse_path_tokens(path: str) -> List[Union[str, int]]:
     return tokens
 
 def extract_json_path(data: Any, path: str) -> Any:
+    """Traverse ``data`` by ``path`` (``foo.bar[0]`` style) returning ``None`` when missing."""
     if not path:
         return data
     current = data
@@ -175,6 +189,7 @@ def extract_json_path(data: Any, path: str) -> Any:
 # HTTP header builder
 # --------------------------
 def build_http_headers(remote_cfg: Dict[str, Any]) -> Dict[str, str]:
+    """Construct provider-specific HTTP headers for raw REST calls."""
     headers: Dict[str, str] = {}
     scheme = str(remote_cfg.get("authScheme") or "bearer").lower()
     header_name = str(remote_cfg.get("authHeaderName") or "Authorization")
@@ -208,6 +223,7 @@ def build_vlm_messages(
     ocr_txt: Optional[str] = None,
     system_prompt: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    """Create an OpenAI-compatible chat message payload for a single image scan."""
     img_b64 = encode_image_to_base64(image_path)
     instruction = BASE_EXTRACTION_PROMPT
     user_content = [
@@ -233,6 +249,7 @@ def build_vlm_messages(
     return messages
 
 def parse_bool(value: Optional[str], default: bool = False) -> bool:
+    """Interpret a CLI/environment flag into a boolean value."""
     if value is None:
         return default
     if isinstance(value, bool):
@@ -242,6 +259,7 @@ def parse_bool(value: Optional[str], default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 def compose_prompt_text(system_prompt: Optional[str], ocr_txt: Optional[str]) -> str:
+    """Build the human-readable prompt text shared with CLI logging paths."""
     parts: List[str] = []
     if isinstance(system_prompt, str):
         stripped = system_prompt.strip()
@@ -266,6 +284,7 @@ def build_local_vlm_call(
     attn_impl: Optional[str],
     system_prompt: Optional[str],
 ) -> Callable[[str, Optional[str]], str]:
+    """Instantiate a callable that runs the local VLM and returns decoded text."""
     try:
         import torch
     except ImportError as ie:
@@ -519,6 +538,7 @@ def build_local_vlm_call(
 # Local model availability check
 # --------------------------
 def ensure_local_model_available(model_id: str) -> None:
+    """Validate that the requested model exists in the local HF cache."""
     normalized = (model_id or DEFAULT_MODEL).strip() or DEFAULT_MODEL
     print(f"[check] Verifying local cache for '{normalized}'…")
 
@@ -814,6 +834,7 @@ def call_http_vlm(
 # LLM output helpers
 # --------------------------
 def to_str_content(msg: Any) -> str:
+    """Coerce OpenAI-style message payloads into a plain string."""
     if msg is None:
         return ""
     content = getattr(msg, "content", None)
@@ -841,6 +862,7 @@ CODE_FENCE_RE = re.compile(r"^```(?:json|JSON)?\s*|\s*```$", re.S)
 SMART_QUOTES_RE = str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'"})
 
 def _preclean(text: str) -> str:
+    """Normalise provider responses by stripping code fences and smart quotes."""
     t = text.strip()
     t = CODE_FENCE_RE.sub("", t)
     t = t.replace("\u00A0", " ")
@@ -850,6 +872,7 @@ def _preclean(text: str) -> str:
     return t.strip()
 
 def _find_object_span(t: str) -> Optional[Tuple[int,int]]:
+    """Locate the outermost JSON object boundaries in ``t`` if present."""
     s = t.find("{")
     e = t.rfind("}")
     if s != -1 and e != -1 and e > s:
@@ -857,6 +880,7 @@ def _find_object_span(t: str) -> Optional[Tuple[int,int]]:
     return None
 
 def try_json_load(text: str) -> Optional[dict]:
+    """Best-effort JSON loader that trims non-JSON noise before parsing."""
     # Be tolerant: sometimes upstream hands non-strings
     if not isinstance(text, str):
         text = "" if text is None else str(text)
@@ -928,6 +952,7 @@ def maybe_zero_pad_dates(val: str, normalize_dates: bool) -> str:
     return DATE_RE.sub(repl, _trim(val))
 
 def _coerce_kv_dict(value: Any, normalize_dates: bool) -> Dict[str, str]:
+    """Convert mixed JSON structures into a predictable string->string dict."""
     out = OrderedDict()
 
     def assign(k: Any, v: Any):
@@ -1038,6 +1063,7 @@ def parse_universal_kv(llm_raw: str, normalize_dates: bool=True) -> Dict[str, Di
     }
 
 def write_json_array(recs: List[dict], path: str):
+    """Persist ``recs`` to ``path`` as UTF-8 encoded JSON."""
     safe_mkdir(Path(path).parent.as_posix())
     with open(path, "w", encoding="utf-8") as f:
         json.dump(recs, f, ensure_ascii=False, indent=2)
@@ -1051,6 +1077,7 @@ def process_one(
     normalize_dates: bool,
     ocr_hint: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """Run the VLM against ``image_path`` and return both raw and parsed output."""
     raw = vlm_call(image_path, ocr_hint)
     parsed = parse_universal_kv(raw, normalize_dates=normalize_dates)
     return {
@@ -1066,6 +1093,7 @@ def process_folder(
     normalize_dates: bool,
     ocr_hint: Optional[str] = None,
 ):
+    """Process every image in ``data_dir`` and persist a structured summary."""
     structured_json = str(Path(out_dir)/"structured.json")
     structured: List[dict] = []
 
