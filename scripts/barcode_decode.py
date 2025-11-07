@@ -62,14 +62,20 @@ def _load_dependencies() -> None:
 
 
 def ensure_dir(path: str) -> None:
+    """Create ``path`` (and parents) if missing without raising when it exists."""
+
     os.makedirs(path, exist_ok=True)
 
 
 def exif_fix(img):
+    """Normalize orientation metadata so downstream crops match on-disk pixels."""
+
     return ImageOps.exif_transpose(img).convert("RGB")
 
 
 def resize_to_width(img, target_w: int):
+    """Downscale ``img`` to ``target_w`` while preserving aspect ratio if wider."""
+
     if target_w <= 0 or img.width <= target_w:
         return img
     h = int(round(img.height * (target_w / img.width)))
@@ -77,14 +83,20 @@ def resize_to_width(img, target_w: int):
 
 
 def pil_to_np(img):
+    """Convert a PIL image into an RGB ``numpy`` array."""
+
     return np.array(img)
 
 
 def np_to_pil(arr):
+    """Convert a ``numpy`` image array back into a PIL image."""
+
     return Image.fromarray(arr)
 
 
 def iter_points_from_position(pos: Any) -> List[Tuple[int, int]]:
+    """Extract ``(x, y)`` tuples from ZXing position objects of varying shapes."""
+
     if pos is None:
         return []
     try:
@@ -110,6 +122,8 @@ def iter_points_from_position(pos: Any) -> List[Tuple[int, int]]:
 
 
 def bounding_rect_from_points_like(pos: Any) -> Tuple[int, int, int, int]:
+    """Compute a bounding rectangle for any ZXing position representation."""
+
     pts = iter_points_from_position(pos)
     if not pts:
         return 0, 0, 0, 0
@@ -128,6 +142,8 @@ def _ensure_pdf417_format() -> None:
 
 
 def zxing_pdf417(arr_rgb, try_downscale: bool = True, binarizer=None, try_rotate: bool = False):
+    """Run ZXingCPP PDF417 decoding with optional tweaks for stubborn barcodes."""
+
     _ensure_pdf417_format()
     kwargs = dict(formats=PDF417, try_rotate=try_rotate, try_downscale=try_downscale)
     if binarizer is not None:
@@ -136,6 +152,8 @@ def zxing_pdf417(arr_rgb, try_downscale: bool = True, binarizer=None, try_rotate
 
 
 def clahe_rgb(pil_img):
+    """Apply CLAHE contrast enhancement to an RGB PIL image."""
+
     gray = cv2.cvtColor(pil_to_np(pil_img), cv2.COLOR_RGB2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     g2 = clahe.apply(gray)
@@ -143,14 +161,20 @@ def clahe_rgb(pil_img):
 
 
 def unsharp(pil_img, radius: float = 1.2, amount: float = 1.6):
+    """Sharpen an image using an adjustable unsharp mask."""
+
     return pil_img.filter(ImageFilter.UnsharpMask(radius=radius, percent=int(amount * 100), threshold=0))
 
 
 def rotate_small(pil_img, deg: float):
+    """Rotate by a small angle while keeping high quality resampling."""
+
     return pil_img.rotate(deg, resample=Image.BICUBIC, expand=True)
 
 
 def _check_variant_impl(v_tuple):
+    """Decode a single preprocessing variant across downscale/binarizer combinations."""
+
     v, try_downscale_options, binarizers, try_rotate = v_tuple
     a = pil_to_np(v)
     for td in try_downscale_options:
@@ -165,6 +189,8 @@ def _check_variant_impl(v_tuple):
 
 
 def decode_single_view_pdf417(arr_rgb, try_downscale_options: Sequence[bool] = (True, False), try_rotate: bool = False):
+    """Attempt to decode one perspective of the image with multiple preprocess passes."""
+
     pil = np_to_pil(arr_rgb)
     variants = [
         pil,
@@ -195,6 +221,8 @@ def decode_single_view_pdf417(arr_rgb, try_downscale_options: Sequence[bool] = (
 
 
 def decode_rotations_and_skews_pdf417(arr_rgb):
+    """Scan cardinal rotations and small skews to compensate for camera misalignment."""
+
     for k in range(4):
         rot = np.rot90(arr_rgb, k=k)
         res = decode_single_view_pdf417(rot)
@@ -210,6 +238,8 @@ def decode_rotations_and_skews_pdf417(arr_rgb):
 
 
 def adaptive_bins(gray):
+    """Generate a suite of adaptive thresholded masks to expose barcode bars."""
+
     outs = []
     for blk in (11, 15, 21):
         for C in (2, 5, 8):
@@ -222,6 +252,8 @@ def adaptive_bins(gray):
 
 
 def pdf417_heavy_decode(arr_rgb):
+    """Perform an expensive, morphology-heavy search tuned for low-quality scans."""
+
     H, W = arr_rgb.shape[:2]
     regions = [arr_rgb, arr_rgb[int(H * 0.45):, :]]
     for region_idx, region in enumerate(regions):
@@ -260,6 +292,8 @@ def pdf417_heavy_decode(arr_rgb):
 
 
 def iou(a, b):
+    """Compute intersection-over-union for axis-aligned bounding boxes."""
+
     ax0, ay0, ax1, ay1 = a
     bx0, by0, bx1, by1 = b
     ix0, iy0 = max(ax0, bx0), max(ay0, by0)
@@ -274,6 +308,8 @@ def iou(a, b):
 
 
 def propose_rois_for_pdf417(img_rgb, max_candidates: int = 12, min_area_frac: float = 0.00008):
+    """Detect promising barcode regions via gradients and morphology heuristics."""
+
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
     grad = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
@@ -308,6 +344,8 @@ def propose_rois_for_pdf417(img_rgb, max_candidates: int = 12, min_area_frac: fl
 
 
 def shift_results(results: Sequence[Any], x_off: int, y_off: int) -> List[Any]:
+    """Translate ZXing result coordinates by an offset for cropped detections."""
+
     new_results = []
     for r in results:
         pts = iter_points_from_position(getattr(r, "position", None))
@@ -323,6 +361,8 @@ def shift_results(results: Sequence[Any], x_off: int, y_off: int) -> List[Any]:
 
 
 def decode_rois(img_arr, rois, debug_dir: Optional[str], tag: str = ""):
+    """Iterate through region proposals and decode each until one succeeds."""
+
     for (x0, y0, x1, y1) in rois:
         crop = img_arr[y0:y1, x0:x1].copy()
         if crop.shape[0] == 0 or crop.shape[1] == 0:
@@ -341,6 +381,8 @@ def decode_rois(img_arr, rois, debug_dir: Optional[str], tag: str = ""):
 
 
 def decode_fullsheet_pdf417(img, max_width: int, max_candidates: int, debug: bool, src_path: str):
+    """Decode a full page by combining ROI search, rotations, and coarse refinements."""
+
     debug_dir = os.path.join(os.path.dirname(src_path), "debug_crops") if debug else None
     full = exif_fix(img)
     full_rgb = pil_to_np(full)
@@ -416,6 +458,8 @@ def decode_fullsheet_pdf417(img, max_width: int, max_candidates: int, debug: boo
 
 
 def _format_position(points: Iterable[Tuple[int, int]]) -> Dict[str, Any]:
+    """Serialize ZXing corner data into JSON-friendly structures."""
+
     pts = list(points)
     if not pts:
         return {}
@@ -426,6 +470,8 @@ def _format_position(points: Iterable[Tuple[int, int]]) -> Dict[str, Any]:
 
 
 def decode_barcodes(image_path: Path, *, max_width: int = 2400, max_candidates: int = 12, debug: bool = False) -> List[Dict[str, Any]]:
+    """Decode PDF417 barcodes from ``image_path`` and return normalized metadata."""
+
     _load_dependencies()
 
     with Image.open(image_path) as img:
@@ -452,6 +498,8 @@ def decode_barcodes(image_path: Path, *, max_width: int = 2400, max_candidates: 
 
 
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    """Build the CLI parser for the standalone decoding utility."""
+
     parser = argparse.ArgumentParser(description="Decode PDF417 barcodes from an image")
     parser.add_argument("image", nargs="?", help="Path to the image to decode")
     parser.add_argument("--image", dest="image_flag", help="Alternate flag form for the image path")
@@ -462,6 +510,8 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Entry point used by the Node.js pipeline to decode PDF417 images."""
+
     args = _parse_args(argv)
 
     image_arg = args.image_flag or args.image
