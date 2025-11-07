@@ -430,6 +430,7 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     const structuredPath = path.join(outDir, 'structured.json');
     if (fs.existsSync(structuredPath)) {
       const payload = JSON.parse(fs.readFileSync(structuredPath, 'utf-8'));
+      console.info('[ocrService] Raw OCR structured payload:', payload);
       // Python writes an array with a single record: { image, llm_raw, llm_parsed }
       if (Array.isArray(payload) && payload.length > 0 && payload[0]?.llm_parsed) {
         const parsed = payload[0].llm_parsed as Record<string, unknown>;
