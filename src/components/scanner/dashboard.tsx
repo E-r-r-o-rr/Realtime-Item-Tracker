@@ -895,7 +895,11 @@ export default function ScannerDashboard() {
     const startCamera = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment" },
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
         });
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop());
@@ -1202,7 +1206,7 @@ export default function ScannerDashboard() {
     context.drawImage(video, 0, 0, width, height);
 
     const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob((result) => resolve(result), "image/jpeg", 0.92),
+      canvas.toBlob((result) => resolve(result), "image/jpeg", 0.7),
     );
     if (!blob) {
       setStatus("Unable to capture an image from the camera feed.");
