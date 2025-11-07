@@ -36,8 +36,8 @@ DEFAULT_LOCAL_MAX_NEW_TOKENS = 512
 BASE_EXTRACTION_PROMPT = (
     "You are given a shipping/order IMAGE and its OCR transcript.\n"
     "Extract all the key values and return two JSON bodies.\n"
-    "1. A flattened JSON (\"all_key_values\") containing all the key values on the order sheet without missing any.\n"
-    "2. A flattened JSON (\"selected_key_values\") returning these key values: Destination, Item Name, Tracking/Order ID, Truck Number, Ship Date, Expected Departure Time, Origin.\n"
+    "1. A JSON (\"all_key_values\") containing all the key values on the order sheet without missing any.\n"
+    "2. A JSON (\"selected_key_values\") returning these key values: Destination, Item Name, Tracking/Order ID, Truck Number, Ship Date, Expected Departure Time, Origin.\n"
     "Respond with a single JSON object that includes both keys. Do not wrap the output in code fences."
     
 )
