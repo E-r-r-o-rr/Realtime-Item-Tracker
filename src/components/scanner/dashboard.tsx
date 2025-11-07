@@ -636,6 +636,7 @@ export default function ScannerDashboard() {
   const [bookingSuccess, setBookingSuccess] = useState<string | null>(null);
   const [bookingLocated, setBookingLocated] = useState(false);
   const [vlmInfo, setVlmInfo] = useState<ProviderInfo | null>(null);
+  const [storageError, setStorageError] = useState<string | null>(null);
   const [checkingBooking, setCheckingBooking] = useState(false);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState<number>(DEFAULT_REFRESH_MS);
   const [hasHydrated, setHasHydrated] = useState(false);
@@ -1343,6 +1344,7 @@ export default function ScannerDashboard() {
   const handleWriteStorage = async () => {
     if (!liveRecord) return;
     try {
+      setStorageError(null);
       const response = await fetch("/api/storage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1356,14 +1358,20 @@ export default function ScannerDashboard() {
           originLocation: liveRecord.origin,
         }),
       });
-      const payload = await response.json();
+      const payload: { error?: string } = await response
+        .json()
+        .catch(() => ({}));
       if (!response.ok) {
         throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
       }
       setStatus(`Storage updated for ${liveRecord.trackingId}.`);
+      setStorageError(null);
     } catch (err) {
       console.error(err);
-      setStatus(err instanceof Error ? err.message : "Failed to write storage.");
+      const message = err instanceof Error ? err.message : "Failed to write storage.";
+      const normalizedMessage = message && message.trim().length > 0 ? message.trim() : "Failed to write storage.";
+      setStatus(normalizedMessage);
+      setStorageError(normalizedMessage);
     }
   };
 
@@ -1394,6 +1402,7 @@ export default function ScannerDashboard() {
       setBookingSuccess(null);
       setVlmInfo(null);
       setBookingLocated(false);
+      setStorageError(null);
     } catch (error) {
       console.error(error);
       setStatus(error instanceof Error ? error.message : "Failed to clear live buffer.");
@@ -1871,6 +1880,12 @@ export default function ScannerDashboard() {
             </table>
           </div>
         </Card>
+      )}
+
+      {storageError && (
+        <div className="mt-4 rounded-2xl border border-rose-400/20 bg-rose-500/5 px-6 py-4 text-sm text-rose-200 sm:px-8">
+          <p className="font-medium text-rose-100">{storageError}</p>
+        </div>
       )}
 
 
