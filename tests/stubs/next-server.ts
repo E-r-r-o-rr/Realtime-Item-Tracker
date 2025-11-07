@@ -31,12 +31,30 @@ export class NextResponse extends Response {
     return new NextResponse(JSON.stringify(data), { ...init, headers });
   }
 
-  static redirect(url: string | URL, init: ResponseInit & { status?: number } = {}) {
-    const headers = new Headers(init.headers);
+  static redirect(url: string | URL, status?: number): NextResponse;
+  static redirect(
+    url: string | URL,
+    init?: ResponseInit & { status?: number }
+  ): NextResponse;
+  static redirect(
+    url: string | URL,
+    initOrStatus: number | (ResponseInit & { status?: number }) = 307
+  ) {
+    const isStatusNumber = typeof initOrStatus === "number";
+    const headers = new Headers(isStatusNumber ? undefined : initOrStatus.headers);
+
     const target = typeof url === "string" ? url : url.toString();
     headers.set("location", target);
-    const status = init.status ?? 307;
-    return new NextResponse(null, { ...init, status, headers });
+
+    const status = isStatusNumber
+      ? initOrStatus
+      : initOrStatus.status ?? 307;
+
+    const init = isStatusNumber
+      ? { status, headers }
+      : { ...initOrStatus, status, headers };
+
+    return new NextResponse(null, init);
   }
 
   static next(init: ResponseInit = {}) {
