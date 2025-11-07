@@ -1441,7 +1441,7 @@ export default function ScannerDashboard() {
               </svg>
             </div>
             <h3 className="mt-6 text-lg font-semibold text-slate-100">Upload order sheet</h3>
-            <p className="mt-2 text-sm text-slate-400">PNG, JPG up to 10MB</p>
+            <p className="mt-2 text-sm text-slate-400">PNG, JPG, or other images up to 10MB</p>
             <div className="mt-6 space-y-4 text-left">
               <Input type="file" accept="image/*" onChange={handleFileChange} className="cursor-pointer" />
               <Button className="w-full justify-center" onClick={scanDocument} disabled={!file || loading}>
