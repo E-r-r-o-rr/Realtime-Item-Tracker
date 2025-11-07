@@ -45,6 +45,7 @@ except Exception:
 
 @dataclass
 class ServiceConfig:
+    """Declarative configuration for the long-lived inference server."""
     model_id: str
     dtype: str
     device_map: str
@@ -55,7 +56,10 @@ class ServiceConfig:
 
 
 class ServiceContext:
+    """Holds shared state for requests served by :class:`LocalVlmHandler`."""
+
     def __init__(self, config: ServiceConfig):
+        """Prepare the locally hosted VLM callable and coordination primitives."""
         self.config = config
         self.vlm_call = build_local_vlm_call(
             config.model_id,
@@ -69,6 +73,7 @@ class ServiceContext:
         self.started_at = time.time()
 
     def infer(self, image_path: str, normalize_dates: Optional[bool], ocr_hint: Optional[str]) -> Dict[str, Any]:
+        """Perform a single inference while serialising access to the VLM."""
         target_normalize = self.config.normalize_dates if normalize_dates is None else bool(normalize_dates)
         with self.lock:
             return process_one(
@@ -84,6 +89,8 @@ SHUTDOWN_EVENT = threading.Event()
 
 
 class LocalVlmHandler(BaseHTTPRequestHandler):
+    """HTTP interface exposing health checks, inference, and shutdown hooks."""
+
     server_version = "LocalVLMService/1.0"
     protocol_version = "HTTP/1.1"
 
@@ -91,6 +98,7 @@ class LocalVlmHandler(BaseHTTPRequestHandler):
         sys.stdout.write("[serve] " + format % args + "\n")
 
     def _send_json(self, status: HTTPStatus, payload: Dict[str, Any]) -> None:
+        """Write a JSON response to the client with minimal caching headers."""
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -100,6 +108,7 @@ class LocalVlmHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
+        """Serve `/health` with configuration metadata or 404 for other paths."""
         if self.path.startswith("/health"):
             ctx = SERVICE_CONTEXT
             if ctx is None:
@@ -122,6 +131,7 @@ class LocalVlmHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Unknown path"})
 
     def do_POST(self) -> None:  # noqa: N802
+        """Route `/infer` requests and allow remote controlled shutdown."""
         if self.path.startswith("/infer"):
             self._handle_infer()
             return
@@ -133,6 +143,7 @@ class LocalVlmHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Unknown path"})
 
     def _handle_infer(self) -> None:
+        """Validate payloads, call the model, and respond with timing metadata."""
         ctx = SERVICE_CONTEXT
         if ctx is None:
             self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "message": "Service not initialised"})
@@ -179,6 +190,7 @@ class LocalVlmHandler(BaseHTTPRequestHandler):
         )
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI flags and environment overrides for the local service."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default=os.environ.get("OCR_LOCAL_SERVICE_HOST", "127.0.0.1"))
     ap.add_argument(
@@ -203,6 +215,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_attn_impl(arg_value: str, flash_flag: bool) -> Optional[str]:
+    """Resolve the attention implementation preference with multiple fallbacks."""
     direct = (arg_value or "").strip()
     if direct:
         return direct
@@ -216,6 +229,7 @@ def resolve_attn_impl(arg_value: str, flash_flag: bool) -> Optional[str]:
 
 
 def build_config(args: argparse.Namespace) -> ServiceConfig:
+    """Normalise parsed arguments into a :class:`ServiceConfig`."""
     model_id = (args.model or "").strip() or DEFAULT_MODEL
     dtype = (args.dtype or "auto").strip() or "auto"
     device_map = (args.device_map or "auto").strip() or "auto"
@@ -235,6 +249,7 @@ def build_config(args: argparse.Namespace) -> ServiceConfig:
 
 
 def install_signal_handlers(server: ThreadingHTTPServer) -> None:
+    """Install SIGINT/SIGTERM handlers that shut the server down gracefully."""
     def _handler(signum: int, _frame: Any) -> None:  # pragma: no cover
         sys.stdout.write(f"[serve] Received signal {signum}, shutting down.\n")
         threading.Thread(target=server.shutdown, daemon=True).start()
@@ -248,6 +263,7 @@ def install_signal_handlers(server: ThreadingHTTPServer) -> None:
 
 
 def main() -> int:
+    """Entry point for the long-running local inference HTTP service."""
     args = parse_args()
     config = build_config(args)
 
