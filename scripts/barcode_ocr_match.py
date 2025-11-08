@@ -20,6 +20,8 @@ except Exception:
 
 # ---- JSON sanitizer: convert numpy/pandas objects to plain Python ----
 def to_jsonable(obj):
+    """Recursively coerce numpy/pandas objects into JSON-serialisable primitives."""
+
     try:
         import numpy as np  # optional
         NP_AVAILABLE = True
@@ -75,12 +77,18 @@ CELL_COLON_RX  = re.compile(r"^\s*[A-Za-z][A-Za-z0-9 /#\-\(\)]{1,32}\s*:\s*\S")
 
 # ---------- Utilities ----------
 def norm_text(s: str) -> str:
+    """Collapse repeated whitespace and trim the ends."""
+
     return re.sub(r"\s+", " ", (s or "")).strip()
 
 def norm_case_space(s: str) -> str:
+    """Uppercase a string after whitespace normalization."""
+
     return norm_text(s).upper()
 
 def norm_label(s: str) -> str:
+    """Simplify labels to lowercase alphanumeric tokens for comparison."""
+
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
 
 def labels_match(ocr_key: str, lbl: str) -> float:
@@ -94,9 +102,13 @@ def labels_match(ocr_key: str, lbl: str) -> float:
     return difflib.SequenceMatcher(None, nk, nl).ratio()
 
 def get_lines(text: str) -> List[str]:
+    """Split text into individual lines while normalising newlines."""
+
     return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
 def find_line_bounds(text: str, idx: int) -> Tuple[int, int]:
+    """Return the start/end offsets for the line containing ``idx``."""
+
     start = text.rfind("\n", 0, idx) + 1
     end = text.find("\n", idx)
     end = len(text) if end == -1 else end
@@ -118,6 +130,8 @@ def norm_time_tuple_full(s: str) -> Optional[Tuple[int,int,int,Optional[str]]]:
     return (h24, mm, ss, mer)
 
 def times_equal_flexible(ocr_val: str, bc_val: str) -> bool:
+    """Compare times while ignoring seconds and respecting AM/PM context."""
+
     A = norm_time_tuple_full(ocr_val)
     B = norm_time_tuple_full(bc_val)
     if not A or not B: return False
@@ -129,6 +143,8 @@ def times_equal_flexible(ocr_val: str, bc_val: str) -> bool:
     return ah == bh and am == bm  # flexible seconds
 
 def norm_date_tuple(s: str) -> Optional[Tuple[int,int,int]]:
+    """Coerce supported date strings to a canonical tuple."""
+
     if not s: return None
     m2 = DATE_RX2.search(s)
     if m2:
@@ -144,6 +160,8 @@ def norm_date_tuple(s: str) -> Optional[Tuple[int,int,int]]:
     return None
 
 def dates_equal_flexible(ocr_val: str, bc_val: str) -> bool:
+    """Check if two date strings resolve to the same calendar day."""
+
     A = norm_date_tuple(ocr_val)
     B = norm_date_tuple(bc_val)
     return (A is not None) and (B is not None) and (A == B)
@@ -165,6 +183,8 @@ def anchored_value_regex(value: str) -> re.Pattern:
     return re.compile(prefix + esc + suffix, re.I)
 
 def find_value_in_text_strict(value: str, text: str) -> Optional[Tuple[int,int,str]]:
+    """Return the span where ``value`` appears in ``text`` with token boundaries."""
+
     if not value: return None
     pat = anchored_value_regex(value)
     m = pat.search(text)
@@ -173,6 +193,8 @@ def find_value_in_text_strict(value: str, text: str) -> Optional[Tuple[int,int,s
     return None
 
 def value_is_substring_token(needle: str, hay: str) -> bool:
+    """Heuristically treat ``needle`` as present only if found as its own token."""
+
     if not needle or not hay:
         return False
     pat = anchored_value_regex(needle)
@@ -180,12 +202,16 @@ def value_is_substring_token(needle: str, hay: str) -> bool:
 
 # ---------- Helpers ----------
 def looks_valueish(tokens: List[str]) -> bool:
+    """Return True when tokens include numbers, dates, or times indicating data cells."""
+
     for t in tokens:
         if TIME_RX.search(t) or DATE_RX.search(t) or re.search(r"\d", t):
             return True
     return False
 
 def split_fields(line: str) -> List[str]:
+    """Split a row into fields using tab or double-space separators."""
+
     if "\t" in line:
         parts = [p for p in re.split(r"\t+", line) if p.strip()]
     else:
@@ -193,6 +219,8 @@ def split_fields(line: str) -> List[str]:
     return [p.strip() for p in parts]
 
 def classify_value(v: str) -> str:
+    """Categorise extracted values so assignment logic can weight matches."""
+
     if not v or not v.strip(): return "empty"
     if TIME_RX.search(v): return "time"
     if DATE_RX.search(v): return "date"
@@ -205,6 +233,8 @@ def classify_value(v: str) -> str:
     return "string"
 
 def equal_strict_or_flexible(ocr_val: str, bc_val: str) -> bool:
+    """Determine if OCR and barcode values align exactly or via domain rules."""
+
     o = norm_case_space(ocr_val)
     b = norm_case_space(bc_val)
     if o == b: return True
@@ -216,6 +246,8 @@ def equal_strict_or_flexible(ocr_val: str, bc_val: str) -> bool:
 
 # ---------- Context inference (visuals) ----------
 def infer_label_on_line(line: str, match_span: Tuple[int,int]) -> Optional[str]:
+    """Infer which label text precedes a matched value on the same OCR line."""
+
     mstart, _ = match_span
     last = None
     for m in LABEL_COLON_RX.finditer(line):
@@ -245,9 +277,13 @@ def infer_label_on_line(line: str, match_span: Tuple[int,int]) -> Optional[str]:
 
 # ---------- Parse pairs for context (with general colon-cell patch) ----------
 def _is_colon_cell(s: str) -> bool:
+    """Return True when a token looks like a ``Label: Value`` cell."""
+
     return bool(CELL_COLON_RX.match(s or ""))
 
 def parse_pairs_for_context(text: str) -> List[Dict[str, str]]:
+    """Extract candidate label/value pairs using heuristics for tables and forms."""
+
     pairs: List[Dict[str,str]] = []
     lines = get_lines(text)
     i = 0
@@ -316,6 +352,8 @@ def parse_pairs_for_context(text: str) -> List[Dict[str, str]]:
 
 # ---------- Build BARCODE LIBRARY (for “missed” reporting) ----------
 def build_barcode_library(text: str, harvest_raw: bool, strict_strings: bool, debug: bool, debug_dir: str):
+    """Create barcode candidates, optionally dumping intermediate debugging files."""
+
     entries: List[Dict[str,str]] = []
     labeled_pairs = parse_pairs_for_context(text)
 
@@ -430,6 +468,8 @@ def pair_cost(ocr_key: str, ocr_val: str, p: Dict[str,str]) -> float:
     return 0.6*lab_cost + 0.35*v_cost + 0.05*t_pen
 
 def build_cost_matrix(expected_items: List[Tuple[str,str]], pairs: List[Dict[str,str]]) -> List[List[float]]:
+    """Compute the pairwise costs between expected OCR entries and barcode pairs."""
+
     M, N = len(expected_items), len(pairs)
     C = [[1.5 for _ in range(N)] for _ in range(M)]
     for i, (k, v) in enumerate(expected_items):
@@ -439,6 +479,8 @@ def build_cost_matrix(expected_items: List[Tuple[str,str]], pairs: List[Dict[str
     return C
 
 def greedy_assign(C: List[List[float]], thresh: float) -> Tuple[List[int], List[int]]:
+    """Greedy approximation for assignment when Hungarian solver is unavailable."""
+
     M, N = len(C), len(C[0]) if C else 0
     used_i, used_j = set(), set()
     row_idx, col_idx = [], []
@@ -463,6 +505,8 @@ def ocr_global_assignment(expected: Dict[str, Any], barcode_text: str,
                           pairs_ctx: List[Dict[str,str]],
                           assign_thresh: float,
                           debug: bool, debug_dir: str):
+    """Assign OCR expectation rows to barcode-derived pairs using global optimisation."""
+
     rows = []
     summary = {"matched": 0, "mismatched": 0, "missing": 0}
     expected_items = [(k, "" if v is None else str(v)) for k, v in expected.items()]
@@ -555,6 +599,8 @@ def ocr_global_assignment(expected: Dict[str, Any], barcode_text: str,
 # ---------- “Missed by OCR” from library minus consumed ----------
 def library_remaining_to_list(lib_map: DefaultDict[Tuple[str,str], List[Dict[str,str]]],
                               consumed_values: List[str]) -> List[Dict[str,str]]:
+    """Summarise unmatched barcode library entries for reporting."""
+
     def equals_any_consumed(val: str) -> bool:
         return any(equal_strict_or_flexible(val, mv) for mv in consumed_values)
 
@@ -573,6 +619,8 @@ def library_remaining_to_list(lib_map: DefaultDict[Tuple[str,str], List[Dict[str
 
 # ---------- Visuals ----------
 def build_visual_text(rows: List[Dict[str, Any]], missed_by_ocr: List[Dict[str,Any]]) -> str:
+    """Render a plaintext comparison and appendix for missed barcode values."""
+
     out = []
     for r in rows:
         ctx = f' (ctx={r["context_label"]})' if r.get("context_label") else ""
@@ -590,6 +638,8 @@ def build_visual_text(rows: List[Dict[str, Any]], missed_by_ocr: List[Dict[str,A
     return "\n".join(out)
 
 def build_visual_md(rows: List[Dict[str, Any]], missed_by_ocr: List[Dict[str,Any]]) -> str:
+    """Produce Markdown tables summarising matches and misses."""
+
     lines = ["| Field | OCR Value | Barcode Value | Result | Context Label |",
              "|---|---|---|---|---|"]
     for r in rows:
@@ -607,6 +657,8 @@ def build_visual_md(rows: List[Dict[str, Any]], missed_by_ocr: List[Dict[str,Any
 
 # ---------- Main ----------
 def main():
+    """Entry point: run OCR-to-barcode matching and emit JSON/visual reports."""
+
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("barcode_json", help="ZXing output JSON (list with {'text': ...})")

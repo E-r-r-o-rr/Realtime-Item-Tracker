@@ -26,7 +26,7 @@ The application ships with:
 - A configurable vision language model (VLM) adapter that works with remote APIs or a local Python bridge.
 
 ## Feature tour
-- **Live scanner dashboard** – Launch the device camera, capture an order sheet, or upload a PDF/image. The UI normalises OCR output, merges barcode readings, tracks validation status, and saves the payload into the live buffer for downstream systems.
+- **Live scanner dashboard** – Launch the device camera, capture an order sheet, or upload an image. The UI normalises OCR output, merges barcode readings, tracks validation status, and saves the payload into the live buffer for downstream systems.
 - **Floor map visualisation** – Overlay reconciled shipments onto SVG floor plans, drill into destination metadata, and keep assets aligned with warehouse geography.
 - **Bookings & storage views** – Inspect the current live buffer, bookings table, and item storage records to verify that OCR data landed where you expect.
 - **History timeline** – Audit past scans, prune entries, or clear the ledger entirely without touching the underlying database file.
