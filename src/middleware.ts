@@ -12,6 +12,12 @@ import {
 // In-memory limiter (okay for dev; use a shared store in prod)
 type RateLimitBucket = { count: number; start: number };
 
+type RateLimitState = {
+  limited: boolean;
+  remaining: number;
+  resetAt: number;
+};
+
 const rateLimitStore: Map<string, RateLimitBucket> = new Map();
 const MAX_REQUESTS = 60; // per window
 const WINDOW_MS = 60_000; // 1 minute
@@ -48,24 +54,32 @@ function getClientKey(req: NextRequest, sessionToken: string | null) {
   return `ip:${ip}`;
 }
 
-function touchRateLimitBucket(key: string, now: number) {
+function touchRateLimitBucket(key: string, now: number): RateLimitState {
   const bucket = rateLimitStore.get(key);
 
-  if (!bucket) {
-    rateLimitStore.set(key, { count: 1, start: now });
-    return { limited: false } as const;
-  }
+  if (!bucket || now >= bucket.start + WINDOW_MS) {
+    const freshBucket: RateLimitBucket = { count: 1, start: now };
+    rateLimitStore.set(key, freshBucket);
 
-  if (now - bucket.start > WINDOW_MS) {
-    rateLimitStore.set(key, { count: 1, start: now });
-    return { limited: false } as const;
+    return {
+      limited: false,
+      remaining: MAX_REQUESTS - 1,
+      resetAt: freshBucket.start + WINDOW_MS,
+    };
   }
 
   const nextCount = bucket.count + 1;
-  const updatedBucket: RateLimitBucket = { count: nextCount, start: bucket.start };
+  const updatedBucket: RateLimitBucket = {
+    start: bucket.start,
+    count: Math.min(nextCount, MAX_REQUESTS + 1),
+  };
   rateLimitStore.set(key, updatedBucket);
 
-  return { limited: nextCount > MAX_REQUESTS } as const;
+  return {
+    limited: nextCount > MAX_REQUESTS,
+    remaining: Math.max(0, MAX_REQUESTS - nextCount),
+    resetAt: bucket.start + WINDOW_MS,
+  };
 }
 
 function isPublicPath(pathname: string) {
@@ -131,11 +145,16 @@ export async function middleware(req: NextRequest) {
 
   if (isApiRoute) {
     const key = getClientKey(req, sessionToken ?? null);
-    const { limited } = touchRateLimitBucket(key, Date.now());
+    const now = Date.now();
+    const { limited, resetAt } = touchRateLimitBucket(key, now);
     if (limited) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((resetAt - now) / 1000));
       return new NextResponse(JSON.stringify({ error: "rate_limited" }), {
         status: 429,
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "retry-after": retryAfterSeconds.toString(),
+        },
       });
     }
   }
