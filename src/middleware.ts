@@ -10,15 +10,7 @@ import {
 } from "@/lib/auth";
 
 // In-memory limiter (okay for dev; use a shared store in prod)
-type RateLimitBucket = { count: number; start: number };
-
-type RateLimitState = {
-  limited: boolean;
-  remaining: number;
-  resetAt: number;
-};
-
-const rateLimitStore: Map<string, RateLimitBucket> = new Map();
+const rateLimitStore: Map<string, { count: number; start: number }> = new Map();
 const MAX_REQUESTS = 60; // per window
 const WINDOW_MS = 60_000; // 1 minute
 
@@ -31,55 +23,17 @@ const PUBLIC_PATHS = new Set([
 
 const PUBLIC_PREFIXES = ["/_next/", "/static/", "/images/", "/favicon"];
 
-function getClientKey(req: NextRequest, sessionToken: string | null) {
-  const keyParts: string[] = [];
-
-  if (sessionToken) {
-    keyParts.push(`s:${sessionToken}`);
-  }
-
+function getClientKey(req: NextRequest) {
+  // Prefer API key if present so team members don't share the same bucket
   const apiKey = req.headers.get("x-api-key") ?? req.nextUrl.searchParams.get("api_key");
-  if (apiKey) {
-    keyParts.push(`k:${apiKey}`);
-  }
+  if (apiKey) return `k:${apiKey}`;
 
-  if (keyParts.length > 0) {
-    return keyParts.join("|");
-  }
-
+  // Fallback to forwarded IP chain (first is client)
   const fwd = req.headers.get("x-forwarded-for") ?? "";
   const real = req.headers.get("x-real-ip") ?? "";
   const cf = req.headers.get("cf-connecting-ip") ?? "";
   const ip = fwd.split(",")[0]?.trim() || real || cf || "unknown";
   return `ip:${ip}`;
-}
-
-function touchRateLimitBucket(key: string, now: number): RateLimitState {
-  const bucket = rateLimitStore.get(key);
-
-  if (!bucket || now >= bucket.start + WINDOW_MS) {
-    const freshBucket: RateLimitBucket = { count: 1, start: now };
-    rateLimitStore.set(key, freshBucket);
-
-    return {
-      limited: false,
-      remaining: MAX_REQUESTS - 1,
-      resetAt: freshBucket.start + WINDOW_MS,
-    };
-  }
-
-  const nextCount = bucket.count + 1;
-  const updatedBucket: RateLimitBucket = {
-    start: bucket.start,
-    count: Math.min(nextCount, MAX_REQUESTS + 1),
-  };
-  rateLimitStore.set(key, updatedBucket);
-
-  return {
-    limited: nextCount > MAX_REQUESTS,
-    remaining: Math.max(0, MAX_REQUESTS - nextCount),
-    resetAt: bucket.start + WINDOW_MS,
-  };
 }
 
 function isPublicPath(pathname: string) {
@@ -144,18 +98,20 @@ export async function middleware(req: NextRequest) {
   }
 
   if (isApiRoute) {
-    const key = getClientKey(req, sessionToken ?? null);
+    const key = getClientKey(req);
     const now = Date.now();
-    const { limited, resetAt } = touchRateLimitBucket(key, now);
-    if (limited) {
-      const retryAfterSeconds = Math.max(1, Math.ceil((resetAt - now) / 1000));
-      return new NextResponse(JSON.stringify({ error: "rate_limited" }), {
-        status: 429,
-        headers: {
-          "content-type": "application/json",
-          "retry-after": retryAfterSeconds.toString(),
-        },
-      });
+    const bucket = rateLimitStore.get(key);
+
+    if (!bucket || now - bucket.start > WINDOW_MS) {
+      rateLimitStore.set(key, { count: 1, start: now });
+    } else {
+      bucket.count += 1;
+      if (bucket.count > MAX_REQUESTS) {
+        return new NextResponse(JSON.stringify({ error: "rate_limited" }), {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        });
+      }
     }
   }
 
