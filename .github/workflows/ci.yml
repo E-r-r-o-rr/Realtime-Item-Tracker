@@ -1,29 +1,38 @@
 name: CI
-
 on:
-  push:
-    branches: ["main"]
+  push: { branches: [main] }
   pull_request:
 
 jobs:
-  build:
+  build-test:
     runs-on: ubuntu-latest
-
+    env:
+      API_KEY: test
+      NODE_ENV: test
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
+          # If you DO have .nvmrc, keep the next line; otherwise use: node-version: '20.18'
           node-version-file: '.nvmrc'
           cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install deps
         run: npm ci
 
-      - name: Run tests
-        run: npm run test
+      - name: Bootstrap local DB/fixtures
+        run: npm run bootstrap
 
-      - name: Build application
+      - name: Lint
+        run: npm run lint
+
+      - name: Test (node test runner via scripts/run-tests.mjs)
+        run: npm test
+
+      - name: Build
         run: npm run build
+
+      # optional: keep artefacts for handover/debugging
+      # - uses: actions/upload-artifact@v4
+      #   with: { name: next-build, path: .next }
