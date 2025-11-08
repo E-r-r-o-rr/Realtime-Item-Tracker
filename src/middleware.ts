@@ -23,12 +23,22 @@ const PUBLIC_PATHS = new Set([
 
 const PUBLIC_PREFIXES = ["/_next/", "/static/", "/images/", "/favicon"];
 
-function getClientKey(req: NextRequest) {
-  // Prefer API key if present so team members don't share the same bucket
-  const apiKey = req.headers.get("x-api-key") ?? req.nextUrl.searchParams.get("api_key");
-  if (apiKey) return `k:${apiKey}`;
+function getClientKey(req: NextRequest, sessionToken: string | null) {
+  const keyParts: string[] = [];
 
-  // Fallback to forwarded IP chain (first is client)
+  if (sessionToken) {
+    keyParts.push(`s:${sessionToken}`);
+  }
+
+  const apiKey = req.headers.get("x-api-key") ?? req.nextUrl.searchParams.get("api_key");
+  if (apiKey) {
+    keyParts.push(`k:${apiKey}`);
+  }
+
+  if (keyParts.length > 0) {
+    return keyParts.join("|");
+  }
+
   const fwd = req.headers.get("x-forwarded-for") ?? "";
   const real = req.headers.get("x-real-ip") ?? "";
   const cf = req.headers.get("cf-connecting-ip") ?? "";
@@ -98,7 +108,7 @@ export async function middleware(req: NextRequest) {
   }
 
   if (isApiRoute) {
-    const key = getClientKey(req);
+    const key = getClientKey(req, sessionToken ?? null);
     const now = Date.now();
     const bucket = rateLimitStore.get(key);
 
@@ -106,6 +116,7 @@ export async function middleware(req: NextRequest) {
       rateLimitStore.set(key, { count: 1, start: now });
     } else {
       bucket.count += 1;
+      rateLimitStore.set(key, bucket);
       if (bucket.count > MAX_REQUESTS) {
         return new NextResponse(JSON.stringify({ error: "rate_limited" }), {
           status: 429,
