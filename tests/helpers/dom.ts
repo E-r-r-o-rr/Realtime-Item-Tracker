@@ -143,18 +143,19 @@ class SimpleNode extends SimpleEventTarget {
     if (!event.target) {
       event.target = this;
     }
-    let current: SimpleNode | null = this;
-    while (current) {
-      if (event.immediatePropagationStopped) {
-        break;
+    const traverse = (node: SimpleNode | null) => {
+      if (!node || event.immediatePropagationStopped) {
+        return;
       }
-      event.currentTarget = current;
-      current.dispatch(event, event.target);
+      event.currentTarget = node;
+      node.dispatch(event, event.target!);
       if (!event.bubbles || event.propagationStopped) {
-        break;
+        return;
       }
-      current = current.parentNode;
-    }
+      traverse(node.parentNode);
+    };
+
+    traverse(this);
     return !event.cancelled;
   }
 }
@@ -237,18 +238,17 @@ class SimpleElement extends SimpleNode {
   }
 
   get classList() {
-    const element = this;
     return {
-      add(...tokens: string[]) {
-        tokens.forEach((token) => element.classListSet.add(token));
-        element.attributes.set("class", element.className);
+      add: (...tokens: string[]) => {
+        tokens.forEach((token) => this.classListSet.add(token));
+        this.attributes.set("class", this.className);
       },
-      remove(...tokens: string[]) {
-        tokens.forEach((token) => element.classListSet.delete(token));
-        element.attributes.set("class", element.className);
+      remove: (...tokens: string[]) => {
+        tokens.forEach((token) => this.classListSet.delete(token));
+        this.attributes.set("class", this.className);
       },
-      contains(token: string) {
-        return element.classListSet.has(token);
+      contains: (token: string) => {
+        return this.classListSet.has(token);
       },
     };
   }
@@ -278,15 +278,18 @@ class SimpleElement extends SimpleNode {
   }
 
   closest(selector: string): SimpleElement | null {
-    let current: SimpleNode | null = this;
     const matcher = createMatcher(selector.trim());
-    while (current) {
-      if (current instanceof SimpleElement && matcher(current)) {
-        return current;
+    const search = (node: SimpleNode | null): SimpleElement | null => {
+      if (!node) {
+        return null;
       }
-      current = current.parentNode;
-    }
-    return null;
+      if (node instanceof SimpleElement && matcher(node)) {
+        return node;
+      }
+      return search(node.parentNode);
+    };
+
+    return search(this);
   }
 
   focus() {}
@@ -301,7 +304,9 @@ function createMatcher(selector: string) {
   if (!selector) {
     return () => false;
   }
-  const attributeMatch = selector.match(/^(\w+)(\[([^=]+)=\"?([^\]"]+)\"?\])?$/);
+  const attributeMatch = selector.match(
+    new RegExp(String.raw`^(\w+)(\[([^=]+)="?([^"\]]+)"?\])?$`)
+  );
   if (attributeMatch) {
     const tag = attributeMatch[1]?.toLowerCase();
     const attrName = attributeMatch[3];
