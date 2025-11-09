@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, it, mock } from "node:test";
+import { PassThrough } from "node:stream";
+import childProcess from "node:child_process";
 
 import { DEFAULT_VLM_SETTINGS } from "@/config/vlm";
 
@@ -152,6 +155,68 @@ describe("extractKvPairs", () => {
       assert.equal(result.selectedKv["Tracking/Order ID"], "ABC123");
       assert.equal(result.providerInfo.mode, "remote");
       assert.equal(result.providerInfo.execution, "remote-http");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      __setOcrServiceTestOverrides();
+    }
+  });
+
+  it("includes local service failure reasons when the CLI fallback also fails", async () => {
+    const settings = structuredClone(DEFAULT_VLM_SETTINGS);
+    settings.mode = "local";
+
+    const localFailure =
+      "Inference failed: Generation failed: CUDA out of memory. Tried to allocate 8.55 GiB.";
+    const cliFailure = "RuntimeError: CUDA out of memory";
+
+    mock.method(childProcess, "spawn", () => {
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const child: EventEmitter & {
+        stdout: PassThrough;
+        stderr: PassThrough;
+        kill: () => void;
+      } = Object.assign(new EventEmitter(), {
+        stdout,
+        stderr,
+        kill: () => void 0,
+      });
+
+      process.nextTick(() => {
+        stderr.write(`${cliFailure}\nSee documentation for Memory Management.`);
+        stderr.end();
+        stdout.end();
+        child.emit("close", 1, null);
+      });
+
+      return child as unknown as childProcess.ChildProcessWithoutNullStreams;
+    });
+
+    const { extractKvPairs, __setOcrServiceTestOverrides } = await import(
+      `@/lib/ocrService?local-error-${Date.now()}`,
+    );
+
+    __setOcrServiceTestOverrides({
+      loadSettings: () => settings,
+      getServiceStatus: () => ({
+        state: "running" as const,
+        host: "127.0.0.1",
+        port: 5117,
+      }),
+      invokeLocal: async () => ({ ok: false, message: localFailure }),
+    });
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ocr-test-error-"));
+    const imagePath = path.join(tmpDir, "ticket.png");
+    fs.writeFileSync(imagePath, "stub");
+
+    try {
+      const result = await extractKvPairs(imagePath);
+
+      assert.ok(result.error);
+      const prefix = `Local service inference failed: ${localFailure}`;
+      assert.ok(result.error!.startsWith(prefix));
+      assert.ok(result.error!.length > prefix.length);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
       __setOcrServiceTestOverrides();
