@@ -102,16 +102,20 @@ export async function middleware(req: NextRequest) {
     const now = Date.now();
     const bucket = rateLimitStore.get(key);
 
-    if (!bucket || now - bucket.start > WINDOW_MS) {
-      rateLimitStore.set(key, { count: 1, start: now });
-    } else {
-      bucket.count += 1;
-      if (bucket.count > MAX_REQUESTS) {
-        return new NextResponse(JSON.stringify({ error: "rate_limited" }), {
-          status: 429,
-          headers: { "content-type": "application/json" },
-        });
-      }
+    const base = bucket && now - bucket.start <= WINDOW_MS ? bucket : { count: 0, start: now };
+    const nextCount = base.count + 1;
+    const nextBucket = { count: nextCount, start: base.start };
+    rateLimitStore.set(key, nextBucket);
+
+    if (nextCount > MAX_REQUESTS) {
+      const retryAfterSeconds = Math.ceil((base.start + WINDOW_MS - now) / 1000);
+      return new NextResponse(JSON.stringify({ error: "rate_limited" }), {
+        status: 429,
+        headers: {
+          "content-type": "application/json",
+          "retry-after": Math.max(retryAfterSeconds, 1).toString(),
+        },
+      });
     }
   }
 
