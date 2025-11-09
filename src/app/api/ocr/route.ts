@@ -39,8 +39,18 @@ const defaultDeps: OcrRouteDependencies = {
 
 let deps: OcrRouteDependencies = { ...defaultDeps };
 
-export function __setOcrRouteTestOverrides(overrides?: Partial<OcrRouteDependencies>) {
-  deps = { ...defaultDeps, ...overrides };
+const applyOverrides = (overrides?: Partial<OcrRouteDependencies>) => {
+  deps = overrides ? { ...defaultDeps, ...overrides } : { ...defaultDeps };
+};
+
+declare global {
+  var __setOcrRouteTestOverrides:
+    | ((overrides?: Partial<OcrRouteDependencies>) => void)
+    | undefined;
+}
+
+if (process.env.NODE_ENV === 'test') {
+  globalThis.__setOcrRouteTestOverrides = applyOverrides;
 }
 
 export async function POST(req: Request) {

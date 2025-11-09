@@ -1,10 +1,35 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it, mock } from "node:test";
+import type {
+  buildBarcodeValidation,
+  compareBarcodeData,
+  extractBarcodes,
+} from "../../src/lib/barcodeService";
+import type { extractKvPairs } from "../../src/lib/ocrService";
 
 const importFreshRoute = async () =>
   import(`../../src/app/api/ocr/route.ts?test=${Date.now()}-${Math.random()}`) as Promise<
     typeof import("../../src/app/api/ocr/route")
   >;
+
+type OcrRouteOverrides = {
+  extractKvPairs?: typeof extractKvPairs;
+  extractBarcodes?: typeof extractBarcodes;
+  compareBarcodeData?: typeof compareBarcodeData;
+  buildBarcodeValidation?: typeof buildBarcodeValidation;
+};
+
+const setOcrRouteOverrides = (overrides?: OcrRouteOverrides) => {
+  const hook = (globalThis as typeof globalThis & {
+    __setOcrRouteTestOverrides?: (overrides?: OcrRouteOverrides) => void;
+  }).__setOcrRouteTestOverrides;
+
+  if (!hook) {
+    throw new Error("OCR route overrides hook not registered");
+  }
+
+  hook(overrides);
+};
 
 afterEach(() => {
   mock.restoreAll();
@@ -28,7 +53,7 @@ describe("POST /api/ocr", () => {
 
   it("returns OCR and barcode metadata on success", async () => {
     const route = await importFreshRoute();
-    route.__setOcrRouteTestOverrides({
+    setOcrRouteOverrides({
       extractKvPairs: async () => ({
         kv: { destination: "R1-A" },
         selectedKv: { "Tracking/Order ID": "ABC123" },
@@ -65,14 +90,14 @@ describe("POST /api/ocr", () => {
       assert.deepEqual(data.validation, { status: "ok" });
       assert.deepEqual(data.providerInfo, { mode: "local", execution: "local-service" });
     } finally {
-      route.__setOcrRouteTestOverrides();
+      setOcrRouteOverrides();
     }
   });
 
   it("returns 502 when the provider reports an error", async () => {
     const providerInfo = { mode: "remote", execution: "remote-http" };
     const route = await importFreshRoute();
-    route.__setOcrRouteTestOverrides({
+    setOcrRouteOverrides({
       extractKvPairs: async () => ({
         kv: undefined as any,
         selectedKv: undefined as any,
@@ -98,13 +123,13 @@ describe("POST /api/ocr", () => {
       assert.equal(data.error, "upstream failure");
       assert.deepEqual(data.providerInfo, providerInfo);
     } finally {
-      route.__setOcrRouteTestOverrides();
+      setOcrRouteOverrides();
     }
   });
 
   it("returns 500 on unexpected failures", async () => {
     const route = await importFreshRoute();
-    route.__setOcrRouteTestOverrides({
+    setOcrRouteOverrides({
       extractKvPairs: async () => {
         throw new Error("crash");
       },
@@ -126,7 +151,7 @@ describe("POST /api/ocr", () => {
       const data = (await response.json()) as { error: string };
       assert.equal(data.error, "Internal server error");
     } finally {
-      route.__setOcrRouteTestOverrides();
+      setOcrRouteOverrides();
     }
   });
 });

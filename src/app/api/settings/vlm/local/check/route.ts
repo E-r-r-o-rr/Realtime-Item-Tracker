@@ -24,8 +24,18 @@ const defaultDeps: LocalCheckDependencies = {
 
 let deps: LocalCheckDependencies = { ...defaultDeps };
 
-export function __setLocalCheckRouteTestOverrides(overrides?: Partial<LocalCheckDependencies>) {
-  deps = { ...defaultDeps, ...overrides };
+const applyOverrides = (overrides?: Partial<LocalCheckDependencies>) => {
+  deps = overrides ? { ...defaultDeps, ...overrides } : { ...defaultDeps };
+};
+
+declare global {
+  var __setLocalCheckRouteTestOverrides:
+    | ((overrides?: Partial<LocalCheckDependencies>) => void)
+    | undefined;
+}
+
+if (process.env.NODE_ENV === "test") {
+  globalThis.__setLocalCheckRouteTestOverrides = applyOverrides;
 }
 
 const PY_BIN =

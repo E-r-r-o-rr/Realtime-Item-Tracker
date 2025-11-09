@@ -23,8 +23,18 @@ const defaultDeps: VlmTestRouteDependencies = {
 
 let deps: VlmTestRouteDependencies = { ...defaultDeps };
 
-export function __setVlmTestRouteOverrides(overrides?: Partial<VlmTestRouteDependencies>) {
-  deps = { ...defaultDeps, ...overrides };
+const applyOverrides = (overrides?: Partial<VlmTestRouteDependencies>) => {
+  deps = overrides ? { ...defaultDeps, ...overrides } : { ...defaultDeps };
+};
+
+declare global {
+  var __setVlmTestRouteOverrides:
+    | ((overrides?: Partial<VlmTestRouteDependencies>) => void)
+    | undefined;
+}
+
+if (process.env.NODE_ENV === "test") {
+  globalThis.__setVlmTestRouteOverrides = applyOverrides;
 }
 
 const fetchWithTimeout = async (url: URL, init: RequestInit, timeoutMs: number) => {

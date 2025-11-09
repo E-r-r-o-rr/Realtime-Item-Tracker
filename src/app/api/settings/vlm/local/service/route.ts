@@ -29,8 +29,18 @@ const defaultDeps: LocalServiceRouteDependencies = {
 
 let deps: LocalServiceRouteDependencies = { ...defaultDeps };
 
-export function __setLocalServiceRouteTestOverrides(overrides?: Partial<LocalServiceRouteDependencies>) {
-  deps = { ...defaultDeps, ...overrides };
+const applyOverrides = (overrides?: Partial<LocalServiceRouteDependencies>) => {
+  deps = overrides ? { ...defaultDeps, ...overrides } : { ...defaultDeps };
+};
+
+declare global {
+  var __setLocalServiceRouteTestOverrides:
+    | ((overrides?: Partial<LocalServiceRouteDependencies>) => void)
+    | undefined;
+}
+
+if (process.env.NODE_ENV === "test") {
+  globalThis.__setLocalServiceRouteTestOverrides = applyOverrides;
 }
 
 type StartServiceBody = {

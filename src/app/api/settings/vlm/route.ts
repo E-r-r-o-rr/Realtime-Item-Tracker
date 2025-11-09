@@ -31,8 +31,18 @@ const defaultDeps: VlmRouteDependencies = {
 
 let deps: VlmRouteDependencies = { ...defaultDeps };
 
-export function __setVlmRouteTestOverrides(overrides?: Partial<VlmRouteDependencies>) {
-  deps = { ...defaultDeps, ...overrides };
+const applyOverrides = (overrides?: Partial<VlmRouteDependencies>) => {
+  deps = overrides ? { ...defaultDeps, ...overrides } : { ...defaultDeps };
+};
+
+declare global {
+  var __setVlmRouteTestOverrides:
+    | ((overrides?: Partial<VlmRouteDependencies>) => void)
+    | undefined;
+}
+
+if (process.env.NODE_ENV === "test") {
+  globalThis.__setVlmRouteTestOverrides = applyOverrides;
 }
 
 export async function GET() {

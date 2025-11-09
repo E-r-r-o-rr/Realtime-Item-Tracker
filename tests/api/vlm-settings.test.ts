@@ -4,7 +4,57 @@ import { afterEach, describe, it, mock } from "node:test";
 
 import { DEFAULT_VLM_SETTINGS } from "@/config/vlm";
 import type { LocalServiceRuntime } from "@/lib/localVlmService";
-import type { VlmSettings } from "@/types/vlm";
+import type { VlmLocalSettings, VlmSettings } from "@/types/vlm";
+
+type VlmRouteOverrides = {
+  loadPersistedVlmSettings?: () => VlmSettings;
+  saveVlmSettings?: (settings: VlmSettings) => void | Promise<void>;
+  normalizeVlmSettings?: (value: unknown) => VlmSettings;
+  getLocalVlmServiceStatus?: () => LocalServiceRuntime;
+  stopLocalVlmService?: () => Promise<boolean> | boolean;
+};
+
+type LocalServiceRouteOverrides = {
+  getLocalVlmServiceStatus?: () => LocalServiceRuntime;
+  startLocalVlmService?: (local: VlmLocalSettings, systemPrompt: string) => Promise<LocalServiceRuntime>;
+  stopLocalVlmService?: () => Promise<boolean> | boolean;
+};
+
+type LocalCheckRouteOverrides = {
+  spawn?: typeof import("child_process").spawn;
+  existsSync?: (filePath: string) => boolean;
+};
+
+type VlmTestRouteOverrides = {
+  loadPersistedVlmSettings?: () => VlmSettings;
+  normalizeVlmSettings?: (value: unknown) => VlmSettings;
+};
+
+const withHooks = globalThis as typeof globalThis & {
+  __setVlmRouteTestOverrides?: (overrides?: VlmRouteOverrides) => void;
+  __setLocalServiceRouteTestOverrides?: (overrides?: LocalServiceRouteOverrides) => void;
+  __setLocalCheckRouteTestOverrides?: (overrides?: LocalCheckRouteOverrides) => void;
+  __setVlmTestRouteOverrides?: (overrides?: VlmTestRouteOverrides) => void;
+};
+
+const requireHook = <T>(hook: ((overrides?: T) => void) | undefined, name: string) => {
+  if (!hook) {
+    throw new Error(`${name} hook not registered`);
+  }
+  return hook;
+};
+
+const setVlmRouteOverrides = (overrides?: VlmRouteOverrides) =>
+  requireHook(withHooks.__setVlmRouteTestOverrides, "vlm route")(overrides);
+
+const setLocalServiceOverrides = (overrides?: LocalServiceRouteOverrides) =>
+  requireHook(withHooks.__setLocalServiceRouteTestOverrides, "vlm local service")(overrides);
+
+const setLocalCheckOverrides = (overrides?: LocalCheckRouteOverrides) =>
+  requireHook(withHooks.__setLocalCheckRouteTestOverrides, "vlm local check")(overrides);
+
+const setVlmTestOverrides = (overrides?: VlmTestRouteOverrides) =>
+  requireHook(withHooks.__setVlmTestRouteOverrides, "vlm test")(overrides);
 
 const importRoute = async <T>(path: string) =>
   (await import(`../../src/app/api/settings/${path}?test=${Date.now()}-${Math.random()}`)) as T;
@@ -17,7 +67,7 @@ describe("/api/settings/vlm", () => {
   it("returns persisted settings", async () => {
     const settings: VlmSettings = { ...structuredClone(DEFAULT_VLM_SETTINGS), mode: "local" };
     const route = await importRoute<typeof import("../../src/app/api/settings/vlm/route")>("vlm/route.ts");
-    route.__setVlmRouteTestOverrides({ loadPersistedVlmSettings: () => settings });
+    setVlmRouteOverrides({ loadPersistedVlmSettings: () => settings });
 
     try {
       const response = await route.GET();
@@ -26,7 +76,7 @@ describe("/api/settings/vlm", () => {
       const data = (await response.json()) as { settings: VlmSettings };
       assert.equal(data.settings.mode, "local");
     } finally {
-      route.__setVlmRouteTestOverrides();
+      setVlmRouteOverrides();
     }
   });
 
@@ -38,7 +88,7 @@ describe("/api/settings/vlm", () => {
     };
 
     const save = mock.fn();
-    const stop = mock.fn(async () => {});
+    const stop = mock.fn(async () => true);
     const runtime: LocalServiceRuntime = {
       state: "running",
       host: "127.0.0.1",
@@ -54,7 +104,7 @@ describe("/api/settings/vlm", () => {
     };
 
     const route = await importRoute<typeof import("../../src/app/api/settings/vlm/route")>("vlm/route.ts");
-    route.__setVlmRouteTestOverrides({
+    setVlmRouteOverrides({
       normalizeVlmSettings: () => normalized,
       saveVlmSettings: save,
       getLocalVlmServiceStatus: () => runtime,
@@ -76,15 +126,15 @@ describe("/api/settings/vlm", () => {
       assert.equal(save.mock.callCount(), 1);
       assert.equal(stop.mock.callCount(), 1);
     } finally {
-      route.__setVlmRouteTestOverrides();
+      setVlmRouteOverrides();
     }
   });
 
   it("resets settings via POST", async () => {
     const save = mock.fn();
-    const stop = mock.fn(async () => {});
+    const stop = mock.fn(async () => true);
     const route = await importRoute<typeof import("../../src/app/api/settings/vlm/route")>("vlm/route.ts");
-    route.__setVlmRouteTestOverrides({
+    setVlmRouteOverrides({
       saveVlmSettings: save,
       stopLocalVlmService: stop,
     });
@@ -105,7 +155,7 @@ describe("/api/settings/vlm", () => {
       assert.equal(stop.mock.callCount(), 1);
       assert.equal(save.mock.callCount(), 1);
     } finally {
-      route.__setVlmRouteTestOverrides();
+      setVlmRouteOverrides();
     }
   });
 
@@ -132,7 +182,7 @@ describe("/api/settings/vlm/local/service", () => {
     const route = await importRoute<typeof import("../../src/app/api/settings/vlm/local/service/route")>(
       "vlm/local/service/route.ts",
     );
-    route.__setLocalServiceRouteTestOverrides({ getLocalVlmServiceStatus: () => status });
+    setLocalServiceOverrides({ getLocalVlmServiceStatus: () => status });
 
     try {
       const response = await route.GET();
@@ -140,7 +190,7 @@ describe("/api/settings/vlm/local/service", () => {
       const data = (await response.json()) as { status: LocalServiceRuntime };
       assert.equal(data.status.state, "stopped");
     } finally {
-      route.__setLocalServiceRouteTestOverrides();
+      setLocalServiceOverrides();
     }
   });
 
@@ -153,7 +203,7 @@ describe("/api/settings/vlm/local/service", () => {
     const route = await importRoute<typeof import("../../src/app/api/settings/vlm/local/service/route")>(
       "vlm/local/service/route.ts",
     );
-    route.__setLocalServiceRouteTestOverrides({ startLocalVlmService: start });
+    setLocalServiceOverrides({ startLocalVlmService: start });
 
     try {
       const response = await route.POST(
@@ -171,7 +221,7 @@ describe("/api/settings/vlm/local/service", () => {
       assert.equal(localSettings.enableFlashAttention2, true);
       assert.equal(prompt, "");
     } finally {
-      route.__setLocalServiceRouteTestOverrides();
+      setLocalServiceOverrides();
     }
   });
 
@@ -179,7 +229,7 @@ describe("/api/settings/vlm/local/service", () => {
     const route = await importRoute<typeof import("../../src/app/api/settings/vlm/local/service/route")>(
       "vlm/local/service/route.ts",
     );
-    route.__setLocalServiceRouteTestOverrides({
+    setLocalServiceOverrides({
       startLocalVlmService: async () => {
         throw new Error("boom");
       },
@@ -198,7 +248,7 @@ describe("/api/settings/vlm/local/service", () => {
       const data = (await response.json()) as { ok: boolean };
       assert.equal(data.ok, false);
     } finally {
-      route.__setLocalServiceRouteTestOverrides();
+      setLocalServiceOverrides();
     }
   });
 
@@ -207,7 +257,7 @@ describe("/api/settings/vlm/local/service", () => {
     const route = await importRoute<typeof import("../../src/app/api/settings/vlm/local/service/route")>(
       "vlm/local/service/route.ts",
     );
-    route.__setLocalServiceRouteTestOverrides({ stopLocalVlmService: stop });
+    setLocalServiceOverrides({ stopLocalVlmService: stop });
 
     try {
       const response = await route.DELETE();
@@ -216,7 +266,7 @@ describe("/api/settings/vlm/local/service", () => {
       assert.equal(data.ok, true);
       assert.equal(stop.mock.callCount(), 1);
     } finally {
-      route.__setLocalServiceRouteTestOverrides();
+      setLocalServiceOverrides();
     }
   });
 });
@@ -226,7 +276,7 @@ describe("/api/settings/vlm/local/check", () => {
     const route = await importRoute<typeof import("../../src/app/api/settings/vlm/local/check/route")>(
       "vlm/local/check/route.ts",
     );
-    route.__setLocalCheckRouteTestOverrides({ existsSync: () => true });
+    setLocalCheckOverrides({ existsSync: () => true });
 
     const response = await route.POST(
       new Request("https://example.test/api/settings/vlm/local/check", {
@@ -242,7 +292,7 @@ describe("/api/settings/vlm/local/check", () => {
     const route = await importRoute<typeof import("../../src/app/api/settings/vlm/local/check/route")>(
       "vlm/local/check/route.ts",
     );
-    route.__setLocalCheckRouteTestOverrides({ existsSync: () => false });
+    setLocalCheckOverrides({ existsSync: () => false });
 
     try {
       const response = await route.POST(
@@ -254,7 +304,7 @@ describe("/api/settings/vlm/local/check", () => {
       );
       assert.equal(response.status, 500);
     } finally {
-      route.__setLocalCheckRouteTestOverrides();
+      setLocalCheckOverrides();
     }
   });
 
@@ -271,7 +321,7 @@ describe("/api/settings/vlm/local/check", () => {
       }
     }
 
-    route.__setLocalCheckRouteTestOverrides({
+    setLocalCheckOverrides({
       existsSync: () => true,
       spawn: () => {
         const child = new MockChild();
@@ -297,7 +347,7 @@ describe("/api/settings/vlm/local/check", () => {
       assert.equal(data.ok, true);
       assert.ok(data.message.includes("cache"));
     } finally {
-      route.__setLocalCheckRouteTestOverrides();
+      setLocalCheckOverrides();
     }
   });
 
@@ -314,7 +364,7 @@ describe("/api/settings/vlm/local/check", () => {
       }
     }
 
-    route.__setLocalCheckRouteTestOverrides({
+    setLocalCheckOverrides({
       existsSync: () => true,
       spawn: () => {
         const child = new MockChild();
@@ -339,7 +389,7 @@ describe("/api/settings/vlm/local/check", () => {
       assert.equal(data.ok, false);
       assert.ok(data.message.includes("missing"));
     } finally {
-      route.__setLocalCheckRouteTestOverrides();
+      setLocalCheckOverrides();
     }
   });
 
@@ -348,7 +398,7 @@ describe("/api/settings/vlm/local/check", () => {
       "vlm/local/check/route.ts",
     );
 
-    route.__setLocalCheckRouteTestOverrides({
+    setLocalCheckOverrides({
       existsSync: () => true,
       spawn: () => {
         const child = new EventEmitter();
@@ -371,7 +421,7 @@ describe("/api/settings/vlm/local/check", () => {
       const data = (await response.json()) as { ok: boolean };
       assert.equal(data.ok, false);
     } finally {
-      route.__setLocalCheckRouteTestOverrides();
+      setLocalCheckOverrides();
     }
   });
 });
@@ -379,7 +429,7 @@ describe("/api/settings/vlm/local/check", () => {
 describe("/api/settings/vlm/test", () => {
   it("short-circuits when local mode is active", async () => {
     const route = await importRoute<typeof import("../../src/app/api/settings/vlm/test/route")>("vlm/test/route.ts");
-    route.__setVlmTestRouteOverrides({
+    setVlmTestOverrides({
       loadPersistedVlmSettings: () => ({ ...structuredClone(DEFAULT_VLM_SETTINGS), mode: "local" }),
     });
 
@@ -390,7 +440,7 @@ describe("/api/settings/vlm/test", () => {
       assert.equal(data.ok, true);
       assert.equal(data.mode, "local");
     } finally {
-      route.__setVlmTestRouteOverrides();
+      setVlmTestOverrides();
     }
   });
 
@@ -407,7 +457,7 @@ describe("/api/settings/vlm/test", () => {
         hfProvider: "provider",
       },
     };
-    route.__setVlmTestRouteOverrides({ normalizeVlmSettings: () => settings });
+    setVlmTestOverrides({ normalizeVlmSettings: () => settings });
 
     try {
       const response = await route.POST(
@@ -422,7 +472,7 @@ describe("/api/settings/vlm/test", () => {
       assert.equal(data.ok, false);
       assert.ok(data.message.includes("Model ID"));
     } finally {
-      route.__setVlmTestRouteOverrides();
+      setVlmTestOverrides();
     }
   });
 
@@ -437,7 +487,7 @@ describe("/api/settings/vlm/test", () => {
         apiKey: "token",
       },
     };
-    route.__setVlmTestRouteOverrides({ normalizeVlmSettings: () => settings });
+    setVlmTestOverrides({ normalizeVlmSettings: () => settings });
 
     const fetchMock = mock.fn(async () => new Response(null, { status: 204, statusText: "No Content" }));
     mock.method(globalThis, "fetch", fetchMock as any);
@@ -456,7 +506,7 @@ describe("/api/settings/vlm/test", () => {
       assert.equal(data.status, 204);
       assert.equal(fetchMock.mock.callCount(), 1);
     } finally {
-      route.__setVlmTestRouteOverrides();
+      setVlmTestOverrides();
     }
   });
 
@@ -470,7 +520,7 @@ describe("/api/settings/vlm/test", () => {
         baseUrl: "https://api.example.test/health",
       },
     };
-    route.__setVlmTestRouteOverrides({ normalizeVlmSettings: () => settings });
+    setVlmTestOverrides({ normalizeVlmSettings: () => settings });
 
     mock.method(globalThis, "fetch", mock.fn(async () => {
       throw new Error("timeout");
@@ -489,7 +539,7 @@ describe("/api/settings/vlm/test", () => {
       assert.equal(data.ok, false);
       assert.ok(data.message.includes("Network"));
     } finally {
-      route.__setVlmTestRouteOverrides();
+      setVlmTestOverrides();
     }
   });
 });
