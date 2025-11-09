@@ -336,9 +336,20 @@ export async function startLocalVlmService(
 
 export async function stopLocalVlmService(): Promise<boolean> {
   const proc = getCurrent();
+  if (!proc) {
+    return false;
+  }
+
   if (!isAlive(proc)) {
     setCurrent(null);
-    return false;
+
+    if (!state.lastExit) {
+      recordExitSnapshot(proc, {
+        message: "Local model service is not running.",
+      });
+    }
+
+    return true;
   }
 
   setCurrent(null);
