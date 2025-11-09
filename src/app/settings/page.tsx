@@ -1042,7 +1042,7 @@ export default function SettingsPage() {
                         ))}
                       </select>
                       <p className={fieldDescriptionClass}>
-                        "Auto" lets Transformers place layers across available devices. Use "cuda" or "cpu" to force a target.
+                        “Auto” lets Transformers place layers across available devices. Use “cuda” or “cpu” to force a target.
                       </p>
                     </div>
                     <div className="space-y-2">
@@ -1083,7 +1083,7 @@ export default function SettingsPage() {
                     </div>
                   </div>
                   <p className={fieldDescriptionClass}>
-                    The scanner will launch the Python OCR script with these parameters. Adjust them to match your workstation's
+                    The scanner will launch the Python OCR script with these parameters. Adjust them to match your workstation’s
                     hardware and model preferences.
                   </p>
                 </>
