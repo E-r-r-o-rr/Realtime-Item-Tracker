@@ -92,18 +92,22 @@ export async function POST(request: Request) {
         } catch {}
       }, CHECK_TIMEOUT_MS);
 
-      child.stdout.on("data", (chunk) => {
-        stdout += chunk.toString();
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk.toString();
-      });
-      child.on("error", (error) => {
+      const handleError = (error: Error) => {
         cleanup();
         reject(error);
+      };
+
+      child.once("error", handleError);
+
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk.toString();
       });
-      child.on("close", (code) => {
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.once("close", (code) => {
         cleanup();
+        child.off("error", handleError);
         resolve({ stdout, stderr, code: code ?? 0 });
       });
     });
