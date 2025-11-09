@@ -23,6 +23,36 @@ export const config = {
  * as JSON. Files are temporarily written to disk before invoking the OCR
  * service. After processing, the temporary file is deleted.
  */
+type OcrRouteDependencies = {
+  extractKvPairs: typeof extractKvPairs;
+  extractBarcodes: typeof extractBarcodes;
+  compareBarcodeData: typeof compareBarcodeData;
+  buildBarcodeValidation: typeof buildBarcodeValidation;
+};
+
+const defaultDeps: OcrRouteDependencies = {
+  extractKvPairs,
+  extractBarcodes,
+  compareBarcodeData,
+  buildBarcodeValidation,
+};
+
+let deps: OcrRouteDependencies = { ...defaultDeps };
+
+const applyOverrides = (overrides?: Partial<OcrRouteDependencies>) => {
+  deps = overrides ? { ...defaultDeps, ...overrides } : { ...defaultDeps };
+};
+
+declare global {
+  var __setOcrRouteTestOverrides:
+    | ((overrides?: Partial<OcrRouteDependencies>) => void)
+    | undefined;
+}
+
+if (process.env.NODE_ENV === 'test') {
+  globalThis.__setOcrRouteTestOverrides = applyOverrides;
+}
+
 export async function POST(req: Request) {
   try {
     const formData = await req.formData();
@@ -35,15 +65,15 @@ export async function POST(req: Request) {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'upload-'));
     const tmpPath = path.join(tmpDir, file.name);
     await fs.writeFile(tmpPath, buffer);
-    const { kv, selectedKv, providerInfo, error } = await extractKvPairs(tmpPath);
+    const { kv, selectedKv, providerInfo, error } = await deps.extractKvPairs(tmpPath);
     if (error) {
       await fs.unlink(tmpPath);
       return NextResponse.json({ error, providerInfo }, { status: 502 });
     }
 
-    const barcodeExtraction = await extractBarcodes(tmpPath);
-    const barcodeComparison = await compareBarcodeData(kv ?? {}, barcodeExtraction);
-    const validation = buildBarcodeValidation(kv, barcodeExtraction, barcodeComparison);
+    const barcodeExtraction = await deps.extractBarcodes(tmpPath);
+    const barcodeComparison = await deps.compareBarcodeData(kv ?? {}, barcodeExtraction);
+    const validation = deps.buildBarcodeValidation(kv, barcodeExtraction, barcodeComparison);
     const barcodes = barcodeExtraction.entries.map((entry) => entry.text).filter((text) => text.trim().length > 0);
     const barcodeWarnings = barcodeExtraction.warnings;
     await fs.unlink(tmpPath);

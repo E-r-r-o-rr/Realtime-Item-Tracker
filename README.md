@@ -1,6 +1,6 @@
 # Realtime Item Tracker
 
-A Next.js control centre for warehouse operators to capture paperwork, reconcile it against live bookings, and plot shipments on interactive floor maps in real time.
+A Next.js control centre for warehouse operators to capture paperwork, reconcile it against live bookings, and plot shipments on interactive floor maps in real time. The project couples typed API routes, deterministic database seeds, and rich client components so teams can trial the workflow locally before wiring it into production systems.
 
 ## Table of contents
 - [Overview](#overview)
@@ -21,7 +21,7 @@ A Next.js control centre for warehouse operators to capture paperwork, reconcile
 Realtime Item Tracker helps inbound teams triage order sheets the moment freight hits the dock. Operators can upload paperwork or snap a photo directly from the dashboard, let the vision pipeline extract structured fields, reconcile the results with barcode scans, and project the shipment onto a floor map so crews know exactly where to send it next.
 
 The application ships with:
-- A deterministic runtime (Node.js 20.18 + Python 3) and bootstrap script that rebuilds the SQLite database and demo assets in seconds.
+- A deterministic runtime (Node.js `>=20.18.0`, tested with 22.11 via `.nvmrc`) and bootstrap script that rebuilds the SQLite database and demo assets in seconds.
 - Rich client components for scanning, map administration, shipment history, and storage auditing.
 - A configurable vision language model (VLM) adapter that works with remote APIs or a local Python bridge.
 
@@ -42,7 +42,7 @@ The application ships with:
 
 ## Dependencies
 ### Runtime
-- **Node.js** – Locked to `>=20.18.0 <21` via `.nvmrc`, `.node-version`, and the `engines` field in `package.json`. Use `nvm`, `asdf`, or Volta to match the version exactly.
+- **Node.js** – Require `>=20.18.0` per the `engines` field in `package.json`. The repo pins 22.11.0 in `.nvmrc` and 20.18.1 in `.node-version`; use `nvm`, `asdf`, or Volta to align with your toolchain.
 - **Python 3** – Required to run OCR/barcode helper scripts and the optional local VLM bridge. Configure the interpreter path via `PYTHON_BIN` or `OCR_PYTHON`.
 
 ### JavaScript packages
@@ -100,6 +100,7 @@ pip install scipy numpy pandas
    ```bash
    npm run build
    npm run lint
+   npm run test
    ```
    The lint command currently prompts for migration because `next lint` is deprecated; acknowledge or migrate when convenient.
 
@@ -115,6 +116,7 @@ pip install scipy numpy pandas
 | Rebuild database & fixtures | `npm run bootstrap` |
 | Compile for production | `npm run build` |
 | Run ESLint | `npm run lint` |
+| Execute test suite | `npm run test` |
 | Launch dev server | `npm run dev` |
 | Start Next.js in production mode | `npm run start` |
 

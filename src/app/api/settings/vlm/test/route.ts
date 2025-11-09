@@ -11,6 +11,32 @@ const noStoreHeaders = {
   "cache-control": "no-store",
 };
 
+type VlmTestRouteDependencies = {
+  loadPersistedVlmSettings: typeof loadPersistedVlmSettings;
+  normalizeVlmSettings: typeof normalizeVlmSettings;
+};
+
+const defaultDeps: VlmTestRouteDependencies = {
+  loadPersistedVlmSettings,
+  normalizeVlmSettings,
+};
+
+let deps: VlmTestRouteDependencies = { ...defaultDeps };
+
+const applyOverrides = (overrides?: Partial<VlmTestRouteDependencies>) => {
+  deps = overrides ? { ...defaultDeps, ...overrides } : { ...defaultDeps };
+};
+
+declare global {
+  var __setVlmTestRouteOverrides:
+    | ((overrides?: Partial<VlmTestRouteDependencies>) => void)
+    | undefined;
+}
+
+if (process.env.NODE_ENV === "test") {
+  globalThis.__setVlmTestRouteOverrides = applyOverrides;
+}
+
 const fetchWithTimeout = async (url: URL, init: RequestInit, timeoutMs: number) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -57,7 +83,7 @@ const buildHeaders = (settings: VlmSettings): HeadersInit => {
 
 export async function POST(request: Request) {
   const body = await readJsonBody<{ settings?: Partial<VlmSettings> }>(request, {}, "vlm-settings-test");
-  const settings = body.settings ? normalizeVlmSettings(body.settings) : loadPersistedVlmSettings();
+  const settings = body.settings ? deps.normalizeVlmSettings(body.settings) : deps.loadPersistedVlmSettings();
 
   if (settings.mode !== "remote") {
     return NextResponse.json(

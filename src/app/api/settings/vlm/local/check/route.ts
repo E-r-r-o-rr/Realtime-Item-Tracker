@@ -12,6 +12,32 @@ const noStoreHeaders = {
   "cache-control": "no-store",
 };
 
+type LocalCheckDependencies = {
+  spawn: typeof spawn;
+  existsSync: typeof fs.existsSync;
+};
+
+const defaultDeps: LocalCheckDependencies = {
+  spawn,
+  existsSync: fs.existsSync.bind(fs),
+};
+
+let deps: LocalCheckDependencies = { ...defaultDeps };
+
+const applyOverrides = (overrides?: Partial<LocalCheckDependencies>) => {
+  deps = overrides ? { ...defaultDeps, ...overrides } : { ...defaultDeps };
+};
+
+declare global {
+  var __setLocalCheckRouteTestOverrides:
+    | ((overrides?: Partial<LocalCheckDependencies>) => void)
+    | undefined;
+}
+
+if (process.env.NODE_ENV === "test") {
+  globalThis.__setLocalCheckRouteTestOverrides = applyOverrides;
+}
+
 const PY_BIN =
   process.env.OCR_PYTHON ||
   process.env.PYTHON_BIN ||
@@ -46,7 +72,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!fs.existsSync(OCR_SCRIPT)) {
+  if (!deps.existsSync(OCR_SCRIPT)) {
     return NextResponse.json(
       { ok: false, message: "OCR script is missing on the server." },
       { status: 500, headers: noStoreHeaders },
@@ -57,7 +83,7 @@ export async function POST(request: Request) {
     const { stdout, stderr, code } = await new Promise<{ stdout: string; stderr: string; code: number }>((resolve, reject) => {
       const env = { ...process.env, VLM_MODE: "local", OCR_LOCAL_MODEL_ID: modelId };
       const args = [OCR_SCRIPT, "--model", modelId, "--mode", "local", "--check_model"];
-      const child = spawn(PY_BIN, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+      const child = deps.spawn(PY_BIN, args, { env, stdio: ["ignore", "pipe", "pipe"] });
 
       let stdout = "";
       let stderr = "";
@@ -76,18 +102,22 @@ export async function POST(request: Request) {
         } catch {}
       }, CHECK_TIMEOUT_MS);
 
-      child.stdout.on("data", (chunk) => {
-        stdout += chunk.toString();
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk.toString();
-      });
-      child.on("error", (error) => {
+      const handleError = (error: Error) => {
         cleanup();
         reject(error);
+      };
+
+      child.once("error", handleError);
+
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk.toString();
       });
-      child.on("close", (code) => {
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.once("close", (code) => {
         cleanup();
+        child.off("error", handleError);
         resolve({ stdout, stderr, code: code ?? 0 });
       });
     });
