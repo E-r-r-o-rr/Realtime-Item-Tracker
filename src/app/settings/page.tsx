@@ -63,12 +63,9 @@ export default function SettingsPage() {
   const [hydrated, setHydrated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [statusTone, setStatusTone] = useState<"info" | "success" | "error">("info");
-  const [testMessage, setTestMessage] = useState<string | null>(null);
-  const [testTone, setTestTone] = useState<"idle" | "success" | "error">("idle");
   const statusTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [localModelPreset, setLocalModelPreset] = useState<LocalModelPreset>(() =>
     detectLocalModelPreset(DEFAULT_VLM_SETTINGS.local.modelId),
@@ -523,33 +520,6 @@ export default function SettingsPage() {
     }
   };
 
-  const handleTestConnection = async () => {
-    setTesting(true);
-    setTestMessage(null);
-    setTestTone("idle");
-    try {
-      const response = await fetch("/api/settings/vlm/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings }),
-      });
-      const payload = await response.json();
-      if (response.ok) {
-        setTestTone("success");
-        setTestMessage(payload.message || "Connection successful");
-      } else {
-        setTestTone("error");
-        setTestMessage(payload.message || "Connection failed");
-      }
-    } catch (error) {
-      console.error("Test connection failed", error);
-      setTestTone("error");
-      setTestMessage("Unable to reach endpoint");
-    } finally {
-      setTesting(false);
-    }
-  };
-
   const modeDescription = useMemo(() => {
     const copy: Record<VlmMode, string> = {
       local:
@@ -868,20 +838,6 @@ export default function SettingsPage() {
                     onChange={(event) => handleDefaultChange("maxOutputTokens", Number(event.target.value))}
                   />
                 </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-3">
-                <Button type="button" variant="secondary" onClick={handleTestConnection} disabled={testing}>
-                  {testing ? "Testing…" : "Test connection"}
-                </Button>
-                {testMessage && (
-                  <span
-                    className={`text-sm ${
-                      testTone === "success" ? "text-emerald-300" : testTone === "error" ? "text-rose-300" : "text-slate-300"
-                    }`}
-                  >
-                    {testMessage}
-                  </span>
-                )}
               </div>
             </section>
           )}
