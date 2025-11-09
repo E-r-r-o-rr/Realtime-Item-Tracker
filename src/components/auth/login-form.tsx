@@ -8,12 +8,12 @@ export function LoginForm() {
   const searchParams = useSearchParams();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const fallbackNavigationRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fallbackNavigationRef = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
-      if (fallbackNavigationRef.current) {
-        clearTimeout(fallbackNavigationRef.current);
+      if (fallbackNavigationRef.current !== null && typeof window !== "undefined") {
+        window.clearTimeout(fallbackNavigationRef.current);
         fallbackNavigationRef.current = null;
       }
     };
@@ -71,6 +71,10 @@ export function LoginForm() {
       router.replace(target);
 
       if (typeof window !== "undefined") {
+        if (fallbackNavigationRef.current !== null) {
+          window.clearTimeout(fallbackNavigationRef.current);
+        }
+
         fallbackNavigationRef.current = window.setTimeout(() => {
           if (window.location.pathname === "/login") {
             window.location.replace(target);
