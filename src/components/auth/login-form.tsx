@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 export function LoginForm() {
@@ -8,6 +8,16 @@ export function LoginForm() {
   const searchParams = useSearchParams();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const fallbackNavigationRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (fallbackNavigationRef.current) {
+        clearTimeout(fallbackNavigationRef.current);
+        fallbackNavigationRef.current = null;
+      }
+    };
+  }, []);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -26,6 +36,8 @@ export function LoginForm() {
 
     setPending(true);
     setError(null);
+
+    let shouldResetPending = true;
 
     try {
       const response = await fetch("/api/auth/login", {
@@ -55,12 +67,22 @@ export function LoginForm() {
       const isSafeRedirect = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//");
       const target = isSafeRedirect ? nextParam : "/";
 
+      shouldResetPending = false;
       router.replace(target);
-      router.refresh();
+
+      if (typeof window !== "undefined") {
+        fallbackNavigationRef.current = window.setTimeout(() => {
+          if (window.location.pathname === "/login") {
+            window.location.replace(target);
+          }
+        }, 1200);
+      }
     } catch {
       setError("Something went wrong while signing in. Please try again.");
     } finally {
-      setPending(false);
+      if (shouldResetPending) {
+        setPending(false);
+      }
     }
   };
 
