@@ -1,26 +1,50 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const fallbackNavigationRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (fallbackNavigationRef.current !== null && typeof window !== "undefined") {
+        window.clearTimeout(fallbackNavigationRef.current);
+        fallbackNavigationRef.current = null;
+      }
+    };
+  }, []);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (pending) {
+      return;
+    }
+
+    const formData = new FormData(event.currentTarget);
+    const normalizedUsername = (formData.get("username") as string | null)?.trim() ?? "";
+    const normalizedPassword = (formData.get("password") as string | null) ?? "";
+
+    if (!normalizedUsername || !normalizedPassword) {
+      setError("Please provide both a username and password.");
+      return;
+    }
+
     setPending(true);
     setError(null);
+
+    let shouldResetPending = true;
 
     try {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        credentials: "include",
+        body: JSON.stringify({ username: normalizedUsername, password: normalizedPassword }),
       });
 
       if (!response.ok) {
@@ -43,17 +67,31 @@ export function LoginForm() {
       const isSafeRedirect = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//");
       const target = isSafeRedirect ? nextParam : "/";
 
-      router.push(target);
-      router.refresh();
+      shouldResetPending = false;
+      router.replace(target);
+
+      if (typeof window !== "undefined") {
+        if (fallbackNavigationRef.current !== null) {
+          window.clearTimeout(fallbackNavigationRef.current);
+        }
+
+        fallbackNavigationRef.current = window.setTimeout(() => {
+          if (window.location.pathname === "/login") {
+            window.location.replace(target);
+          }
+        }, 1200);
+      }
     } catch {
       setError("Something went wrong while signing in. Please try again.");
     } finally {
-      setPending(false);
+      if (shouldResetPending) {
+        setPending(false);
+      }
     }
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
+    <form onSubmit={handleSubmit} className="space-y-6" suppressHydrationWarning>
       <div className="space-y-2">
         <label htmlFor="username" className="text-sm font-medium text-slate-200">
           Username
@@ -63,11 +101,10 @@ export function LoginForm() {
           name="username"
           type="text"
           autoComplete="username"
-          value={username}
-          onChange={(event) => setUsername(event.target.value)}
           className="w-full rounded-xl border border-white/10 bg-slate-900/60 px-4 py-3 text-sm text-slate-100 shadow-inner shadow-black/40 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/60"
           placeholder="Enter your username"
           required
+          suppressHydrationWarning
         />
       </div>
 
@@ -80,11 +117,10 @@ export function LoginForm() {
           name="password"
           type="password"
           autoComplete="current-password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
           className="w-full rounded-xl border border-white/10 bg-slate-900/60 px-4 py-3 text-sm text-slate-100 shadow-inner shadow-black/40 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/60"
           placeholder="Enter your password"
           required
+          suppressHydrationWarning
         />
       </div>
 

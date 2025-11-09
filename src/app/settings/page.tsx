@@ -63,12 +63,9 @@ export default function SettingsPage() {
   const [hydrated, setHydrated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [statusTone, setStatusTone] = useState<"info" | "success" | "error">("info");
-  const [testMessage, setTestMessage] = useState<string | null>(null);
-  const [testTone, setTestTone] = useState<"idle" | "success" | "error">("idle");
   const statusTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [localModelPreset, setLocalModelPreset] = useState<LocalModelPreset>(() =>
     detectLocalModelPreset(DEFAULT_VLM_SETTINGS.local.modelId),
@@ -523,33 +520,6 @@ export default function SettingsPage() {
     }
   };
 
-  const handleTestConnection = async () => {
-    setTesting(true);
-    setTestMessage(null);
-    setTestTone("idle");
-    try {
-      const response = await fetch("/api/settings/vlm/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings }),
-      });
-      const payload = await response.json();
-      if (response.ok) {
-        setTestTone("success");
-        setTestMessage(payload.message || "Connection successful");
-      } else {
-        setTestTone("error");
-        setTestMessage(payload.message || "Connection failed");
-      }
-    } catch (error) {
-      console.error("Test connection failed", error);
-      setTestTone("error");
-      setTestMessage("Unable to reach endpoint");
-    } finally {
-      setTesting(false);
-    }
-  };
-
   const modeDescription = useMemo(() => {
     const copy: Record<VlmMode, string> = {
       local:
@@ -590,6 +560,20 @@ export default function SettingsPage() {
       ? "text-indigo-300"
       : "text-slate-300/80";
 
+  const formatTimestamp = useCallback(
+    (timestamp?: number | null) => {
+      if (!timestamp || !hydrated) {
+        return null;
+      }
+      return new Date(timestamp).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    },
+    [hydrated],
+  );
+
   const lastExitSummary = useMemo(() => {
     const exit = localServiceState.lastExit;
     if (!exit) return null;
@@ -600,7 +584,7 @@ export default function SettingsPage() {
     if (exit.signal) {
       parts.push(`signal ${exit.signal}`);
     }
-    const time = typeof exit.at === "number" ? new Date(exit.at).toLocaleTimeString() : null;
+    const time = formatTimestamp(exit.at ?? null);
     if (!parts.length && !time) return null;
     if (parts.length && time) {
       return `Last exit (${parts.join(", ")}) at ${time}.`;
@@ -609,7 +593,7 @@ export default function SettingsPage() {
       return `Last exit (${parts.join(", ")}).`;
     }
     return time ? `Last exit at ${time}.` : null;
-  }, [localServiceState.lastExit]);
+  }, [localServiceState.lastExit, formatTimestamp]);
 
   const serviceMessage = (() => {
     switch (localServiceState.state) {
@@ -617,7 +601,7 @@ export default function SettingsPage() {
         const port = localServiceState.port;
         const since =
           localServiceState.startedAt && Number.isFinite(localServiceState.startedAt)
-            ? new Date(localServiceState.startedAt).toLocaleTimeString()
+            ? formatTimestamp(localServiceState.startedAt)
             : null;
         const base = port
           ? `Running on http://127.0.0.1:${port}.`
@@ -868,20 +852,6 @@ export default function SettingsPage() {
                     onChange={(event) => handleDefaultChange("maxOutputTokens", Number(event.target.value))}
                   />
                 </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-3">
-                <Button type="button" variant="secondary" onClick={handleTestConnection} disabled={testing}>
-                  {testing ? "Testing…" : "Test connection"}
-                </Button>
-                {testMessage && (
-                  <span
-                    className={`text-sm ${
-                      testTone === "success" ? "text-emerald-300" : testTone === "error" ? "text-rose-300" : "text-slate-300"
-                    }`}
-                  >
-                    {testMessage}
-                  </span>
-                )}
               </div>
             </section>
           )}
