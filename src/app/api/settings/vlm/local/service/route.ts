@@ -15,6 +15,24 @@ const noStoreHeaders = {
   "cache-control": "no-store",
 };
 
+type LocalServiceRouteDependencies = {
+  getLocalVlmServiceStatus: typeof getLocalVlmServiceStatus;
+  startLocalVlmService: typeof startLocalVlmService;
+  stopLocalVlmService: typeof stopLocalVlmService;
+};
+
+const defaultDeps: LocalServiceRouteDependencies = {
+  getLocalVlmServiceStatus,
+  startLocalVlmService,
+  stopLocalVlmService,
+};
+
+let deps: LocalServiceRouteDependencies = { ...defaultDeps };
+
+export function __setLocalServiceRouteTestOverrides(overrides?: Partial<LocalServiceRouteDependencies>) {
+  deps = { ...defaultDeps, ...overrides };
+}
+
 type StartServiceBody = {
   modelId?: string;
   dtype?: string;
@@ -61,7 +79,7 @@ const normalizeLocalSettings = (body: StartServiceBody): VlmLocalSettings => {
 };
 
 export async function GET() {
-  const status = getLocalVlmServiceStatus();
+  const status = deps.getLocalVlmServiceStatus();
   return NextResponse.json({ ok: true, status }, { headers: noStoreHeaders });
 }
 
@@ -71,7 +89,7 @@ export async function POST(request: Request) {
   const systemPrompt = toString(body.systemPrompt, "");
 
   try {
-    const status = await startLocalVlmService(local, systemPrompt);
+    const status = await deps.startLocalVlmService(local, systemPrompt);
     return NextResponse.json({ ok: true, status }, { headers: noStoreHeaders });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to start local VLM service.";
@@ -80,6 +98,6 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE() {
-  const stopped = await stopLocalVlmService();
+  const stopped = await deps.stopLocalVlmService();
   return NextResponse.json({ ok: stopped }, { headers: noStoreHeaders });
 }

@@ -12,6 +12,22 @@ const noStoreHeaders = {
   "cache-control": "no-store",
 };
 
+type LocalCheckDependencies = {
+  spawn: typeof spawn;
+  existsSync: typeof fs.existsSync;
+};
+
+const defaultDeps: LocalCheckDependencies = {
+  spawn,
+  existsSync: fs.existsSync.bind(fs),
+};
+
+let deps: LocalCheckDependencies = { ...defaultDeps };
+
+export function __setLocalCheckRouteTestOverrides(overrides?: Partial<LocalCheckDependencies>) {
+  deps = { ...defaultDeps, ...overrides };
+}
+
 const PY_BIN =
   process.env.OCR_PYTHON ||
   process.env.PYTHON_BIN ||
@@ -46,7 +62,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!fs.existsSync(OCR_SCRIPT)) {
+  if (!deps.existsSync(OCR_SCRIPT)) {
     return NextResponse.json(
       { ok: false, message: "OCR script is missing on the server." },
       { status: 500, headers: noStoreHeaders },
@@ -57,7 +73,7 @@ export async function POST(request: Request) {
     const { stdout, stderr, code } = await new Promise<{ stdout: string; stderr: string; code: number }>((resolve, reject) => {
       const env = { ...process.env, VLM_MODE: "local", OCR_LOCAL_MODEL_ID: modelId };
       const args = [OCR_SCRIPT, "--model", modelId, "--mode", "local", "--check_model"];
-      const child = spawn(PY_BIN, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+      const child = deps.spawn(PY_BIN, args, { env, stdio: ["ignore", "pipe", "pipe"] });
 
       let stdout = "";
       let stderr = "";
