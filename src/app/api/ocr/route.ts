@@ -57,6 +57,17 @@ export async function POST(req: Request) {
   try {
     const formData = await req.formData();
     const file = formData.get('file');
+    const disableBarcode =
+      (() => {
+        const flag = formData.get('barcodeDisabled');
+        if (typeof flag === 'string') {
+          return flag.toLowerCase() === 'true';
+        }
+        if (typeof flag === 'number') {
+          return Number(flag) === 1;
+        }
+        return false;
+      })();
     if (!file || !(file instanceof File)) {
       return NextResponse.json({ error: 'Missing file field' }, { status: 400 });
     }
@@ -71,9 +82,24 @@ export async function POST(req: Request) {
       return NextResponse.json({ error, providerInfo }, { status: 502 });
     }
 
-    const barcodeExtraction = await deps.extractBarcodes(tmpPath);
-    const barcodeComparison = await deps.compareBarcodeData(kv ?? {}, barcodeExtraction);
-    const validation = deps.buildBarcodeValidation(kv, barcodeExtraction, barcodeComparison);
+    let barcodeExtraction = { entries: [], warnings: [] } as Awaited<
+      ReturnType<typeof deps.extractBarcodes>
+    >;
+    let barcodeComparison: Awaited<ReturnType<typeof deps.compareBarcodeData>> = null;
+    let validation = null as Awaited<ReturnType<typeof deps.buildBarcodeValidation>> | null;
+
+    if (!disableBarcode) {
+      barcodeExtraction = await deps.extractBarcodes(tmpPath);
+      barcodeComparison = await deps.compareBarcodeData(kv ?? {}, barcodeExtraction);
+      validation = deps.buildBarcodeValidation(kv, barcodeExtraction, barcodeComparison);
+    } else {
+      validation = {
+        matches: null,
+        status: 'disabled',
+        message: 'Barcode validation disabled for this scan.',
+      };
+    }
+
     const barcodes = barcodeExtraction.entries.map((entry) => entry.text).filter((text) => text.trim().length > 0);
     const barcodeWarnings = barcodeExtraction.warnings;
     await fs.unlink(tmpPath);

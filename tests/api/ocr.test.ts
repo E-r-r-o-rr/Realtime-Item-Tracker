@@ -67,7 +67,7 @@ describe("POST /api/ocr", () => {
         warnings: ["low-contrast"],
       }),
       compareBarcodeData: () => ({ match: true }),
-      buildBarcodeValidation: () => ({ status: "ok" }),
+      buildBarcodeValidation: () => ({ matches: true, status: "match", message: "All good" }),
     });
 
     const file = new File([Buffer.from("image-bytes")], "ticket.png", { type: "image/png" });
@@ -87,8 +87,55 @@ describe("POST /api/ocr", () => {
       assert.deepEqual(data.barcodes, ["ABC123"]);
       assert.deepEqual(data.barcodeWarnings, ["low-contrast"]);
       assert.deepEqual(data.barcodeComparison, { match: true });
-      assert.deepEqual(data.validation, { status: "ok" });
+      assert.deepEqual(data.validation, { matches: true, status: "match", message: "All good" });
       assert.deepEqual(data.providerInfo, { mode: "local", execution: "local-service" });
+    } finally {
+      setOcrRouteOverrides();
+    }
+  });
+
+  it("skips barcode extraction when barcode validation is disabled", async () => {
+    const route = await importFreshRoute();
+    const extractBarcodesMock = mock.fn(async () => ({ entries: [{ text: "SHOULD_NOT" }], warnings: [] }));
+    const compareBarcodeDataMock = mock.fn(async () => ({ match: false }));
+    const buildBarcodeValidationMock = mock.fn(() => ({ matches: false, status: "mismatch", message: "should not run" }));
+
+    setOcrRouteOverrides({
+      extractKvPairs: async () => ({
+        kv: { destination: "R1-A" },
+        selectedKv: {},
+        providerInfo: { mode: "local", execution: "local-cli" },
+      }),
+      extractBarcodes: extractBarcodesMock as any,
+      compareBarcodeData: compareBarcodeDataMock as any,
+      buildBarcodeValidation: buildBarcodeValidationMock as any,
+    });
+
+    const file = new File([Buffer.from("image-bytes")], "ticket.png", { type: "image/png" });
+    const form = new FormData();
+    form.set("file", file);
+    form.set("barcodeDisabled", "true");
+    const request = new Request("https://example.test/api/ocr", {
+      method: "POST",
+      body: form,
+    });
+
+    try {
+      const response = await route.POST(request);
+      assert.equal(response.status, 200);
+      const data = (await response.json()) as Record<string, unknown>;
+      assert.deepEqual(data.kv, { destination: "R1-A" });
+      assert.deepEqual(data.barcodes, []);
+      assert.deepEqual(data.barcodeWarnings, []);
+      assert.equal(data.barcodeComparison, null);
+      assert.deepEqual(data.validation, {
+        matches: null,
+        status: "disabled",
+        message: "Barcode validation disabled for this scan.",
+      });
+      assert.equal(extractBarcodesMock.mock.callCount(), 0);
+      assert.equal(compareBarcodeDataMock.mock.callCount(), 0);
+      assert.equal(buildBarcodeValidationMock.mock.callCount(), 0);
     } finally {
       setOcrRouteOverrides();
     }
