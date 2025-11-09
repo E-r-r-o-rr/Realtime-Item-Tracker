@@ -45,13 +45,19 @@ const registerSource = [
 ].join(' ');
 const registerDataUrl = `data:text/javascript,${encodeURIComponent(registerSource)}`;
 
+const sanitizedEnv = { ...process.env };
+delete sanitizedEnv.API_KEY;
+if (!sanitizedEnv.NODE_ENV) {
+  sanitizedEnv.NODE_ENV = 'test';
+}
+
 const child = spawn(
   process.execPath,
   ['--test', '--test-concurrency=1', '--import', registerDataUrl, ...testFiles],
   {
     stdio: 'inherit',
     cwd: projectRoot,
-    env: process.env,
+    env: sanitizedEnv,
     windowsHide: true,
   },
 );
