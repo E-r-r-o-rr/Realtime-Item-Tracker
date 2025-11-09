@@ -48,7 +48,6 @@ export function LoginForm() {
             setError("Unable to sign in with those credentials.");
             break;
         }
-        setPending(false);
         return;
       }
 
@@ -60,6 +59,7 @@ export function LoginForm() {
       router.refresh();
     } catch {
       setError("Something went wrong while signing in. Please try again.");
+    } finally {
       setPending(false);
     }
   };
