@@ -6,8 +6,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -17,8 +15,14 @@ export function LoginForm() {
       return;
     }
 
-    const normalizedUsername = username.trim();
-    const normalizedPassword = password;
+    const formData = new FormData(event.currentTarget);
+    const normalizedUsername = (formData.get("username") as string | null)?.trim() ?? "";
+    const normalizedPassword = (formData.get("password") as string | null) ?? "";
+
+    if (!normalizedUsername || !normalizedPassword) {
+      setError("Please provide both a username and password.");
+      return;
+    }
 
     setPending(true);
     setError(null);
@@ -61,7 +65,7 @@ export function LoginForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
+    <form onSubmit={handleSubmit} className="space-y-6" suppressHydrationWarning>
       <div className="space-y-2">
         <label htmlFor="username" className="text-sm font-medium text-slate-200">
           Username
@@ -71,11 +75,10 @@ export function LoginForm() {
           name="username"
           type="text"
           autoComplete="username"
-          value={username}
-          onChange={(event) => setUsername(event.target.value)}
           className="w-full rounded-xl border border-white/10 bg-slate-900/60 px-4 py-3 text-sm text-slate-100 shadow-inner shadow-black/40 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/60"
           placeholder="Enter your username"
           required
+          suppressHydrationWarning
         />
       </div>
 
@@ -88,11 +91,10 @@ export function LoginForm() {
           name="password"
           type="password"
           autoComplete="current-password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
           className="w-full rounded-xl border border-white/10 bg-slate-900/60 px-4 py-3 text-sm text-slate-100 shadow-inner shadow-black/40 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/60"
           placeholder="Enter your password"
           required
+          suppressHydrationWarning
         />
       </div>
 
