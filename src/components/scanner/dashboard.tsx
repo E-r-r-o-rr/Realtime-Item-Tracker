@@ -76,6 +76,15 @@ interface BarcodeComparisonReport {
   barcodeText?: string;
 }
 
+interface ComparisonRowWithRaw extends BarcodeComparisonRow {
+  ocrRaw?: unknown;
+  barcodeRaw?: unknown;
+}
+
+const isObjectLike = (value: unknown): value is Record<string, unknown> | unknown[] => {
+  return typeof value === "object" && value !== null;
+};
+
 // Normalizes various barcode comparison payload shapes returned by upstream OCR services
 // into a consistent structure that the UI can render safely. Any unexpected input is
 // coerced into conservative defaults so we never attempt to read undefined fields.
@@ -458,6 +467,18 @@ const toDisplayString = (value: unknown): string => {
   return String(value).trim();
 };
 
+const toNormalizedRawMap = (pairs: KvPairs | null): Map<string, unknown> => {
+  const map = new Map<string, unknown>();
+  if (!pairs) return map;
+  for (const [key, rawValue] of Object.entries(pairs)) {
+    if (typeof key !== "string") continue;
+    const normalizedKey = normalizeKey(key);
+    if (!normalizedKey) continue;
+    map.set(normalizedKey, rawValue);
+  }
+  return map;
+};
+
 const toNormalizedMap = (pairs: KvPairs | null): Map<string, string> => {
   const map = new Map<string, string>();
   if (!pairs) return map;
@@ -468,6 +489,80 @@ const toNormalizedMap = (pairs: KvPairs | null): Map<string, string> => {
     map.set(normalizedKey, toDisplayString(rawValue));
   }
   return map;
+};
+
+const describeNestedSummary = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    const count = value.length;
+    if (count === 0) return "Array (empty)";
+    return `Array (${count} ${count === 1 ? "item" : "items"})`;
+  }
+  if (isObjectLike(value)) {
+    const keys = Object.keys(value);
+    if (keys.length === 0) return "Object (empty)";
+    return `Object (${keys.length} ${keys.length === 1 ? "key" : "keys"})`;
+  }
+  return "Object";
+};
+
+const formatNestedValue = (value: unknown): string => {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return String(value);
+  }
+};
+
+interface ValuePreviewProps {
+  id: string;
+  displayValue: string;
+  rawValue: unknown;
+  summaryClassName?: string;
+}
+
+const ValuePreview = ({ id, displayValue, rawValue, summaryClassName }: ValuePreviewProps) => {
+  const [expanded, setExpanded] = useState(false);
+  const nested = isObjectLike(rawValue);
+  const trimmed = typeof displayValue === "string" ? displayValue.trim() : "";
+  const summary = useMemo(() => {
+    if (!nested) return trimmed || "—";
+    if (trimmed && trimmed !== "[object Object]" && !trimmed.startsWith("{")) {
+      return trimmed;
+    }
+    return describeNestedSummary(rawValue);
+  }, [nested, rawValue, trimmed]);
+
+  const formatted = useMemo(() => {
+    if (!nested) return "";
+    return formatNestedValue(rawValue);
+  }, [nested, rawValue]);
+
+  return (
+    <div className={`flex flex-col${nested ? " gap-2" : ""}`}>
+      <span className={summaryClassName ?? "text-slate-200"}>{summary}</span>
+      {nested && (
+        <>
+          <button
+            type="button"
+            onClick={() => setExpanded((prev) => !prev)}
+            className="inline-flex w-fit items-center gap-2 rounded-full border border-white/15 px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.25em] text-indigo-100 transition hover:border-indigo-300 hover:text-indigo-50"
+            aria-expanded={expanded}
+            aria-controls={`${id}-details`}
+          >
+            {expanded ? "Hide details" : "View details"}
+          </button>
+          {expanded && (
+            <pre
+              id={`${id}-details`}
+              className="max-h-64 overflow-auto rounded-xl border border-white/10 bg-black/40 p-3 text-left text-[0.7rem] leading-relaxed text-slate-100/90"
+            >
+              {formatted}
+            </pre>
+          )}
+        </>
+      )}
+    </div>
+  );
 };
 
 const getValueFromMap = (map: Map<string, string>, keys: string[]): string => {
@@ -790,20 +885,37 @@ export default function ScannerDashboard() {
     setLiveRecordState(record);
   }, []);
 
-  const comparisonRows = useMemo(() => {
+  const comparisonRows = useMemo<ComparisonRowWithRaw[]>(() => {
+    const normalizedKv = toNormalizedRawMap(kv);
+    const normalizedSelected = toNormalizedRawMap(selectedKv);
+
     if (barcodeComparison && Array.isArray(barcodeComparison.rows) && barcodeComparison.rows.length > 0) {
-      return barcodeComparison.rows;
+      return barcodeComparison.rows.map((row) => {
+        const normalizedKey = normalizeKey(row.key);
+        return {
+          ...row,
+          ocrRaw: normalizedKv.get(normalizedKey),
+          barcodeRaw: normalizedSelected.get(normalizedKey),
+        };
+      });
     }
-    if (!kv) return [] as BarcodeComparisonRow[];
-    return Object.entries(kv).map(([rawKey, rawVal]) => ({
-      key: rawKey,
-      ocr: String(rawVal ?? ""),
-      barcodeLabel: "",
-      barcodeValue: "",
-      status: "MISSING" as ComparisonStatus,
-      contextLabel: undefined,
-    }));
-  }, [barcodeComparison, kv]);
+
+    if (!kv) return [];
+
+    return Object.entries(kv).map(([rawKey, rawVal]) => {
+      const normalizedKey = normalizeKey(rawKey);
+      return {
+        key: rawKey,
+        ocr: toDisplayString(rawVal),
+        barcodeLabel: "",
+        barcodeValue: "",
+        status: "MISSING" as ComparisonStatus,
+        contextLabel: undefined,
+        ocrRaw: rawVal,
+        barcodeRaw: normalizedSelected.get(normalizedKey),
+      };
+    });
+  }, [barcodeComparison, kv, selectedKv]);
 
   const barcodeOnlyEntries = useMemo(() => {
     if (!barcodeComparison) return [] as BarcodeOnlyEntry[];
@@ -1678,16 +1790,25 @@ export default function ScannerDashboard() {
               <tbody>
                 {comparisonRows.map((row, index) => {
                   const meta = COMPARISON_STATUS_META[row.status] ?? COMPARISON_STATUS_META.MISSING;
-                  const hasBarcodeValue = row.barcodeValue && row.barcodeValue.trim().length > 0;
+                  const hasBarcodeValue =
+                    (typeof row.barcodeValue === "string" && row.barcodeValue.trim().length > 0) ||
+                    isObjectLike(row.barcodeRaw);
                   const contextLabel = row.contextLabel || row.barcodeLabel;
                   return (
                     <tr key={`${row.key}-${index}`} className="border-b border-white/10 last:border-0">
                       <td className="px-4 py-3 font-medium text-slate-100">{row.key}</td>
-                      <td className="px-4 py-3 text-slate-200">{row.ocr}</td>
+                      <td className="px-4 py-3 text-slate-200">
+                        <ValuePreview id={`ocr-${index}`} displayValue={row.ocr} rawValue={row.ocrRaw} />
+                      </td>
                       <td className={`px-4 py-3 ${hasBarcodeValue ? "text-slate-200" : "text-slate-500"}`}>
                         {hasBarcodeValue ? (
-                          <div className="flex flex-col">
-                            <span>{row.barcodeValue}</span>
+                          <div className="flex flex-col gap-2">
+                            <ValuePreview
+                              id={`barcode-${index}`}
+                              displayValue={row.barcodeValue}
+                              rawValue={row.barcodeRaw}
+                              summaryClassName={hasBarcodeValue ? "text-slate-200" : "text-slate-500"}
+                            />
                             {contextLabel && (
                               <span className="text-xs uppercase tracking-wide text-slate-400/80">{contextLabel}</span>
                             )}
