@@ -20,7 +20,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # If you DO have .nvmrc, keep the next line; otherwise use: node-version: '20.18'
+          # If you DO have .nvmrc, keep the next line; otherwise use: node-version: '22.11.0'
           node-version-file: '.nvmrc'
           cache: 'npm'
 
