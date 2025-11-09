@@ -13,6 +13,13 @@ export function LoginForm() {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (pending) {
+      return;
+    }
+
+    const normalizedUsername = username.trim();
+    const normalizedPassword = password;
+
     setPending(true);
     setError(null);
 
@@ -20,7 +27,8 @@ export function LoginForm() {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        credentials: "include",
+        body: JSON.stringify({ username: normalizedUsername, password: normalizedPassword }),
       });
 
       if (!response.ok) {
@@ -36,6 +44,7 @@ export function LoginForm() {
             setError("Unable to sign in with those credentials.");
             break;
         }
+        setPending(false);
         return;
       }
 
@@ -43,11 +52,10 @@ export function LoginForm() {
       const isSafeRedirect = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//");
       const target = isSafeRedirect ? nextParam : "/";
 
-      router.push(target);
+      router.replace(target);
       router.refresh();
     } catch {
       setError("Something went wrong while signing in. Please try again.");
-    } finally {
       setPending(false);
     }
   };
