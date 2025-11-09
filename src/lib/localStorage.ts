@@ -20,8 +20,8 @@ const safeParse = <T,>(value: string | null, fallback: T): T => {
   if (!value) return fallback;
   try {
     return JSON.parse(value) as T;
-  } catch (e) {
-    console.warn("Failed to parse localStorage payload", e);
+  } catch (error) {
+    console.warn("Failed to parse localStorage payload", error);
     return fallback;
   }
 };
@@ -42,4 +42,3 @@ export const persistLiveRecord = (record: LiveRecord | null) => {
 };
 
 export const clearLiveRecord = () => persistLiveRecord(null);
-

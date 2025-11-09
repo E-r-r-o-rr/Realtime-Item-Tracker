@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import typescript from "typescript";
 
 const ts = typescript.default ?? typescript;
+const projectRoot = process.env.PROJECT_ROOT ?? process.cwd();
 const EXTENSIONS = ["", ".ts", ".tsx", ".js", ".mjs", ".cjs", "/index.ts", "/index.tsx", "/index.js", "/index.mjs"];
 
 async function fileExists(filePath) {
@@ -40,20 +41,20 @@ export async function resolve(specifier, context, defaultResolve) {
   const [withoutQuery, query] = specifier.split("?");
 
   if (withoutQuery === "next/headers") {
-    const stubPath = path.resolve(process.cwd(), "tests/stubs/next-headers.ts");
+    const stubPath = path.resolve(projectRoot, "tests/stubs/next-headers.ts");
     const url = pathToFileURL(stubPath).href;
     return { url: query ? `${url}?${query}` : url, shortCircuit: true };
   }
 
   if (withoutQuery === "next/server") {
-    const stubPath = path.resolve(process.cwd(), "tests/stubs/next-server.ts");
+    const stubPath = path.resolve(projectRoot, "tests/stubs/next-server.ts");
     const url = pathToFileURL(stubPath).href;
     return { url: query ? `${url}?${query}` : url, shortCircuit: true };
   }
 
   if (withoutQuery.startsWith("@/")) {
     const relativePath = withoutQuery.slice(2);
-    const resolvedPath = path.resolve(process.cwd(), "src", relativePath);
+    const resolvedPath = path.resolve(projectRoot, "src", relativePath);
     const found = await resolveWithExtensions(resolvedPath, query);
     if (found) {
       return { url: found, shortCircuit: true };
@@ -70,7 +71,7 @@ export async function resolve(specifier, context, defaultResolve) {
   }
 
   if (withoutQuery.startsWith("/")) {
-    const resolvedPath = path.resolve(process.cwd(), withoutQuery.slice(1));
+    const resolvedPath = path.resolve(projectRoot, withoutQuery.slice(1));
     const found = await resolveWithExtensions(resolvedPath, query);
     if (found) {
       return { url: found, shortCircuit: true };

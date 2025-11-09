@@ -13,35 +13,67 @@ const noStoreHeaders = {
   "cache-control": "no-store",
 };
 
+type VlmRouteDependencies = {
+  loadPersistedVlmSettings: typeof loadPersistedVlmSettings;
+  saveVlmSettings: typeof saveVlmSettings;
+  normalizeVlmSettings: typeof normalizeVlmSettings;
+  getLocalVlmServiceStatus: typeof getLocalVlmServiceStatus;
+  stopLocalVlmService: typeof stopLocalVlmService;
+};
+
+const defaultDeps: VlmRouteDependencies = {
+  loadPersistedVlmSettings,
+  saveVlmSettings,
+  normalizeVlmSettings,
+  getLocalVlmServiceStatus,
+  stopLocalVlmService,
+};
+
+let deps: VlmRouteDependencies = { ...defaultDeps };
+
+const applyOverrides = (overrides?: Partial<VlmRouteDependencies>) => {
+  deps = overrides ? { ...defaultDeps, ...overrides } : { ...defaultDeps };
+};
+
+declare global {
+  var __setVlmRouteTestOverrides:
+    | ((overrides?: Partial<VlmRouteDependencies>) => void)
+    | undefined;
+}
+
+if (process.env.NODE_ENV === "test") {
+  globalThis.__setVlmRouteTestOverrides = applyOverrides;
+}
+
 export async function GET() {
-  const settings = loadPersistedVlmSettings();
+  const settings = deps.loadPersistedVlmSettings();
   return NextResponse.json({ settings }, { headers: noStoreHeaders });
 }
 
 export async function PUT(request: NextRequest) {
   const body = await readJsonBody<Partial<VlmSettings>>(request, {}, "vlm-settings-update");
-  const normalized = normalizeVlmSettings(body);
+  const normalized = deps.normalizeVlmSettings(body);
 
   await maybeStopServiceForUpdate(normalized);
 
-  saveVlmSettings(normalized);
+  deps.saveVlmSettings(normalized);
   return NextResponse.json({ settings: normalized }, { headers: noStoreHeaders });
 }
 
 async function maybeStopServiceForUpdate(next: VlmSettings) {
-  const status = getLocalVlmServiceStatus();
+  const status = deps.getLocalVlmServiceStatus();
   if (status.state === "stopped") return;
 
   const desiredAttn = next.local.enableFlashAttention2 ? "flash_attention_2" : "";
   const desiredPrompt = next.remote.defaults.systemPrompt || "";
 
   if (next.mode !== "local") {
-    await stopLocalVlmService();
+    await deps.stopLocalVlmService();
     return;
   }
 
   if (!status.config) {
-    await stopLocalVlmService();
+    await deps.stopLocalVlmService();
     return;
   }
 
@@ -54,15 +86,15 @@ async function maybeStopServiceForUpdate(next: VlmSettings) {
     config.attnImpl !== desiredAttn ||
     config.systemPrompt !== desiredPrompt
   ) {
-    await stopLocalVlmService();
+    await deps.stopLocalVlmService();
   }
 }
 
 export async function POST(request: NextRequest) {
   const body = await readJsonBody<{ action?: string }>(request, { action: "reset" }, "vlm-settings-action");
   if ((body.action ?? "").toLowerCase() === "reset") {
-    await stopLocalVlmService();
-    saveVlmSettings(DEFAULT_VLM_SETTINGS);
+    await deps.stopLocalVlmService();
+    deps.saveVlmSettings(DEFAULT_VLM_SETTINGS);
     return NextResponse.json({ settings: DEFAULT_VLM_SETTINGS, reset: true }, { headers: noStoreHeaders });
   }
   return NextResponse.json({ error: "Unsupported action" }, { status: 400, headers: noStoreHeaders });
