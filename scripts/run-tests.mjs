@@ -45,12 +45,16 @@ const registerSource = [
 ].join(' ');
 const registerDataUrl = `data:text/javascript,${encodeURIComponent(registerSource)}`;
 
-const child = spawn(process.execPath, ['--test', '--import', registerDataUrl, ...testFiles], {
-  stdio: 'inherit',
-  cwd: projectRoot,
-  env: process.env,
-  windowsHide: true,
-});
+const child = spawn(
+  process.execPath,
+  ['--test', '--test-concurrency=1', '--import', registerDataUrl, ...testFiles],
+  {
+    stdio: 'inherit',
+    cwd: projectRoot,
+    env: process.env,
+    windowsHide: true,
+  },
+);
 
 child.on('error', (error) => {
   console.error(error);
