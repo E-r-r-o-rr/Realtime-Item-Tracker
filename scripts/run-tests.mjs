@@ -45,12 +45,22 @@ const registerSource = [
 ].join(' ');
 const registerDataUrl = `data:text/javascript,${encodeURIComponent(registerSource)}`;
 
-const child = spawn(process.execPath, ['--test', '--import', registerDataUrl, ...testFiles], {
-  stdio: 'inherit',
-  cwd: projectRoot,
-  env: process.env,
-  windowsHide: true,
-});
+const sanitizedEnv = { ...process.env };
+delete sanitizedEnv.API_KEY;
+if (!sanitizedEnv.NODE_ENV) {
+  sanitizedEnv.NODE_ENV = 'test';
+}
+
+const child = spawn(
+  process.execPath,
+  ['--test', '--test-concurrency=1', '--import', registerDataUrl, ...testFiles],
+  {
+    stdio: 'inherit',
+    cwd: projectRoot,
+    env: sanitizedEnv,
+    windowsHide: true,
+  },
+);
 
 child.on('error', (error) => {
   console.error(error);

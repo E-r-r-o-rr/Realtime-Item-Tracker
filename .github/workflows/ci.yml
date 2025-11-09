@@ -3,18 +3,24 @@ on:
   push: { branches: [main] }
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
     env:
-      API_KEY: test
-      NODE_ENV: test
+      NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          # If you DO have .nvmrc, keep the next line; otherwise use: node-version: '20.18'
+          # If you DO have .nvmrc, keep the next line; otherwise use: node-version: '22.11.0'
           node-version-file: '.nvmrc'
           cache: 'npm'
 
@@ -28,6 +34,9 @@ jobs:
         run: npm run lint
 
       - name: Test (node test runner via scripts/run-tests.mjs)
+        env:
+          API_KEY: test
+          NODE_ENV: test
         run: npm test
 
       - name: Build
