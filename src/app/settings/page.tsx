@@ -560,6 +560,20 @@ export default function SettingsPage() {
       ? "text-indigo-300"
       : "text-slate-300/80";
 
+  const formatTimestamp = useCallback(
+    (timestamp?: number | null) => {
+      if (!timestamp || !hydrated) {
+        return null;
+      }
+      return new Date(timestamp).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    },
+    [hydrated],
+  );
+
   const lastExitSummary = useMemo(() => {
     const exit = localServiceState.lastExit;
     if (!exit) return null;
@@ -570,7 +584,7 @@ export default function SettingsPage() {
     if (exit.signal) {
       parts.push(`signal ${exit.signal}`);
     }
-    const time = typeof exit.at === "number" ? new Date(exit.at).toLocaleTimeString() : null;
+    const time = formatTimestamp(exit.at ?? null);
     if (!parts.length && !time) return null;
     if (parts.length && time) {
       return `Last exit (${parts.join(", ")}) at ${time}.`;
@@ -579,7 +593,7 @@ export default function SettingsPage() {
       return `Last exit (${parts.join(", ")}).`;
     }
     return time ? `Last exit at ${time}.` : null;
-  }, [localServiceState.lastExit]);
+  }, [localServiceState.lastExit, formatTimestamp]);
 
   const serviceMessage = (() => {
     switch (localServiceState.state) {
@@ -587,7 +601,7 @@ export default function SettingsPage() {
         const port = localServiceState.port;
         const since =
           localServiceState.startedAt && Number.isFinite(localServiceState.startedAt)
-            ? new Date(localServiceState.startedAt).toLocaleTimeString()
+            ? formatTimestamp(localServiceState.startedAt)
             : null;
         const base = port
           ? `Running on http://127.0.0.1:${port}.`
