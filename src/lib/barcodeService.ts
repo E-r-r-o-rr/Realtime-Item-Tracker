@@ -32,7 +32,7 @@ export interface BarcodeExtractionResult {
   warnings: string[];
 }
 
-export type BarcodeComparisonStatus = 'MATCH' | 'MISMATCH' | 'MISSING';
+export type BarcodeComparisonStatus = 'MATCH' | 'MISMATCH' | 'MISSING' | 'DISABLED';
 
 export interface BarcodeComparisonRow {
   key: string;
@@ -69,7 +69,7 @@ export interface BarcodeComparisonReport {
 
 export interface BarcodeValidationResult {
   matches: boolean | null;
-  status: 'match' | 'mismatch' | 'no_barcode' | 'missing_item_code';
+  status: 'match' | 'mismatch' | 'no_barcode' | 'missing_item_code' | 'disabled';
   message: string;
   comparedValue?: string;
 }

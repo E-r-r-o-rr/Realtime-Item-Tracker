@@ -34,14 +34,14 @@ interface KvPairs {
 
 interface BarcodeValidation {
   matches: boolean | null;
-  status: "match" | "mismatch" | "no_barcode" | "missing_item_code";
+  status: "match" | "mismatch" | "no_barcode" | "missing_item_code" | "disabled";
   message: string;
   comparedValue?: string;
 }
 
-type ValidationStatus = "match" | "mismatch" | "no_barcode" | "missing_item_code";
+type ValidationStatus = "match" | "mismatch" | "no_barcode" | "missing_item_code" | "disabled";
 
-type ComparisonStatus = "MATCH" | "MISMATCH" | "MISSING";
+type ComparisonStatus = "MATCH" | "MISMATCH" | "MISSING" | "DISABLED";
 
 interface BarcodeComparisonRow {
   key: string;
@@ -85,8 +85,8 @@ const sanitizeBarcodeComparison = (value: unknown): BarcodeComparisonReport | nu
 
   const toStatus = (status: unknown): ComparisonStatus => {
     const normalized = typeof status === "string" ? status.toUpperCase() : "MISSING";
-    return normalized === "MATCH" || normalized === "MISMATCH" || normalized === "MISSING"
-      ? normalized
+    return normalized === "MATCH" || normalized === "MISMATCH" || normalized === "MISSING" || normalized === "DISABLED"
+      ? (normalized as ComparisonStatus)
       : "MISSING";
   };
 
@@ -127,7 +127,7 @@ const sanitizeBarcodeComparison = (value: unknown): BarcodeComparisonReport | nu
     .filter((row): row is BarcodeComparisonRow => Boolean(row));
 
   const rows = rawRows.map((row) => {
-    if (row.status === "MATCH") return row;
+    if (row.status === "MATCH" || row.status === "DISABLED") return row;
     const barcodeValue = row.barcodeValue.trim();
     if (!barcodeValue) {
       return { ...row, status: "MISSING" as ComparisonStatus };
@@ -208,6 +208,7 @@ const COMPARISON_STATUS_META: Record<ComparisonStatus, { symbol: string; label: 
   MATCH: { symbol: "✓", label: "Match", className: "text-emerald-400" },
   MISMATCH: { symbol: "✕", label: "Mismatch", className: "text-rose-400" },
   MISSING: { symbol: "–", label: "Missing", className: "text-amber-300" },
+  DISABLED: { symbol: "○", label: "Disabled", className: "text-slate-400" },
 };
 
 const DEMO_RECORDS: KvPairs[] = [
@@ -237,6 +238,7 @@ interface ApiValidation {
   status: ValidationStatus;
   message: string;
   comparedValue?: string;
+  matches?: boolean | null;
 }
 
 interface ApiOcrResponse {
@@ -429,8 +431,18 @@ const describeProviderLink = (info: ProviderInfo): { label: string; href?: strin
 
 const toClientValidation = (v?: ApiValidation): BarcodeValidation | null => {
   if (!v) return null;
+  let matches: boolean | null;
+  if (typeof v.matches === "boolean" || v.matches === null) {
+    matches = v.matches;
+  } else if (v.status === "match") {
+    matches = true;
+  } else if (v.status === "mismatch") {
+    matches = false;
+  } else {
+    matches = null;
+  }
   return {
-    matches: v.status === "match",
+    matches,
     status: v.status,
     message: v.message,
     comparedValue: v.comparedValue,
@@ -631,6 +643,7 @@ export default function ScannerDashboard() {
   const [barcodeWarnings, setBarcodeWarnings] = useState<string[]>([]);
   const [barcodeComparison, setBarcodeComparison] = useState<BarcodeComparisonReport | null>(null);
   const [validation, setValidation] = useState<BarcodeValidation | null>(null);
+  const [barcodeValidationEnabled, setBarcodeValidationEnabled] = useState(true);
   const [liveRecord, setLiveRecordState] = useState<LiveRecord | null>(null);
   const [bookingWarning, setBookingWarning] = useState<string | null>(null);
   const [bookingSuccess, setBookingSuccess] = useState<string | null>(null);
@@ -646,6 +659,10 @@ export default function ScannerDashboard() {
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+
+  const toggleBarcodeValidation = useCallback(() => {
+    setBarcodeValidationEnabled((prev) => !prev);
+  }, []);
 
   // Rehydrate any persisted dashboard state from localStorage so a refresh does not lose
   // the operator's context while demoing or debugging.
@@ -726,6 +743,11 @@ export default function ScannerDashboard() {
           }
         }
 
+        const maybeBarcodeEnabled = (parsed as { barcodeValidationEnabled?: unknown }).barcodeValidationEnabled;
+        if (typeof maybeBarcodeEnabled === "boolean") {
+          setBarcodeValidationEnabled(maybeBarcodeEnabled);
+        }
+
         const maybeRefresh = (parsed as { refreshIntervalMs?: unknown }).refreshIntervalMs;
         if (typeof maybeRefresh === "number" && Number.isFinite(maybeRefresh) && maybeRefresh > 0) {
           setRefreshIntervalMs(maybeRefresh);
@@ -753,6 +775,7 @@ export default function ScannerDashboard() {
         barcodeWarnings,
         barcodeComparison,
         validation,
+        barcodeValidationEnabled,
         refreshIntervalMs,
         bookingLocated,
       };
@@ -772,6 +795,7 @@ export default function ScannerDashboard() {
     validation,
     vlmInfo,
     bookingLocated,
+    barcodeValidationEnabled,
     refreshIntervalMs,
     hasHydrated,
   ]);
@@ -791,7 +815,11 @@ export default function ScannerDashboard() {
   }, []);
 
   const comparisonRows = useMemo(() => {
+    const treatAsDisabled = validation?.status === "disabled";
     if (barcodeComparison && Array.isArray(barcodeComparison.rows) && barcodeComparison.rows.length > 0) {
+      if (treatAsDisabled) {
+        return barcodeComparison.rows.map((row) => ({ ...row, status: "DISABLED" as ComparisonStatus }));
+      }
       return barcodeComparison.rows;
     }
     if (!kv) return [] as BarcodeComparisonRow[];
@@ -800,10 +828,10 @@ export default function ScannerDashboard() {
       ocr: String(rawVal ?? ""),
       barcodeLabel: "",
       barcodeValue: "",
-      status: "MISSING" as ComparisonStatus,
+      status: (treatAsDisabled ? "DISABLED" : "MISSING") as ComparisonStatus,
       contextLabel: undefined,
     }));
-  }, [barcodeComparison, kv]);
+  }, [barcodeComparison, kv, validation]);
 
   const barcodeOnlyEntries = useMemo(() => {
     if (!barcodeComparison) return [] as BarcodeOnlyEntry[];
@@ -1002,6 +1030,7 @@ export default function ScannerDashboard() {
       try {
         const formData = new FormData();
         formData.append("file", targetFile);
+        formData.append("barcodeDisabled", barcodeValidationEnabled ? "false" : "true");
 
         const res = await fetch("/api/ocr", {
           method: "POST",
@@ -1056,6 +1085,7 @@ export default function ScannerDashboard() {
           mismatch: data.validation?.message || "Barcode and OCR values mismatch.",
           no_barcode: "No barcode detected; continuing with OCR results.",
           missing_item_code: "Barcode detected but OCR did not yield an item code.",
+          disabled: "Barcode validation disabled; continuing with OCR results.",
         };
 
         const vStatus = data.validation?.status;
@@ -1176,7 +1206,7 @@ export default function ScannerDashboard() {
         setLoading(false);
       }
     },
-    [API_KEY, mapApiRecordToLive, updateLiveRecord],
+    [API_KEY, barcodeValidationEnabled, mapApiRecordToLive, updateLiveRecord],
   );
 
   // Convenience wrapper so existing UI hooks can trigger the scan based on the selected
@@ -1431,6 +1461,24 @@ export default function ScannerDashboard() {
               <span className="h-2 w-2 rounded-full bg-indigo-400" />
               Barcode parity monitoring
             </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={barcodeValidationEnabled}
+              onClick={toggleBarcodeValidation}
+              className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-300 ${
+                barcodeValidationEnabled
+                  ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200/90 hover:bg-emerald-500/20"
+                  : "border-slate-400/40 bg-slate-500/10 text-slate-200/80 hover:bg-slate-500/20"
+              }`}
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  barcodeValidationEnabled ? "bg-emerald-400" : "bg-slate-300"
+                }`}
+              />
+              {barcodeValidationEnabled ? "Barcode validation on" : "Barcode validation off"}
+            </button>
           </div>
         </div>
         <div className="mt-10 grid gap-8 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-stretch">
