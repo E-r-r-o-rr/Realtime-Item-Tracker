@@ -660,6 +660,8 @@ export default function ScannerDashboard() {
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const activeScanControllerRef = useRef<AbortController | null>(null);
 
   const toggleBarcodeValidation = useCallback(() => {
     setBarcodeValidationEnabled((prev) => !prev);
@@ -816,6 +818,9 @@ export default function ScannerDashboard() {
   }, []);
 
   const hasCancelableScan = useMemo(() => {
+    if (loading || isCancelling) {
+      return true;
+    }
     if (kv || selectedKv || liveRecord || bookingWarning || bookingSuccess) {
       return true;
     }
@@ -823,7 +828,17 @@ export default function ScannerDashboard() {
       return true;
     }
     return false;
-  }, [kv, selectedKv, liveRecord, bookingWarning, bookingSuccess, barcodes, barcodeWarnings]);
+  }, [
+    loading,
+    isCancelling,
+    kv,
+    selectedKv,
+    liveRecord,
+    bookingWarning,
+    bookingSuccess,
+    barcodes,
+    barcodeWarnings,
+  ]);
 
   const comparisonRows = useMemo(() => {
     const treatAsDisabled = validation?.status === "disabled";
@@ -1035,6 +1050,9 @@ export default function ScannerDashboard() {
   // structured data and barcode comparison results.
   const runScan = useCallback(
     async (targetFile: File) => {
+      const controller = new AbortController();
+      activeScanControllerRef.current?.abort();
+      activeScanControllerRef.current = controller;
       setLoading(true);
       setStatus("Uploading file and scanning…");
       setVlmInfo(null);
@@ -1047,6 +1065,7 @@ export default function ScannerDashboard() {
           method: "POST",
           headers: { "x-api-key": API_KEY },
           body: formData,
+          signal: controller.signal,
         });
         if (!res.ok) {
           let text = "";
@@ -1139,6 +1158,7 @@ export default function ScannerDashboard() {
                 expectedDepartureTime: recordCandidate.expectedDepartureTime,
                 originLocation: recordCandidate.origin,
               }),
+              signal: controller.signal,
             });
             const payload: {
               record?: {
@@ -1208,13 +1228,22 @@ export default function ScannerDashboard() {
           updateLiveRecord(null);
         }
       } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return;
+        }
+        if ((err as { name?: string })?.name === "AbortError") {
+          return;
+        }
         console.error(err);
         setStatus(formatStatusError(err));
         setBookingWarning(null);
         setBookingSuccess(null);
         setVlmInfo(null);
       } finally {
-        setLoading(false);
+        if (activeScanControllerRef.current === controller) {
+          activeScanControllerRef.current = null;
+          setLoading(false);
+        }
       }
     },
     [API_KEY, barcodeValidationEnabled, mapApiRecordToLive, updateLiveRecord],
@@ -1349,6 +1378,11 @@ export default function ScannerDashboard() {
       setBookingLocated(false);
       setStorageError(null);
       setVlmInfo(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      activeScanControllerRef.current?.abort();
+      activeScanControllerRef.current = null;
 
       const fallbackStatus = fallbackRecord?.trackingId?.trim()
         ? `Scan cancelled. Showing live buffer for ${fallbackRecord.trackingId}.`
@@ -1576,7 +1610,13 @@ export default function ScannerDashboard() {
             <h3 className="mt-6 text-lg font-semibold text-slate-100">Upload order sheet</h3>
             <p className="mt-2 text-sm text-slate-400">PNG, JPG, or other images up to 10MB</p>
             <div className="mt-6 space-y-4 text-left">
-              <Input type="file" accept="image/*" onChange={handleFileChange} className="cursor-pointer" />
+              <Input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleFileChange}
+                className="cursor-pointer"
+              />
               <Button className="w-full justify-center" onClick={scanDocument} disabled={!file || loading}>
                 {loading ? "Scanning…" : "Scan document"}
               </Button>

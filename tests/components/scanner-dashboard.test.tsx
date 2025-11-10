@@ -171,6 +171,33 @@ test("allows cancelling a scanned order sheet", async () => {
     originLocation: "South Hub",
   };
 
+  const abortableDelay = (signal: AbortSignal | undefined, ms: number) =>
+    new Promise<void>((resolve, reject) => {
+      if (!signal) {
+        setTimeout(resolve, ms);
+        return;
+      }
+      const createAbortError = () => {
+        const abortError = new Error("Aborted");
+        abortError.name = "AbortError";
+        return abortError;
+      };
+      if (signal.aborted) {
+        reject(createAbortError());
+        return;
+      }
+      const onAbort = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        reject(createAbortError());
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      signal.addEventListener("abort", onAbort);
+    });
+
   const fetchMock = mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const method = init?.method?.toUpperCase() ?? (typeof input === "object" && "method" in input ? (input as Request).method : "GET");
@@ -183,6 +210,11 @@ test("allows cancelling a scanned order sheet", async () => {
     }
 
     if (url.includes("/api/orders") && method === "POST") {
+      if (init?.signal?.aborted) {
+        const abortError = new Error("Aborted");
+        abortError.name = "AbortError";
+        throw abortError;
+      }
       return new Response(
         JSON.stringify({
           record: liveRecord,
@@ -212,6 +244,7 @@ test("allows cancelling a scanned order sheet", async () => {
     }
 
     if (url.includes("/api/ocr")) {
+      await abortableDelay(init?.signal, 50);
       return new Response(
         JSON.stringify({
           kv: {
@@ -267,6 +300,9 @@ test("allows cancelling a scanned order sheet", async () => {
     await Promise.resolve();
   });
 
+  const inFlightCancel = findByTextContains(document.body as any, "Cancel scan");
+  assert.ok(inFlightCancel, "should show cancel control while scan is running");
+
   for (let i = 0; i < 5; i += 1) {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -281,6 +317,10 @@ test("allows cancelling a scanned order sheet", async () => {
     await Promise.resolve();
   });
 
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  });
+
   for (let i = 0; i < 5; i += 1) {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -289,6 +329,9 @@ test("allows cancelling a scanned order sheet", async () => {
 
   const cancellationStatus = findByTextContains(document.body as any, "Scan cancelled");
   assert.ok(cancellationStatus, "should show cancellation status message");
+
+  const inputAfterCancel = fileInput as HTMLInputElement;
+  assert.equal(inputAfterCancel.value, "", "should reset file input value after cancellation");
 
   const deleteCall = fetchMock.mock.calls.find((call) => {
     const [input, init] = call.arguments;
@@ -300,6 +343,31 @@ test("allows cancelling a scanned order sheet", async () => {
 
   const textContent = document.body.textContent ?? "";
   assert.ok(!textContent.includes(liveRecord.itemName), "should remove scanned details after cancellation");
+
+  const nextFile = new File(["stub2"], "order-2.png", { type: "image/png" });
+  Object.defineProperty(fileInput, "files", { value: [nextFile], configurable: true });
+  setInputValue(fileInput as any, "C:/fakepath/order-2.png");
+
+  await act(async () => {
+    clickElement(scanButton as any);
+    await Promise.resolve();
+  });
+
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  });
+
+  for (let i = 0; i < 5; i += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  const historyMessage = findByTextContains(document.body as any, "Saved to history");
+  assert.ok(historyMessage, "should process subsequent scans after cancellation");
+
+  const ocrCalls = fetchMock.mock.calls.filter((call) => String(call.arguments[0]).includes("/api/ocr"));
+  assert.ok(ocrCalls.length >= 2, "should attempt OCR again after cancelling");
 
   container.remove();
 });
