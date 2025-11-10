@@ -155,3 +155,151 @@ test("displays the latest live buffer after a successful scan", async () => {
 
   container.remove();
 });
+
+test("allows cancelling a scanned order sheet", async () => {
+  mock.module("@/components/scanner/floor-map-viewer", () => ({
+    FloorMapViewer: () => null,
+  }));
+
+  const liveRecord = {
+    destination: "Dock 21",
+    itemName: "Cooling Fans",
+    trackingId: "CN-552", // ensure trackingId for DELETE request
+    truckNumber: "Carrier-12",
+    shipDate: "2025-04-11",
+    expectedDepartureTime: "09:15",
+    originLocation: "South Hub",
+  };
+
+  const fetchMock = mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const method = init?.method?.toUpperCase() ?? (typeof input === "object" && "method" in input ? (input as Request).method : "GET");
+
+    if (url.includes("/api/orders") && method === "GET") {
+      return new Response(JSON.stringify({ liveBuffer: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (url.includes("/api/orders") && method === "POST") {
+      return new Response(
+        JSON.stringify({
+          record: liveRecord,
+          historyEntry: {
+            id: 5,
+            trackingId: liveRecord.trackingId,
+            status: "saved",
+            recordedAt: new Date().toISOString(),
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    if (url.includes("/api/orders") && method === "DELETE") {
+      return new Response(JSON.stringify({ liveBuffer: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (url.includes("/api/floor-maps")) {
+      return new Response(JSON.stringify({ maps: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (url.includes("/api/ocr")) {
+      return new Response(
+        JSON.stringify({
+          kv: {
+            destination: liveRecord.destination,
+            item_name: liveRecord.itemName,
+            tracking_id: liveRecord.trackingId,
+            truck_number: liveRecord.truckNumber,
+            ship_date: liveRecord.shipDate,
+            expected_departure_time: liveRecord.expectedDepartureTime,
+            origin: liveRecord.originLocation,
+          },
+          selectedKv: {
+            destination: liveRecord.destination,
+            item_name: liveRecord.itemName,
+            tracking_id: liveRecord.trackingId,
+            truck_number: liveRecord.truckNumber,
+            ship_date: liveRecord.shipDate,
+            expected_departure_time: liveRecord.expectedDepartureTime,
+            origin: liveRecord.originLocation,
+          },
+          validation: {
+            status: "match",
+            message: "Barcode and OCR values align.",
+            matches: true,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container as unknown as Element);
+  const ScannerDashboard = (await import(modulePath)).default;
+
+  await act(async () => {
+    root.render(React.createElement(ScannerDashboard));
+  });
+
+  const fileInput = document.querySelector("input[type='file']");
+  const scanButton = findByTextContains(document.body as any, "Scan document");
+  assert.ok(fileInput && scanButton, "should render upload controls");
+
+  const file = new File(["stub"], "order.png", { type: "image/png" });
+  Object.defineProperty(fileInput, "files", { value: [file], configurable: true });
+  setInputValue(fileInput as any, "C:/fakepath/order.png");
+
+  await act(async () => {
+    clickElement(scanButton as any);
+    await Promise.resolve();
+  });
+
+  for (let i = 0; i < 5; i += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  const cancelButton = findByTextContains(document.body as any, "Cancel scan");
+  assert.ok(cancelButton, "should show cancel control once data is loaded");
+
+  await act(async () => {
+    clickElement(cancelButton as any);
+    await Promise.resolve();
+  });
+
+  for (let i = 0; i < 5; i += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  const cancellationStatus = findByTextContains(document.body as any, "Scan cancelled");
+  assert.ok(cancellationStatus, "should show cancellation status message");
+
+  const deleteCall = fetchMock.mock.calls.find((call) => {
+    const [input, init] = call.arguments;
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const method = init?.method?.toUpperCase() ?? (typeof input === "object" && "method" in input ? (input as Request).method : "GET");
+    return url.includes("/api/orders") && method === "DELETE";
+  });
+  assert.ok(deleteCall, "should call delete endpoint to cancel scan");
+
+  const textContent = document.body.textContent ?? "";
+  assert.ok(!textContent.includes(liveRecord.itemName), "should remove scanned details after cancellation");
+
+  container.remove();
+});
