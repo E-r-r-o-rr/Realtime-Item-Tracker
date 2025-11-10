@@ -42,7 +42,7 @@ The application ships with:
 
 ## Dependencies
 ### Runtime
-- **Node.js** – Require `>=20.18.0` per the `engines` field in `package.json`. The repo pins 22.11.0 in `.nvmrc` and 20.18.1 in `.node-version`; use `nvm`, `asdf`, or Volta to align with your toolchain.
+- **Node.js** – Require `>=20.18.0` per the `engines` field in `package.json`. The repo pins 22.11.0 in `.nvmrc`; use `nvm`, `asdf`, or Volta to align with your toolchain.
 - **Python 3** – Required to run OCR/barcode helper scripts and the optional local VLM bridge. Configure the interpreter path via `PYTHON_BIN` or `OCR_PYTHON`.
 
 ### JavaScript packages
@@ -192,6 +192,11 @@ When introducing a model with different modalities (e.g., layout JSON, tool call
 1. **Automated checks** – Run `npm run build` and resolve any compile-time or TypeScript errors. Follow up with `npm run lint`; migrate away from the deprecated `next lint` wrapper when time permits.
 2. **Manual QA** – Walk through `docs/map-testing.md` after bootstrapping the database. Confirm camera capture, OCR uploads, history logging, and floor-map overlays behave as described.
 3. **Health endpoints** – Poll `/api/healthz` to verify the app, database, and OCR backends are reachable. Use `/api/settings/vlm/test` to send a smoke prompt to the configured model.
+
+### Production handover checklist
+- Rotate the default dashboard credentials before go-live. `AUTH_USERNAME` / `AUTH_PASSWORD` ship as `admin` / `admin` for demos—set unique values in each environment.
+- Generate a strong `AUTH_SECRET`. The sample configuration uses `change-me`, which must be replaced to secure session cookies in production.
+- Regenerate `API_KEY` and share it via a secure channel so API clients and automation can authenticate against the middleware.
 
 ## Troubleshooting & FAQ
 - **`better-sqlite3` fails to install** – Ensure your machine has a C/C++ build toolchain and Python 3 headers. On macOS install Xcode Command Line Tools; on Linux install `build-essential`.
