@@ -28,4 +28,4 @@ This document captures the manual checks run against the floor-map workflow. The
 - All coordinates are derived from the map’s georeference. Even with approximate indoor GPS values, the payload always includes both `{lat, lon}` and the exact `{x_px, y_px}` for downstream modules.
 - The module can operate with coarse geodata. When no origin is specified the UI still surfaces the local pixel coordinates, allowing the navigation service to align against indoor positioning systems.
 - The admin uploader accepts common web image formats (PNG, JPG, SVG, WebP). Uploaded files are stored in `data/maps/` and served via `/api/floor-maps/{id}/image`.
-- Authentication is currently disabled across the dashboard and APIs; no login is required for testing.
+- Authentication is enforced in middleware. Sign in at `/login` with the configured credentials (defaults: `admin` / `admin`) and supply the `x-api-key` header when calling APIs directly.

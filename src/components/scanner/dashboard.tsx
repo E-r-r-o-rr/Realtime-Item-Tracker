@@ -650,6 +650,7 @@ export default function ScannerDashboard() {
   const [bookingLocated, setBookingLocated] = useState(false);
   const [vlmInfo, setVlmInfo] = useState<ProviderInfo | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [checkingBooking, setCheckingBooking] = useState(false);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState<number>(DEFAULT_REFRESH_MS);
   const [hasHydrated, setHasHydrated] = useState(false);
@@ -659,6 +660,8 @@ export default function ScannerDashboard() {
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const activeScanControllerRef = useRef<AbortController | null>(null);
 
   const toggleBarcodeValidation = useCallback(() => {
     setBarcodeValidationEnabled((prev) => !prev);
@@ -813,6 +816,8 @@ export default function ScannerDashboard() {
   const updateLiveRecord = useCallback((record: LiveRecord | null) => {
     setLiveRecordState(record);
   }, []);
+
+  const hasCancelableScan = useMemo(() => loading || isCancelling, [loading, isCancelling]);
 
   const comparisonRows = useMemo(() => {
     const treatAsDisabled = validation?.status === "disabled";
@@ -1024,6 +1029,9 @@ export default function ScannerDashboard() {
   // structured data and barcode comparison results.
   const runScan = useCallback(
     async (targetFile: File) => {
+      const controller = new AbortController();
+      activeScanControllerRef.current?.abort();
+      activeScanControllerRef.current = controller;
       setLoading(true);
       setStatus("Uploading file and scanning…");
       setVlmInfo(null);
@@ -1036,6 +1044,7 @@ export default function ScannerDashboard() {
           method: "POST",
           headers: { "x-api-key": API_KEY },
           body: formData,
+          signal: controller.signal,
         });
         if (!res.ok) {
           let text = "";
@@ -1128,6 +1137,7 @@ export default function ScannerDashboard() {
                 expectedDepartureTime: recordCandidate.expectedDepartureTime,
                 originLocation: recordCandidate.origin,
               }),
+              signal: controller.signal,
             });
             const payload: {
               record?: {
@@ -1197,13 +1207,22 @@ export default function ScannerDashboard() {
           updateLiveRecord(null);
         }
       } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return;
+        }
+        if ((err as { name?: string })?.name === "AbortError") {
+          return;
+        }
         console.error(err);
         setStatus(formatStatusError(err));
         setBookingWarning(null);
         setBookingSuccess(null);
         setVlmInfo(null);
       } finally {
-        setLoading(false);
+        if (activeScanControllerRef.current === controller) {
+          activeScanControllerRef.current = null;
+          setLoading(false);
+        }
       }
     },
     [API_KEY, barcodeValidationEnabled, mapApiRecordToLive, updateLiveRecord],
@@ -1288,6 +1307,84 @@ export default function ScannerDashboard() {
     setBookingSuccess(null);
     setVlmInfo(null);
   };
+
+  const handleCancelScan = useCallback(async () => {
+    if (isCancelling || !hasCancelableScan) {
+      return;
+    }
+
+    const trackingId = liveRecord?.trackingId?.trim();
+    const cancellingMessage = trackingId
+      ? `Cancelling scan for ${trackingId}…`
+      : "Cancelling scan…";
+    setIsCancelling(true);
+    setStatus(cancellingMessage);
+
+    try {
+      let fallbackRecord: LiveRecord | null = null;
+      if (trackingId) {
+        const params = new URLSearchParams({ trackingId });
+        const response = await fetch(`/api/orders?${params.toString()}`, { method: "DELETE" });
+        const payload: { liveBuffer?: ApiLiveBufferRecord[]; error?: string } = await response
+          .json()
+          .catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
+        }
+        const records = Array.isArray(payload.liveBuffer) ? payload.liveBuffer : [];
+        if (records.length > 0) {
+          fallbackRecord = mapApiRecordToLive(records[0]);
+        }
+      }
+
+      updateLiveRecord(fallbackRecord);
+      setFile(null);
+      setCapturedImage(null);
+      setIsCameraOpen(false);
+      stopCameraStream();
+      setCameraReady(false);
+      setCameraError(null);
+      setLoading(false);
+      setCheckingBooking(false);
+      setKv(null);
+      setSelectedKv(null);
+      setBarcodes([]);
+      setBarcodeWarnings([]);
+      setBarcodeComparison(null);
+      setValidation(null);
+      setBookingWarning(null);
+      setBookingSuccess(null);
+      setBookingLocated(false);
+      setStorageError(null);
+      setVlmInfo(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      activeScanControllerRef.current?.abort();
+      activeScanControllerRef.current = null;
+
+      const fallbackStatus = fallbackRecord?.trackingId?.trim()
+        ? `Scan cancelled. Showing live buffer for ${fallbackRecord.trackingId}.`
+        : "Scan cancelled.";
+      setStatus(fallbackStatus);
+    } catch (error) {
+      console.error("Failed to cancel scan", error);
+      const message =
+        error instanceof Error && error.message.trim().length > 0
+          ? error.message
+          : "Failed to cancel scan.";
+      setStatus(message);
+    } finally {
+      setIsCancelling(false);
+    }
+  }, [
+    isCancelling,
+    hasCancelableScan,
+    liveRecord,
+    mapApiRecordToLive,
+    updateLiveRecord,
+    stopCameraStream,
+  ]);
 
   // Requeries the booking service for the active tracking ID to confirm if a dock assignment
   // exists and updates status messaging accordingly.
@@ -1491,7 +1588,13 @@ export default function ScannerDashboard() {
             <h3 className="mt-6 text-lg font-semibold text-slate-100">Upload order sheet</h3>
             <p className="mt-2 text-sm text-slate-400">PNG, JPG, or other images up to 10MB</p>
             <div className="mt-6 space-y-4 text-left">
-              <Input type="file" accept="image/*" onChange={handleFileChange} className="cursor-pointer" />
+              <Input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleFileChange}
+                className="cursor-pointer"
+              />
               <Button className="w-full justify-center" onClick={scanDocument} disabled={!file || loading}>
                 {loading ? "Scanning…" : "Scan document"}
               </Button>
@@ -1594,6 +1697,19 @@ export default function ScannerDashboard() {
             </div>
           </div>
         </div>
+        {hasCancelableScan && (
+          <div className="mt-6 flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleCancelScan}
+              disabled={isCancelling}
+              className="w-full justify-center sm:w-auto"
+            >
+              {isCancelling ? "Cancelling…" : "Cancel scan"}
+            </Button>
+          </div>
+        )}
       </section>
 
       {status && (

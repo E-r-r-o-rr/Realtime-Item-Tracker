@@ -1,0 +1,24 @@
+# Dependencies and build output
+node_modules
+.next
+out
+
+# Git metadata
+.git
+.gitignore
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# App data and transient artefacts
+data
+uploads
+tmp
+output
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+.vscode

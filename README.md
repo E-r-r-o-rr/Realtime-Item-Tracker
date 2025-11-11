@@ -42,7 +42,7 @@ The application ships with:
 
 ## Dependencies
 ### Runtime
-- **Node.js** – Require `>=20.18.0` per the `engines` field in `package.json`. The repo pins 22.11.0 in `.nvmrc` and 20.18.1 in `.node-version`; use `nvm`, `asdf`, or Volta to align with your toolchain.
+- **Node.js** – Require `>=20.18.0` per the `engines` field in `package.json`. The repo pins 22.11.0 in `.nvmrc`; use `nvm`, `asdf`, or Volta to align with your toolchain.
 - **Python 3** – Required to run OCR/barcode helper scripts and the optional local VLM bridge. Configure the interpreter path via `PYTHON_BIN` or `OCR_PYTHON`.
 
 ### JavaScript packages
@@ -104,11 +104,25 @@ pip install scipy numpy pandas
    ```
    The lint command currently prompts for migration because `next lint` is deprecated; acknowledge or migrate when convenient.
 
-5. **Start developing**
+5. **Sign in to the dashboard**
+   - Visit `http://localhost:3000/login` and authenticate with the configured credentials. By default the bootstrap script seeds `admin` / `admin`; override `AUTH_USERNAME` / `AUTH_PASSWORD` in `.env.local` to change them.
+   - API routes check for the shared secret in the `x-api-key` header. Populate `API_KEY` in your environment and pass the same value from REST clients or end-to-end tests.
+
+6. **Start developing**
    ```bash
    npm run dev
    ```
    Visit `http://localhost:3000` to access the dashboard. Use `npm run dev -- --hostname 0.0.0.0` if you need to test on mobile hardware.
+
+## Container workflows
+The repository ships with a multi-stage `Dockerfile` and a `docker-compose.yml` profile covering both production-style runs and hot reloading for local development.
+
+1. **Build the image** – run `docker compose build app` to compile the production image. The build uses Node.js 22.11, installs native bindings for `better-sqlite3`, and emits a ready-to-run Next.js bundle.
+2. **Bootstrap the database** – execute `docker compose run --rm app npm run bootstrap` after configuring `.env.local`. This populates the SQLite database inside the `app-data` volume with demo bookings, scans, and map assets.
+3. **Start the service** – launch `docker compose up app` to serve the dashboard on port 3000. The named `app-data` volume persists uploads and database changes between restarts.
+4. **Iterate with hot reloads** – use `docker compose up dev` for a live-reloading workflow. The dev service mounts the repository into the container, syncs `data/`, and relies on a dedicated `app-node-modules` volume so Linux-compatible dependencies are installed inside the container.
+
+When upgrading dependencies or changing environment variables, rebuild the relevant service (`docker compose build app` or `docker compose build dev`) to ensure the container picks up the updates.
 
 ## Daily developer workflow
 | Task | Command |
@@ -128,6 +142,8 @@ All runtime settings are sourced from environment variables. Consult `.env.examp
 ### Core settings
 - `API_KEY` – Shared secret validated by middleware and API routes.
 - `NODE_ENV` – Controls Next.js build behaviour.
+- `AUTH_USERNAME` / `AUTH_PASSWORD` – Credentials required to sign in at `/login`. Defaults fallback to `admin` / `admin`.
+- `AUTH_SECRET` – HMAC secret for session cookies. Change from the default `change-me` in production.
 
 ### Vision & OCR
 - `OCR_MODEL` – Default remote model identifier.
@@ -176,6 +192,11 @@ When introducing a model with different modalities (e.g., layout JSON, tool call
 1. **Automated checks** – Run `npm run build` and resolve any compile-time or TypeScript errors. Follow up with `npm run lint`; migrate away from the deprecated `next lint` wrapper when time permits.
 2. **Manual QA** – Walk through `docs/map-testing.md` after bootstrapping the database. Confirm camera capture, OCR uploads, history logging, and floor-map overlays behave as described.
 3. **Health endpoints** – Poll `/api/healthz` to verify the app, database, and OCR backends are reachable. Use `/api/settings/vlm/test` to send a smoke prompt to the configured model.
+
+### Production handover checklist
+- Rotate the default dashboard credentials before go-live. `AUTH_USERNAME` / `AUTH_PASSWORD` ship as `admin` / `admin` for demos—set unique values in each environment.
+- Generate a strong `AUTH_SECRET`. The sample configuration uses `change-me`, which must be replaced to secure session cookies in production.
+- Regenerate `API_KEY` and share it via a secure channel so API clients and automation can authenticate against the middleware.
 
 ## Troubleshooting & FAQ
 - **`better-sqlite3` fails to install** – Ensure your machine has a C/C++ build toolchain and Python 3 headers. On macOS install Xcode Command Line Tools; on Linux install `build-essential`.

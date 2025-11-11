@@ -1,0 +1,37 @@
+services:
+  app:
+    build:
+      context: .
+      target: runner
+    env_file:
+      - .env.local
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+    ports:
+      - "3000:3000"
+    volumes:
+      - app-data:/app/data
+    command: ["npm", "run", "start"]
+
+  dev:
+    build:
+      context: .
+      target: dev
+    env_file:
+      - .env.local
+    environment:
+      NODE_ENV: development
+      NEXT_TELEMETRY_DISABLED: "1"
+      CHOKIDAR_USEPOLLING: "1"
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - app-data:/app/data
+      - app-node-modules:/app/node_modules
+    command: ["npm", "run", "dev", "--", "--hostname", "0.0.0.0"]
+
+volumes:
+  app-data:
+  app-node-modules:
