@@ -1330,7 +1330,7 @@ export default function ScannerDashboard() {
   };
 
   const handleCancelScan = useCallback(async () => {
-    if (loading || isCancelling || !hasCancelableScan) {
+    if (isCancelling || !hasCancelableScan) {
       return;
     }
 
@@ -1399,7 +1399,6 @@ export default function ScannerDashboard() {
       setIsCancelling(false);
     }
   }, [
-    loading,
     isCancelling,
     hasCancelableScan,
     liveRecord,
@@ -1725,7 +1724,7 @@ export default function ScannerDashboard() {
               type="button"
               variant="outline"
               onClick={handleCancelScan}
-              disabled={loading || isCancelling}
+              disabled={isCancelling}
               className="w-full justify-center sm:w-auto"
             >
               {isCancelling ? "Cancelling…" : "Cancel scan"}

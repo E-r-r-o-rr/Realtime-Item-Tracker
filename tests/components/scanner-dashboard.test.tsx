@@ -302,6 +302,11 @@ test("allows cancelling a scanned order sheet", async () => {
 
   const inFlightCancel = findByTextContains(document.body as any, "Cancel scan");
   assert.ok(inFlightCancel, "should show cancel control while scan is running");
+  assert.equal(
+    (inFlightCancel as HTMLButtonElement).disabled,
+    false,
+    "should allow cancelling while scan is still running",
+  );
 
   for (let i = 0; i < 5; i += 1) {
     await act(async () => {
