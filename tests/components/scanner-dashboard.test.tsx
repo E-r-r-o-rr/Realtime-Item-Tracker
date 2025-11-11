@@ -308,17 +308,8 @@ test("allows cancelling a scanned order sheet", async () => {
     "should allow cancelling while scan is still running",
   );
 
-  for (let i = 0; i < 5; i += 1) {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-  }
-
-  const cancelButton = findByTextContains(document.body as any, "Cancel scan");
-  assert.ok(cancelButton, "should show cancel control once data is loaded");
-
   await act(async () => {
-    clickElement(cancelButton as any);
+    clickElement(inFlightCancel as any);
     await Promise.resolve();
   });
 
@@ -331,6 +322,9 @@ test("allows cancelling a scanned order sheet", async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
   }
+
+  const cancelButton = findByTextContains(document.body as any, "Cancel scan");
+  assert.equal(cancelButton, null, "should hide cancel control once scanning stops");
 
   const cancellationStatus = findByTextContains(document.body as any, "Scan cancelled");
   assert.ok(cancellationStatus, "should show cancellation status message");

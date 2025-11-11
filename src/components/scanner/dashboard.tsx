@@ -817,28 +817,7 @@ export default function ScannerDashboard() {
     setLiveRecordState(record);
   }, []);
 
-  const hasCancelableScan = useMemo(() => {
-    if (loading || isCancelling) {
-      return true;
-    }
-    if (kv || selectedKv || liveRecord || bookingWarning || bookingSuccess) {
-      return true;
-    }
-    if (barcodes.length > 0 || barcodeWarnings.length > 0) {
-      return true;
-    }
-    return false;
-  }, [
-    loading,
-    isCancelling,
-    kv,
-    selectedKv,
-    liveRecord,
-    bookingWarning,
-    bookingSuccess,
-    barcodes,
-    barcodeWarnings,
-  ]);
+  const hasCancelableScan = useMemo(() => loading || isCancelling, [loading, isCancelling]);
 
   const comparisonRows = useMemo(() => {
     const treatAsDisabled = validation?.status === "disabled";
