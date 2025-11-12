@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { apiFetch } from "@/lib/api-client";
 
 interface HistoryEntry {
   id: number;
@@ -50,7 +51,7 @@ export default function HistoryPage() {
     try {
       setLoading(true);
       setError(null);
-      const response = await fetch("/api/history");
+      const response = await apiFetch("/api/history");
       const payload: { history?: HistoryEntry[]; error?: string } = await response
         .json()
         .catch(() => ({ error: "Failed to parse response" }));
@@ -74,7 +75,7 @@ export default function HistoryPage() {
   const handleClearHistory = async () => {
     try {
       setError(null);
-      const response = await fetch("/api/history", { method: "DELETE" });
+      const response = await apiFetch("/api/history", { method: "DELETE" });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || response.statusText || "Failed to clear history");
@@ -89,7 +90,7 @@ export default function HistoryPage() {
   const handleRemoveEntry = async (id: number) => {
     try {
       setError(null);
-      const response = await fetch(`/api/history/${id}`, { method: "DELETE" });
+      const response = await apiFetch(`/api/history/${id}`, { method: "DELETE" });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || response.statusText || "Failed to remove entry");

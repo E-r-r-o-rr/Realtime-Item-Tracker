@@ -5,6 +5,8 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
+import { apiFetch } from "@/lib/api-client";
+
 interface StorageRow {
   id: number;
   destination: string;
@@ -131,7 +133,7 @@ export default function StoragePage() {
   const fetchStorage = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/storage", { cache: "no-store" });
+      const response = await apiFetch("/api/storage", { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) {
         throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);
@@ -156,7 +158,7 @@ export default function StoragePage() {
     async (input: RequestInfo, init?: RequestInit, previousTrackingId?: string) => {
       setLoading(true);
       try {
-        const response = await fetch(input, init);
+        const response = await apiFetch(input, init);
         const payload = await response.json();
         if (!response.ok) {
           throw new Error(typeof payload.error === "string" ? payload.error : response.statusText);

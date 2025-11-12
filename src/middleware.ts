@@ -84,11 +84,16 @@ export async function middleware(req: NextRequest) {
   }
 
   if (isApiRoute && !pathname.startsWith("/api/auth/")) {
-    const requiredKey = process.env.API_KEY;
-    if (requiredKey) {
+    const allowedKeys = [process.env.API_KEY, process.env.NEXT_PUBLIC_API_KEY].filter(
+      (key): key is string => Boolean(key?.length),
+    );
+
+    if (allowedKeys.length > 0) {
       const provided =
         req.headers.get("x-api-key") ?? req.nextUrl.searchParams.get("api_key") ?? "";
-      if (provided !== requiredKey) {
+
+      const isAuthorized = allowedKeys.some((key) => provided === key);
+      if (!isAuthorized) {
         return new NextResponse(JSON.stringify({ error: "unauthorized" }), {
           status: 401,
           headers: { "content-type": "application/json" },

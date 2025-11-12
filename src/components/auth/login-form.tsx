@@ -69,6 +69,7 @@ export function LoginForm() {
 
       shouldResetPending = false;
       router.replace(target);
+      router.refresh();
 
       if (typeof window !== "undefined") {
         if (fallbackNavigationRef.current !== null) {
