@@ -1,13 +1,27 @@
 // src/lib/api-client.ts
 const API_ROUTE_PREFIX = "/api/";
 const API_KEY_HEADER = "x-api-key";
-const PUBLIC_API_KEY = process.env.NEXT_PUBLIC_API_KEY;
+
+const PUBLIC_API_KEY =
+  process.env.NEXT_PUBLIC_API_KEY ?? (typeof window === "undefined" ? process.env.API_KEY : undefined);
 
 type FetchInput = RequestInfo | URL;
 
 function shouldAttachKey(input: FetchInput): boolean {
   if (typeof input === "string") {
-    return input.startsWith(API_ROUTE_PREFIX);
+    if (input.startsWith(API_ROUTE_PREFIX)) {
+      return true;
+    }
+
+    if (input.startsWith("http://") || input.startsWith("https://")) {
+      try {
+        return shouldAttachKey(new URL(input));
+      } catch {
+        return false;
+      }
+    }
+
+    return false;
   }
 
   if (typeof Request !== "undefined" && input instanceof Request) {
@@ -16,14 +30,11 @@ function shouldAttachKey(input: FetchInput): boolean {
 
   if (input instanceof URL) {
     if (typeof window !== "undefined") {
-      return (
-        input.origin === window.location.origin &&
-        input.pathname.startsWith(API_ROUTE_PREFIX)
-      );
+      if (input.origin !== window.location.origin) {
+        return false;
+      }
     }
 
-    // When rendering on the server, assume any URL passed explicitly that
-    // targets an API route should receive the key as well.
     return input.pathname.startsWith(API_ROUTE_PREFIX);
   }
 
