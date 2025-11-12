@@ -6,6 +6,7 @@ import { DEFAULT_VLM_SETTINGS } from "@/config/vlm";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { apiFetch } from "@/lib/api-client";
 import { VlmMode, VlmProviderType, VlmSettings } from "@/types/vlm";
 
 const providerOptions: Array<{ value: VlmProviderType; label: string }> = [
@@ -90,7 +91,7 @@ export default function SettingsPage() {
   useEffect(() => {
     const fetchSettings = async () => {
       try {
-        const response = await fetch("/api/settings/vlm", { cache: "no-store" });
+        const response = await apiFetch("/api/settings/vlm", { cache: "no-store" });
         if (!response.ok) {
           throw new Error(`Failed to load settings (${response.status})`);
         }
@@ -118,7 +119,7 @@ export default function SettingsPage() {
 
   const refreshLocalServiceStatus = useCallback(async () => {
     try {
-      const response = await fetch("/api/settings/vlm/local/service", { cache: "no-store" });
+      const response = await apiFetch("/api/settings/vlm/local/service", { cache: "no-store" });
       const payload = await response.json().catch(() => null);
       if (response.ok && payload?.ok) {
         const status = payload.status as {
@@ -211,7 +212,7 @@ export default function SettingsPage() {
     setStartingLocalService(true);
 
     try {
-      const response = await fetch("/api/settings/vlm/local/service", {
+      const response = await apiFetch("/api/settings/vlm/local/service", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -297,7 +298,7 @@ export default function SettingsPage() {
   const handleStopLocalService = async () => {
     setStoppingLocalService(true);
     try {
-      const response = await fetch("/api/settings/vlm/local/service", { method: "DELETE" });
+      const response = await apiFetch("/api/settings/vlm/local/service", { method: "DELETE" });
       const payload = await response.json().catch(() => null);
       if (response.ok && payload?.ok) {
         setLocalServiceState({ state: "stopped" });
@@ -446,7 +447,7 @@ export default function SettingsPage() {
     setLocalCheckMessage(null);
 
     try {
-      const response = await fetch("/api/settings/vlm/local/check", {
+      const response = await apiFetch("/api/settings/vlm/local/check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ modelId }),
@@ -476,7 +477,7 @@ export default function SettingsPage() {
     setSaving(true);
     setStatusMessage(null);
     try {
-      const response = await fetch("/api/settings/vlm", {
+      const response = await apiFetch("/api/settings/vlm", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(settings),
@@ -500,7 +501,7 @@ export default function SettingsPage() {
     setSaving(true);
     setStatusMessage(null);
     try {
-      const response = await fetch("/api/settings/vlm", {
+      const response = await apiFetch("/api/settings/vlm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "reset" }),

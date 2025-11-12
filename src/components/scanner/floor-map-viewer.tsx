@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { FloorMap, MapPoint } from "@/types/floor-maps";
 import { safeParseJson } from "@/lib/json";
+import { apiFetch } from "@/lib/api-client";
 
 interface FloorMapViewerProps {
   activeDestination?: string | null;
@@ -61,7 +62,7 @@ export function FloorMapViewer({ activeDestination }: FloorMapViewerProps) {
   const loadMaps = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/floor-maps?includePoints=true", {
+      const response = await apiFetch("/api/floor-maps?includePoints=true", {
         cache: "no-store",
       });
       const raw = await response.text();
@@ -192,7 +193,7 @@ export function FloorMapViewer({ activeDestination }: FloorMapViewerProps) {
     setSending(true);
     setNavigationStatus("Sending navigation payload…");
     try {
-      const response = await fetch("/api/navigation/start", {
+      const response = await apiFetch("/api/navigation/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payloadPreview),

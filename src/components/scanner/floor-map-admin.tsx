@@ -8,6 +8,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { FloorMap } from "@/types/floor-maps";
 import { safeParseJson } from "@/lib/json";
+import { apiFetch } from "@/lib/api-client";
 
 interface PendingPoint {
   xPx: number;
@@ -68,7 +69,7 @@ export function FloorMapAdmin() {
   const loadMaps = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/floor-maps?includePoints=true", { cache: "no-store" });
+      const response = await apiFetch("/api/floor-maps?includePoints=true", { cache: "no-store" });
       const raw = await response.text();
       if (!response.ok) {
         throw new Error(raw || "Failed to load maps.");
@@ -186,7 +187,7 @@ export function FloorMapAdmin() {
 
     setUploadStatus("Uploading map…");
     try {
-      const response = await fetch("/api/floor-maps", {
+      const response = await apiFetch("/api/floor-maps", {
         method: "POST",
         body: formData,
       });
@@ -242,7 +243,7 @@ export function FloorMapAdmin() {
     setCreatingPoint(true);
     setAdminStatus("Saving point…");
     try {
-      const response = await fetch(`/api/floor-maps/${selectedMap.id}/points`, {
+      const response = await apiFetch(`/api/floor-maps/${selectedMap.id}/points`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -279,7 +280,7 @@ export function FloorMapAdmin() {
   const handleDeletePoint = async (pointId: number) => {
     if (!selectedMap) return;
     try {
-      const response = await fetch(`/api/floor-maps/${selectedMap.id}/points/${pointId}`, {
+      const response = await apiFetch(`/api/floor-maps/${selectedMap.id}/points/${pointId}`, {
         method: "DELETE",
       });
       if (!response.ok) {
@@ -330,7 +331,7 @@ export function FloorMapAdmin() {
         return;
       }
 
-      const response = await fetch(`/api/floor-maps/${selectedMap.id}`, {
+      const response = await apiFetch(`/api/floor-maps/${selectedMap.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

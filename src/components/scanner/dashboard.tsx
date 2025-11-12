@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { FloorMapViewer } from "@/components/scanner/floor-map-viewer";
+import { apiFetch } from "@/lib/api-client";
 
 interface LiveRecord {
   destination: string;
@@ -856,7 +857,7 @@ export default function ScannerDashboard() {
   const fetchLiveBuffer = useCallback(async (options?: { sync?: boolean }) => {
     try {
       const query = options?.sync ? "?sync=true" : "";
-      const response = await fetch(`/api/orders${query}`, { cache: "no-store" });
+      const response = await apiFetch(`/api/orders${query}`, { cache: "no-store" });
       const payload: { liveBuffer?: ApiLiveBufferRecord[]; record?: ApiLiveBufferRecord; error?: string } = await response
         .json()
         .catch(() => ({}));
@@ -1040,7 +1041,7 @@ export default function ScannerDashboard() {
         formData.append("file", targetFile);
         formData.append("barcodeDisabled", barcodeValidationEnabled ? "false" : "true");
 
-        const res = await fetch("/api/ocr", {
+        const res = await apiFetch("/api/ocr", {
           method: "POST",
           headers: { "x-api-key": API_KEY },
           body: formData,
@@ -1125,7 +1126,7 @@ export default function ScannerDashboard() {
             setStatus(`Logging scan for ${trackingIdForStatus}…`);
             setBookingWarning(null);
             setBookingSuccess(null);
-            const response = await fetch(`/api/orders`, {
+            const response = await apiFetch(`/api/orders`, {
               method: "POST",
               headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
               body: JSON.stringify({
@@ -1324,7 +1325,7 @@ export default function ScannerDashboard() {
       let fallbackRecord: LiveRecord | null = null;
       if (trackingId) {
         const params = new URLSearchParams({ trackingId });
-        const response = await fetch(`/api/orders?${params.toString()}`, { method: "DELETE" });
+        const response = await apiFetch(`/api/orders?${params.toString()}`, { method: "DELETE" });
         const payload: { liveBuffer?: ApiLiveBufferRecord[]; error?: string } = await response
           .json()
           .catch(() => ({}));
@@ -1401,7 +1402,7 @@ export default function ScannerDashboard() {
         trackingId: activeTrackingId,
         verifyBooking: "true",
       });
-      const response = await fetch(`/api/orders?${params.toString()}`, { cache: "no-store" });
+      const response = await apiFetch(`/api/orders?${params.toString()}`, { cache: "no-store" });
       const payload: {
         record?: ApiLiveBufferRecord;
         bookingFound?: boolean;
@@ -1472,7 +1473,7 @@ export default function ScannerDashboard() {
     if (!liveRecord) return;
     try {
       setStorageError(null);
-      const response = await fetch("/api/storage", {
+      const response = await apiFetch("/api/storage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1506,7 +1507,7 @@ export default function ScannerDashboard() {
   // scan session without stale data leaking through.
   const handleClearLive = async () => {
     try {
-      const response = await fetch("/api/orders", { method: "DELETE" });
+      const response = await apiFetch("/api/orders", { method: "DELETE" });
       const payload: { liveBuffer?: ApiLiveBufferRecord[]; error?: string } = await response
         .json()
         .catch(() => ({}));
