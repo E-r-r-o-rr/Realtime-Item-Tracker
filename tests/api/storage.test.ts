@@ -181,4 +181,26 @@ describe("storage API routes", { concurrency: false }, () => {
     assert.equal(data.storage.length, 0);
     assert.equal(data.bookings.length, 0);
   });
+
+  it("removes booked entries from bookings when deleted", async () => {
+    const { POST } = await importStorageRoute();
+    const { DELETE } = await importStorageIdRoute();
+
+    await POST(
+      new Request("https://example.test/api/storage", {
+        method: "POST",
+        body: JSON.stringify({ ...buildPayload({ trackingId: "TRACK-BOOKED" }), booked: true }),
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const response = await DELETE(
+      new Request("https://example.test/api/storage/TRACK-BOOKED", { method: "DELETE" }),
+      { params: Promise.resolve({ trackingId: "TRACK-BOOKED" }) },
+    );
+
+    assert.equal(response.status, 200);
+    const data = (await response.json()) as { bookings: unknown[] };
+    assert.equal(data.bookings.length, 0);
+  });
 });

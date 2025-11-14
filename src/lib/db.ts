@@ -806,8 +806,18 @@ export const updateStorageRecord = (
 
 export const deleteStorageRecord = (trackingId: string): boolean => {
   const database = getDb();
+  const existingRow = database.prepare(`SELECT * FROM storage WHERE tracking_id = ?`).get(trackingId);
+  if (!existingRow) {
+    return false;
+  }
+
+  const existing = mapStorageRow(existingRow);
   const info = database.prepare(`DELETE FROM storage WHERE tracking_id = ?`).run(trackingId);
-  database.prepare(`DELETE FROM bookings WHERE tracking_id = ?`).run(trackingId);
+
+  if (existing.booked) {
+    database.prepare(`DELETE FROM bookings WHERE tracking_id = ?`).run(trackingId);
+  }
+
   database.prepare(`DELETE FROM live_buffer WHERE tracking_id = ?`).run(trackingId);
   return info.changes > 0;
 };
