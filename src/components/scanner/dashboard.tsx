@@ -651,6 +651,7 @@ export default function ScannerDashboard() {
   const [bookingLocated, setBookingLocated] = useState(false);
   const [vlmInfo, setVlmInfo] = useState<ProviderInfo | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
+  const [writingStorage, setWritingStorage] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [checkingBooking, setCheckingBooking] = useState(false);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState<number>(DEFAULT_REFRESH_MS);
@@ -1470,8 +1471,9 @@ export default function ScannerDashboard() {
   // Persists the current live record to the storage API, simulating a downstream system
   // update when operators confirm the extracted data.
   const handleWriteStorage = async () => {
-    if (!liveRecord) return;
+    if (!liveRecord || writingStorage) return;
     try {
+      setWritingStorage(true);
       setStorageError(null);
       const response = await apiFetch("/api/storage", {
         method: "POST",
@@ -1500,6 +1502,8 @@ export default function ScannerDashboard() {
       const normalizedMessage = message && message.trim().length > 0 ? message.trim() : "Failed to write storage.";
       setStatus(normalizedMessage);
       setStorageError(normalizedMessage);
+    } finally {
+      setWritingStorage(false);
     }
   };
 
@@ -2011,7 +2015,9 @@ export default function ScannerDashboard() {
           }
           footer={
             <div className="flex flex-wrap justify-end gap-3">
-              <Button onClick={handleWriteStorage}>Write to storage</Button>
+              <Button onClick={handleWriteStorage} disabled={!liveRecord || writingStorage}>
+                {writingStorage ? "Writing…" : "Write to storage"}
+              </Button>
               <Button onClick={handleClearLive} variant="outline">
                 Clear live buffer
               </Button>
