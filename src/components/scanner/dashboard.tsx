@@ -270,6 +270,16 @@ type ProviderMode = "remote" | "local";
 
 type ExecutionMode = "remote-http" | "local-service" | "local-cli";
 
+
+type OcrProfile = "fast" | "balanced" | "accurate";
+
+const OCR_PROFILE_OPTIONS: Array<{ value: OcrProfile; label: string; hint: string }> = [
+  { value: "fast", label: "Fast", hint: "Optimized for speed with lighter decoding." },
+  { value: "balanced", label: "Balanced", hint: "Recommended: blends speed and extraction quality." },
+  { value: "accurate", label: "Accurate", hint: "Deeper decode for difficult sheets." },
+];
+
+
 interface ProviderInfo {
   mode: ProviderMode;
   providerType?: string;
@@ -640,6 +650,7 @@ export default function ScannerDashboard() {
   const [selectedKv, setSelectedKv] = useState<KvPairs | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [ocrProfile, setOcrProfile] = useState<OcrProfile>("balanced");
   const [barcodes, setBarcodes] = useState<string[]>([]);
   const [barcodeWarnings, setBarcodeWarnings] = useState<string[]>([]);
   const [barcodeComparison, setBarcodeComparison] = useState<BarcodeComparisonReport | null>(null);
@@ -753,6 +764,11 @@ export default function ScannerDashboard() {
           setBarcodeValidationEnabled(maybeBarcodeEnabled);
         }
 
+        const maybeProfile = (parsed as { ocrProfile?: unknown }).ocrProfile;
+        if (maybeProfile === "fast" || maybeProfile === "balanced" || maybeProfile === "accurate") {
+          setOcrProfile(maybeProfile);
+        }
+
         const maybeRefresh = (parsed as { refreshIntervalMs?: unknown }).refreshIntervalMs;
         if (typeof maybeRefresh === "number" && Number.isFinite(maybeRefresh) && maybeRefresh > 0) {
           setRefreshIntervalMs(maybeRefresh);
@@ -783,6 +799,7 @@ export default function ScannerDashboard() {
         barcodeValidationEnabled,
         refreshIntervalMs,
         bookingLocated,
+        ocrProfile,
       };
       window.localStorage.setItem(PERSISTED_STATE_KEY, JSON.stringify(payload));
     } catch (error) {
@@ -802,6 +819,7 @@ export default function ScannerDashboard() {
     bookingLocated,
     barcodeValidationEnabled,
     refreshIntervalMs,
+    ocrProfile,
     hasHydrated,
   ]);
 
@@ -1035,12 +1053,13 @@ export default function ScannerDashboard() {
       activeScanControllerRef.current?.abort();
       activeScanControllerRef.current = controller;
       setLoading(true);
-      setStatus("Uploading file and scanning…");
+      setStatus(`Uploading file and scanning (${ocrProfile} profile)…`);
       setVlmInfo(null);
       try {
         const formData = new FormData();
         formData.append("file", targetFile);
         formData.append("barcodeDisabled", barcodeValidationEnabled ? "false" : "true");
+        formData.append("ocrProfile", ocrProfile);
 
         const res = await apiFetch("/api/ocr", {
           method: "POST",
@@ -1227,7 +1246,7 @@ export default function ScannerDashboard() {
         }
       }
     },
-    [API_KEY, barcodeValidationEnabled, mapApiRecordToLive, updateLiveRecord],
+    [API_KEY, barcodeValidationEnabled, mapApiRecordToLive, ocrProfile, updateLiveRecord],
   );
 
   // Convenience wrapper so existing UI hooks can trigger the scan based on the selected
@@ -1592,6 +1611,26 @@ export default function ScannerDashboard() {
             </div>
             <h3 className="mt-6 text-lg font-semibold text-slate-100">Upload order sheet</h3>
             <p className="mt-2 text-sm text-slate-400">PNG, JPG, or other images up to 10MB</p>
+            <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-3 text-left">
+              <label className="block text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-slate-300/80">OCR profile</label>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {OCR_PROFILE_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setOcrProfile(option.value)}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                      ocrProfile === option.value
+                        ? "border-indigo-300/70 bg-indigo-500/20 text-indigo-100"
+                        : "border-white/15 bg-slate-900/60 text-slate-300 hover:border-white/40"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-slate-400">{OCR_PROFILE_OPTIONS.find((option) => option.value === ocrProfile)?.hint}</p>
+            </div>
             <div className="mt-6 space-y-4 text-left">
               <Input
                 ref={fileInputRef}

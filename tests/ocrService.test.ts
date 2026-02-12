@@ -222,4 +222,104 @@ describe("extractKvPairs", () => {
       __setOcrServiceTestOverrides();
     }
   });
+
+
+  it("reuses cached OCR result for identical files and profile", async () => {
+    const settings = structuredClone(DEFAULT_VLM_SETTINGS);
+    settings.mode = "local";
+
+    let invokeCount = 0;
+    const { extractKvPairs, __setOcrServiceTestOverrides } = await import(
+      `@/lib/ocrService?cache-${Date.now()}`,
+    );
+
+    __setOcrServiceTestOverrides({
+      loadSettings: () => settings,
+      getServiceStatus: () => ({
+        state: "running" as const,
+        host: "127.0.0.1",
+        port: 5117,
+      }),
+      invokeLocal: async () => {
+        invokeCount += 1;
+        return {
+          ok: true,
+          source: "local-service" as const,
+          result: {
+            llm_parsed: {
+              all_key_values: {
+                destination: "R2-C",
+                tracking_id: "CACHE-1",
+              },
+              selected_key_values: {
+                tracking_id: "CACHE-1",
+              },
+            },
+          },
+        };
+      },
+    });
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ocr-cache-"));
+    const imagePath = path.join(tmpDir, "ticket.png");
+    fs.writeFileSync(imagePath, "stub");
+
+    try {
+      const first = await extractKvPairs(imagePath, { profile: "fast" });
+      const second = await extractKvPairs(imagePath, { profile: "fast" });
+
+      assert.equal(invokeCount, 1);
+      assert.equal(first.selectedKv["Tracking/Order ID"], "CACHE-1");
+      assert.equal(second.selectedKv["Tracking/Order ID"], "CACHE-1");
+      assert.ok(second.providerInfo.executionDebug?.some((line) => line.includes("[cache]")));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      __setOcrServiceTestOverrides();
+    }
+  });
+
+  it("hydrates kv from llm_raw fallback when parsed fields are sparse", async () => {
+    const settings = structuredClone(DEFAULT_VLM_SETTINGS);
+    settings.mode = "local";
+
+    const { extractKvPairs, __setOcrServiceTestOverrides } = await import(
+      `@/lib/ocrService?llmraw-${Date.now()}`,
+    );
+
+    __setOcrServiceTestOverrides({
+      loadSettings: () => settings,
+      getServiceStatus: () => ({
+        state: "running" as const,
+        host: "127.0.0.1",
+        port: 5117,
+      }),
+      invokeLocal: async () => ({
+        ok: true,
+        source: "local-service" as const,
+        result: {
+          llm_raw: '{"all_key_values":{"destination":"R9","tracking_id":"RAW-22","origin":"Dock 5"}}',
+          llm_parsed: {
+            all_key_values: {
+              destination: "R9",
+            },
+            selected_key_values: {},
+          },
+        },
+      }),
+    });
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ocr-raw-"));
+    const imagePath = path.join(tmpDir, "ticket.png");
+    fs.writeFileSync(imagePath, "stub");
+
+    try {
+      const result = await extractKvPairs(imagePath);
+      assert.equal(result.kv.tracking_id, "RAW-22");
+      assert.equal(result.selectedKv["Tracking/Order ID"], "RAW-22");
+      assert.equal(result.selectedKv["Origin"], "Dock 5");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      __setOcrServiceTestOverrides();
+    }
+  });
 });
