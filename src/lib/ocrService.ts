@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 import { loadPersistedVlmSettings } from './settingsStore';
 import {
@@ -13,6 +13,95 @@ import {
 type LoadSettingsFn = typeof loadPersistedVlmSettings;
 type GetServiceStatusFn = typeof getLocalVlmServiceStatus;
 type InvokeLocalFn = typeof invokeLocalService;
+
+
+type OcrExecutionProfile = 'fast' | 'balanced' | 'accurate';
+
+const OCR_CACHE_TTL_MS = Number(process.env.OCR_CACHE_TTL_MS || 10 * 60 * 1000);
+const OCR_CACHE_MAX_ITEMS = Number(process.env.OCR_CACHE_MAX_ITEMS || 100);
+
+type CachedOcrResult = {
+  expiresAt: number;
+  value: OcrExtractionResult;
+};
+
+const ocrResultCache = new Map<string, CachedOcrResult>();
+
+function cloneOcrResult(result: OcrExtractionResult): OcrExtractionResult {
+  return {
+    kv: { ...result.kv },
+    selectedKv: { ...result.selectedKv },
+    providerInfo: {
+      ...result.providerInfo,
+      executionDebug: result.providerInfo.executionDebug ? [...result.providerInfo.executionDebug] : undefined,
+    },
+    error: result.error,
+  };
+}
+
+function trimCache() {
+  const now = Date.now();
+  for (const [key, entry] of ocrResultCache.entries()) {
+    if (entry.expiresAt <= now) {
+      ocrResultCache.delete(key);
+    }
+  }
+
+  while (ocrResultCache.size > OCR_CACHE_MAX_ITEMS) {
+    const oldest = ocrResultCache.keys().next();
+    if (oldest.done) break;
+    ocrResultCache.delete(oldest.value);
+  }
+}
+
+function buildOcrCacheKey(filePath: string, profile: OcrExecutionProfile): string | null {
+  try {
+    const stat = fs.statSync(filePath);
+    const seed = `${filePath}:${stat.size}:${stat.mtimeMs}:${profile}`;
+    return createHash('sha1').update(seed).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+function tryParseLooseObject(raw: string): Record<string, unknown> | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const noFence = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+  const firstBrace = noFence.indexOf('{');
+  const lastBrace = noFence.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    const snippet = noFence.slice(firstBrace, lastBrace + 1);
+    try {
+      const parsed = JSON.parse(snippet);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {}
+  }
+
+  const linePairs: Record<string, string> = {};
+  for (const line of noFence.split(/\r?\n/)) {
+    const match = line.match(/^\s*([^:]+):\s*(.+)\s*$/);
+    if (!match) continue;
+    linePairs[match[1].trim()] = match[2].trim();
+  }
+
+  return Object.keys(linePairs).length > 0 ? linePairs : null;
+}
+
+function deriveKvFromLlmRaw(rawPayload: unknown): Record<string, string> {
+  if (typeof rawPayload !== 'string') return {};
+  const parsed = tryParseLooseObject(rawPayload);
+  if (!parsed) return {};
+  const record = parsed as Record<string, unknown>;
+  const nested =
+    (record as { all_key_values?: unknown }).all_key_values ??
+    (record as { allKeyValues?: unknown }).allKeyValues ??
+    record;
+  return sanitizeKvRecord(nested);
+}
 
 let loadSettingsFn: LoadSettingsFn = loadPersistedVlmSettings;
 let getServiceStatusFn: GetServiceStatusFn = getLocalVlmServiceStatus;
@@ -209,7 +298,21 @@ export function deriveOcrErrorMessage(stdout: string, stderr: string, code?: num
  * Extract key/value pairs using the Python OCR pipeline.
  * Falls back to a stub if the script fails or is missing.
  */
-export async function extractKvPairs(filePath: string): Promise<OcrExtractionResult> {
+export async function extractKvPairs(filePath: string, options?: { profile?: OcrExecutionProfile }): Promise<OcrExtractionResult> {
+  const profile: OcrExecutionProfile = options?.profile ?? 'balanced';
+  trimCache();
+  const cacheKey = buildOcrCacheKey(filePath, profile);
+  if (cacheKey) {
+    const cached = ocrResultCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      const cloned = cloneOcrResult(cached.value);
+      cloned.providerInfo.executionDebug = [
+        ...(cloned.providerInfo.executionDebug ?? []),
+        `[cache] Reused ${profile} profile result.`,
+      ];
+      return cloned;
+    }
+  }
   const vlmSettings = loadSettingsFn();
   const configuredModel =
     vlmSettings.mode === 'remote'
@@ -301,7 +404,9 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
             {};
 
           const kv = sanitizeKvRecord(allRaw);
-          const selectedKv = deriveSelectedKv(kv, selectedRaw);
+          const rawFallbackKv = deriveKvFromLlmRaw((inference.result as { llm_raw?: unknown }).llm_raw);
+          const mergedKv = { ...rawFallbackKv, ...kv };
+          const selectedKv = deriveSelectedKv(mergedKv, selectedRaw);
 
           if (typeof inference.durationMs === 'number') {
             localDebug.push(
@@ -315,11 +420,15 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
           if (localDebug.length > 0) {
             providerInfo.executionDebug = [...localDebug];
           }
-          return {
-            kv,
+          const result = {
+            kv: mergedKv,
             selectedKv,
             providerInfo,
           };
+          if (cacheKey) {
+            ocrResultCache.set(cacheKey, { expiresAt: Date.now() + OCR_CACHE_TTL_MS, value: cloneOcrResult(result) });
+          }
+          return result;
         }
 
         if (!inference.ok) {
@@ -352,7 +461,11 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
       localDebug.push('[local-cli] Python script missing; returning stub result.');
       providerInfo.executionDebug = [...localDebug];
     }
-    return { kv: stubKv, selectedKv: deriveSelectedKv(stubKv, {}), providerInfo };
+    const result = { kv: stubKv, selectedKv: deriveSelectedKv(stubKv, {}), providerInfo };
+    if (cacheKey) {
+      ocrResultCache.set(cacheKey, { expiresAt: Date.now() + OCR_CACHE_TTL_MS, value: cloneOcrResult(result) });
+    }
+    return result;
   }
 
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-out-'));
@@ -373,7 +486,13 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
   env.VLM_MODE = vlmSettings.mode;
   if (vlmSettings.mode === 'remote') {
     env.VLM_REMOTE_CONFIG = JSON.stringify(vlmSettings.remote);
-    env.OCR_REQUEST_TIMEOUT_MS = String(vlmSettings.remote.requestTimeoutMs || OCR_TIMEOUT_MS);
+    const remoteTimeout =
+      profile === 'fast'
+        ? Math.min(vlmSettings.remote.requestTimeoutMs || OCR_TIMEOUT_MS, 60_000)
+        : profile === 'accurate'
+        ? Math.max(vlmSettings.remote.requestTimeoutMs || OCR_TIMEOUT_MS, OCR_TIMEOUT_MS)
+        : vlmSettings.remote.requestTimeoutMs || OCR_TIMEOUT_MS;
+    env.OCR_REQUEST_TIMEOUT_MS = String(remoteTimeout);
     env.OCR_RETRY_MAX = String(vlmSettings.remote.retryPolicy.maxRetries);
     env.OCR_STREAMING = vlmSettings.remote.defaults.streaming ? '1' : '0';
     env.OCR_SYSTEM_PROMPT = vlmSettings.remote.defaults.systemPrompt || '';
@@ -410,7 +529,13 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
     } else {
       delete env.OCR_LOCAL_DEVICE_MAP;
     }
-    env.OCR_LOCAL_MAX_NEW_TOKENS = String(local.maxNewTokens || DEFAULT_LOCAL_MAX_NEW_TOKENS);
+    const localTokens =
+      profile === 'fast'
+        ? Math.min(local.maxNewTokens || DEFAULT_LOCAL_MAX_NEW_TOKENS, 320)
+        : profile === 'accurate'
+        ? Math.max(local.maxNewTokens || DEFAULT_LOCAL_MAX_NEW_TOKENS, 768)
+        : local.maxNewTokens || DEFAULT_LOCAL_MAX_NEW_TOKENS;
+    env.OCR_LOCAL_MAX_NEW_TOKENS = String(localTokens);
     env.OCR_LOCAL_FLASH_ATTENTION = local.enableFlashAttention2 ? '1' : '0';
     env.OCR_SYSTEM_PROMPT = vlmSettings.remote.defaults.systemPrompt || '';
   }
@@ -471,17 +596,23 @@ export async function extractKvPairs(filePath: string): Promise<OcrExtractionRes
           {};
 
         const kv = sanitizeKvRecord(allRaw);
-        const selectedKv = deriveSelectedKv(kv, selectedRaw);
+        const rawFallbackKv = deriveKvFromLlmRaw((payload[0] as { llm_raw?: unknown }).llm_raw);
+        const mergedKv = { ...rawFallbackKv, ...kv };
+        const selectedKv = deriveSelectedKv(mergedKv, selectedRaw);
 
         if (usingLocalMode) {
           localDebug.push('[local-cli] Completed successfully.');
           providerInfo.executionDebug = [...localDebug];
         }
-        return {
-          kv,
+        const result = {
+          kv: mergedKv,
           selectedKv,
           providerInfo,
         };
+        if (cacheKey) {
+          ocrResultCache.set(cacheKey, { expiresAt: Date.now() + OCR_CACHE_TTL_MS, value: cloneOcrResult(result) });
+        }
+        return result;
       }
     }
 

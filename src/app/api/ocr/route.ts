@@ -23,6 +23,15 @@ export const config = {
  * as JSON. Files are temporarily written to disk before invoking the OCR
  * service. After processing, the temporary file is deleted.
  */
+type OcrProfile = 'fast' | 'balanced' | 'accurate';
+
+const parseProfile = (value: FormDataEntryValue | null): OcrProfile => {
+  if (typeof value !== 'string') return 'balanced';
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'fast' || normalized === 'accurate') return normalized;
+  return 'balanced';
+};
+
 type OcrRouteDependencies = {
   extractKvPairs: typeof extractKvPairs;
   extractBarcodes: typeof extractBarcodes;
@@ -57,6 +66,7 @@ export async function POST(req: Request) {
   try {
     const formData = await req.formData();
     const file = formData.get('file');
+    const profile = parseProfile(formData.get('ocrProfile'));
     const disableBarcode =
       (() => {
         const flag = formData.get('barcodeDisabled');
@@ -76,7 +86,7 @@ export async function POST(req: Request) {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'upload-'));
     const tmpPath = path.join(tmpDir, file.name);
     await fs.writeFile(tmpPath, buffer);
-    const { kv, selectedKv, providerInfo, error } = await deps.extractKvPairs(tmpPath);
+    const { kv, selectedKv, providerInfo, error } = await deps.extractKvPairs(tmpPath, { profile });
     if (error) {
       await fs.unlink(tmpPath);
       return NextResponse.json({ error, providerInfo }, { status: 502 });
@@ -111,6 +121,7 @@ export async function POST(req: Request) {
       barcodeComparison,
       validation,
       providerInfo,
+      profile,
     });
   } catch (err: any) {
     console.error('OCR endpoint error', err);
